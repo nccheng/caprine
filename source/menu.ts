@@ -412,14 +412,6 @@ Press Command/Ctrl+R in Caprine to see your changes.
 			},
 		},
 		{
-			label: 'Automatic Updates',
-			type: 'checkbox',
-			checked: config.get('autoUpdate'),
-			click() {
-				config.set('autoUpdate', !config.get('autoUpdate'));
-			},
-		},
-		{
 			/* TODO: Fix notifications */
 			label: 'Flash Window on Message',
 			type: 'checkbox',
@@ -681,15 +673,11 @@ Press Command/Ctrl+R in Caprine to see your changes.
 	const helpSubmenu: MenuItemConstructorOptions[] = [
 		openUrlMenuItem({
 			label: 'Website',
-			url: 'https://github.com/sindresorhus/caprine',
+			url: 'https://github.com/nccheng/caprine',
 		}),
 		openUrlMenuItem({
 			label: 'Source Code',
-			url: 'https://github.com/sindresorhus/caprine',
-		}),
-		openUrlMenuItem({
-			label: 'Donate…',
-			url: 'https://github.com/sindresorhus/caprine?sponsor=1',
+			url: 'https://github.com/nccheng/caprine',
 		}),
 		{
 			label: 'Report an Issue…',
@@ -703,7 +691,7 @@ Press Command/Ctrl+R in Caprine to see your changes.
 ${debugInfo()}`;
 
 				openNewGitHubIssue({
-					user: 'sindresorhus',
+					user: 'nccheng',
 					repo: 'caprine',
 					body,
 				});
@@ -718,9 +706,9 @@ ${debugInfo()}`;
 			},
 			aboutMenuItem({
 				icon: caprineIconPath,
-				copyright: 'Created by Sindre Sorhus',
-				text: 'Maintainers:\nDušan Simić\nLefteris Garyfalakis\nMichael Quevillon\nNikolas Spiridakis',
-				website: 'https://github.com/sindresorhus/caprine',
+				copyright: 'Personal fork maintained by nccheng; original Caprine created by Sindre Sorhus',
+				text: 'Personal macOS fork of Caprine',
+				website: 'https://github.com/nccheng/caprine',
 			}),
 		);
 	}

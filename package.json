@@ -4,11 +4,10 @@
 	"version": "2.61.0",
 	"description": "Elegant Facebook Messenger desktop app",
 	"license": "MIT",
-	"repository": "sindresorhus/caprine",
+	"repository": "nccheng/caprine",
 	"author": {
-		"name": "Sindre Sorhus",
-		"email": "sindresorhus@gmail.com",
-		"url": "https://sindresorhus.com"
+		"name": "nccheng",
+		"url": "https://github.com/nccheng"
 	},
 	"main": "dist-js",
 	"engines": {
@@ -38,7 +37,6 @@
 		"electron-dl": "^3.5.2",
 		"electron-localshortcut": "^3.2.1",
 		"electron-store": "^8.1.0",
-		"electron-updater": "^6.1.8",
 		"electron-util": "^0.17.2",
 		"element-ready": "^5.0.0",
 		"facebook-locales": "^1.0.916",
@@ -108,6 +106,7 @@
 		"releaseDraft": false
 	},
 	"build": {
+		"publish": null,
 		"files": [
 			"**/*",
 			"!media${/*}"
@@ -116,11 +115,10 @@
 			"static/Icon.png",
 			"static/sounds/**/*"
 		],
-		"appId": "com.sindresorhus.caprine",
+		"appId": "com.nccheng.caprine",
 		"mac": {
 			"category": "public.app-category.social-networking",
 			"icon": "build/icon.icns",
-			"electronUpdaterCompatibility": ">=4.5.2",
 			"darkModeSupport": true,
 			"target": {
 				"target": "default",

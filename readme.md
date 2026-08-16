@@ -26,6 +26,8 @@
 	</a>
 </div>
 
+> **Personal fork:** This repository is the `nccheng/caprine` daily-use macOS fork. It keeps the Caprine display name and Messenger experience, uses the unique `com.nccheng.caprine` app identity, and intentionally does not use Caprine's inherited automatic-update channel. Builds are produced locally unless this fork later adds its own signed release pipeline.
+
 ## Highlights
 
 - [Dark theme](#dark-mode)
@@ -38,7 +40,7 @@
 - [Touch Bar support](#touch-bar-support-macos-only)\*
 - [Custom styles](#custom-styles)
 - Cross-platform
-- Silent auto-updates
+- Manual updates for this personal fork
 - Custom text size
 - Emoji style setting
 - Respects Do Not Disturb\*

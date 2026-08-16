@@ -37,7 +37,6 @@ export type StoreType = {
 	useWorkChat: boolean;
 	sidebar: 'default' | 'hidden' | 'narrow' | 'wide';
 	autoHideMenuBar: boolean;
-	autoUpdate: boolean;
 	notificationsMuted: boolean;
 	callRingtoneMuted: boolean;
 	hardwareAcceleration: boolean;
@@ -188,10 +187,6 @@ const schema: Store.Schema<StoreType> = {
 	autoHideMenuBar: {
 		type: 'boolean',
 		default: false,
-	},
-	autoUpdate: {
-		type: 'boolean',
-		default: true,
 	},
 	notificationsMuted: {
 		type: 'boolean',
