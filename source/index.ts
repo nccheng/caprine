@@ -287,6 +287,63 @@ function setUserLocale(): void {
 	session.defaultSession.cookies.set(cookie);
 }
 
+function isTrustedMessengerOrigin(url: string): boolean {
+	if (url === 'about:blank' || url === 'about:blank#blocked') {
+		return true;
+	}
+
+	try {
+		const {protocol, hostname} = new URL(url);
+		return protocol === 'https:' && (
+			hostname === 'facebook.com'
+			|| hostname.endsWith('.facebook.com')
+			|| hostname === 'workplace.com'
+			|| hostname.endsWith('.workplace.com')
+		);
+	} catch {
+		return false;
+	}
+}
+
+function configurePermissionHandlers(): void {
+	const allowedPermissions = new Set(['fullscreen', 'media', 'notifications']);
+	const isAllowed = (permission: string, requestingUrl: string): boolean =>
+		allowedPermissions.has(permission) && isTrustedMessengerOrigin(requestingUrl);
+
+	session.defaultSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
+		isAllowed(permission, requestingOrigin),
+	);
+
+	session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+		const requestingUrl = details.requestingUrl || webContents.getURL();
+		callback(isAllowed(permission, requestingUrl));
+	});
+}
+
+function externalUrl(url: unknown): string | undefined {
+	if (typeof url !== 'string') {
+		return;
+	}
+
+	try {
+		const parsedUrl = new URL(url);
+		if (!['http:', 'https:', 'mailto:'].includes(parsedUrl.protocol)) {
+			return undefined;
+		}
+
+		return parsedUrl.toString();
+	} catch {
+		return undefined;
+	}
+}
+
+async function openExternalUrl(url: unknown): Promise<void> {
+	const validatedUrl = externalUrl(url);
+	if (validatedUrl) {
+		await shell.openExternal(validatedUrl);
+	}
+}
+
 function setNotificationsMute(status: boolean): void {
 	const label = 'Mute Notifications';
 	const muteMenuItem = Menu.getApplicationMenu()!.getMenuItemById('mute-notifications')!;
@@ -357,14 +414,16 @@ function createMainWindow(): BrowserWindow {
 		webPreferences: {
 			preload: path.join(__dirname, 'browser.js'),
 			contextIsolation: true,
-			nodeIntegration: true,
+			nodeIntegration: false,
+			nodeIntegrationInSubFrames: false,
+			nodeIntegrationInWorker: false,
+			// The trusted preload still uses local Node packages. Isolate it from the remote page instead of sandboxing it in this bounded change.
+			sandbox: false,
 			spellcheck: config.get('isSpellCheckerEnabled'),
 			plugins: true,
+			webviewTag: false,
 		},
 	});
-
-	require('@electron/remote/main').initialize();
-	require('@electron/remote/main').enable(win.webContents);
 
 	setUserLocale();
 	initRequestsFiltering();
@@ -438,6 +497,7 @@ function createMainWindow(): BrowserWindow {
 (async () => {
 	await Promise.all([ensureOnline(), app.whenReady()]);
 	await updateAppMenu();
+	configurePermissionHandlers();
 	mainWindow = createMainWindow();
 
 	if (is.windows) {
@@ -604,37 +664,32 @@ function createMainWindow(): BrowserWindow {
 	});
 
 	webContents.setWindowOpenHandler(details => {
-		if (details.disposition === 'foreground-tab' || details.disposition === 'background-tab') {
-			const url = stripTrackingFromUrl(details.url);
-			shell.openExternal(url);
-			return {action: 'deny'};
+		if (
+			details.disposition === 'new-window'
+			&& (details.url === 'about:blank' || details.url === 'about:blank#blocked')
+			&& details.frameName !== 'about:blank'
+		) {
+			// Voice/video call popup
+			return {
+				action: 'allow',
+				overrideBrowserWindowOptions: {
+					show: true,
+					titleBarStyle: 'default',
+					webPreferences: {
+						contextIsolation: true,
+						nodeIntegration: false,
+						nodeIntegrationInSubFrames: false,
+						nodeIntegrationInWorker: false,
+						preload: path.join(__dirname, 'browser-call.js'),
+						sandbox: false,
+						webviewTag: false,
+					},
+				},
+			};
 		}
 
-		if (details.disposition === 'new-window') {
-			if (details.url === 'about:blank' || details.url === 'about:blank#blocked') {
-				if (details.frameName !== 'about:blank') {
-					// Voice/video call popup
-					return {
-						action: 'allow',
-						overrideBrowserWindowOptions: {
-							show: true,
-							titleBarStyle: 'default',
-							webPreferences: {
-								nodeIntegration: false,
-								preload: path.join(__dirname, 'browser-call.js'),
-							},
-						},
-					};
-				}
-			} else {
-				const url = stripTrackingFromUrl(details.url);
-				shell.openExternal(url);
-			}
-
-			return {action: 'deny'};
-		}
-
-		return {action: 'allow'};
+		void openExternalUrl(stripTrackingFromUrl(details.url));
+		return {action: 'deny'};
 	});
 
 	webContents.on('will-navigate', async (event, url) => {
@@ -686,7 +741,7 @@ function createMainWindow(): BrowserWindow {
 		}
 
 		event.preventDefault();
-		await shell.openExternal(url);
+		await openExternalUrl(url);
 	});
 
 	// Redirect from Facebook homepage to /messages after login
@@ -730,15 +785,28 @@ ipc.answerRenderer('titlebar-doubleclick', () => {
 	}
 });
 
-ipc.answerRenderer('open-external', async (url: string) => {
-	await shell.openExternal(url);
+ipc.answerRenderer('open-external', async (url: unknown) => {
+	await openExternalUrl(url);
 });
 
 ipc.answerRenderer('navigate-to-chats', () => {
 	mainWindow.webContents.loadURL('https://www.facebook.com/messages/');
 });
 
-ipc.answerRenderer('save-blob-file', async ({data, filename}: {data: ArrayBuffer; filename: string}) => {
+ipc.answerRenderer('save-blob-file', async (request: unknown) => {
+	if (
+		typeof request !== 'object'
+		|| request === null
+		|| !('data' in request)
+		|| !('filename' in request)
+		|| !(request.data instanceof ArrayBuffer)
+		|| typeof request.filename !== 'string'
+	) {
+		return;
+	}
+
+	const {data, filename: requestedFilename} = request;
+	const filename = path.basename(requestedFilename.trim()).slice(0, 255) || 'download';
 	const downloadsDirectory = app.getPath('downloads');
 	let savePath = path.join(downloadsDirectory, filename);
 	let counter = 1;
@@ -853,11 +921,12 @@ ipc.answerRenderer(
 	},
 );
 
-type ThemeSource = typeof nativeTheme.themeSource;
-
 ipc.answerRenderer<undefined, StoreType['useWorkChat']>('get-config-useWorkChat', async () => config.get('useWorkChat'));
 ipc.answerRenderer<undefined, StoreType['showMessageButtons']>('get-config-showMessageButtons', async () => config.get('showMessageButtons'));
-ipc.answerRenderer<undefined, ThemeSource>('get-config-theme', async () => config.get('theme'));
+ipc.answerRenderer<undefined, boolean>('get-native-theme-state', async () => {
+	nativeTheme.themeSource = config.get('theme');
+	return nativeTheme.shouldUseDarkColors;
+});
 ipc.answerRenderer<undefined, StoreType['privateMode']>('get-config-privateMode', async () => config.get('privateMode'));
 ipc.answerRenderer<undefined, StoreType['vibrancy']>('get-config-vibrancy', async () => config.get('vibrancy'));
 ipc.answerRenderer<undefined, StoreType['sidebar']>('get-config-sidebar', async () => config.get('sidebar'));

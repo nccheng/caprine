@@ -29,7 +29,6 @@
 		"release": "np --no-publish"
 	},
 	"dependencies": {
-		"@electron/remote": "^2.1.2",
 		"@sindresorhus/do-not-disturb": "^1.1.0",
 		"electron-better-ipc": "^2.0.1",
 		"electron-context-menu": "^3.6.1",

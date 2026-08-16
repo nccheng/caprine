@@ -1,15 +1,19 @@
 import process from 'node:process';
 import {webFrame} from 'electron';
 import {ipcRenderer as ipc} from 'electron-better-ipc';
-import {is} from 'electron-util';
 import elementReady from 'element-ready';
-import {nativeTheme} from '@electron/remote';
 import selectors from './browser/selectors';
 import {toggleVideoAutoplay} from './autoplay';
 import {sendConversationList} from './browser/conversation-list';
 import {IToggleSounds, IToggleMuteNotifications} from './types';
 
-type ThemeSource = typeof nativeTheme.themeSource;
+const is = {
+	linux: process.platform === 'linux',
+	macos: process.platform === 'darwin',
+	windows: process.platform === 'win32',
+};
+
+let shouldUseDarkColors = false;
 
 // Inject scrollbar-hiding CSS immediately in preload to prevent white flash
 webFrame.insertCSS('html::-webkit-scrollbar { display: none !important; }');
@@ -350,23 +354,18 @@ ipc.answerMain('reload', () => {
 });
 
 async function setTheme(): Promise<void> {
-	const theme = await ipc.callMain<undefined, ThemeSource>('get-config-theme');
-
-	if (nativeTheme.themeSource !== theme) {
-		nativeTheme.themeSource = theme;
-	}
+	shouldUseDarkColors = await ipc.callMain<undefined, boolean>('get-native-theme-state');
 
 	setThemeElement(document.documentElement);
 	updateVibrancy();
 }
 
 function setThemeElement(element: HTMLElement): void {
-	const useDarkColors = Boolean(nativeTheme.shouldUseDarkColors);
-	element.classList.toggle('dark-mode', useDarkColors);
-	element.classList.toggle('light-mode', !useDarkColors);
-	element.classList.toggle('__fb-dark-mode', useDarkColors);
-	element.classList.toggle('__fb-light-mode', !useDarkColors);
-	removeThemeClasses(useDarkColors);
+	element.classList.toggle('dark-mode', shouldUseDarkColors);
+	element.classList.toggle('light-mode', !shouldUseDarkColors);
+	element.classList.toggle('__fb-dark-mode', shouldUseDarkColors);
+	element.classList.toggle('__fb-light-mode', !shouldUseDarkColors);
+	removeThemeClasses(shouldUseDarkColors);
 }
 
 function removeThemeClasses(useDarkColors: boolean): void {
@@ -380,9 +379,6 @@ function removeThemeClasses(useDarkColors: boolean): void {
 }
 
 async function observeTheme(): Promise<void> {
-	/* Listen for native theme changes (e.g., OS theme change when themeSource is 'system') */
-	nativeTheme.on('updated', setTheme);
-
 	/* Main document's class list */
 	const observer = new MutationObserver((records: MutationRecord[]) => {
 		// Find records that had class attribute changed
@@ -393,7 +389,7 @@ async function observeTheme(): Promise<void> {
 			return classList.contains('dark-mode') && classList.contains('__fb-dark-mode');
 		});
 		// If config and class list don't match, update class list
-		if (nativeTheme.shouldUseDarkColors !== isDark) {
+		if (shouldUseDarkColors !== isDark) {
 			setTheme();
 		}
 	});
@@ -407,7 +403,7 @@ async function observeTheme(): Promise<void> {
 			for (const newNode of nodeRecord.addedNodes) {
 				const {classList} = (newNode as HTMLElement);
 				const isLight = classList.contains('light-mode') || classList.contains('__fb-light-mode');
-				if (nativeTheme.shouldUseDarkColors === isLight) {
+				if (shouldUseDarkColors === isLight) {
 					setThemeElement(newNode as HTMLElement);
 				}
 			}
@@ -820,7 +816,7 @@ async function observeThemeBugs(): Promise<void> {
 			.filter(record => record.addedNodes.length > 0 || record.removedNodes.length > 0);
 
 		if (newNodes) {
-			removeThemeClasses(Boolean(nativeTheme.shouldUseDarkColors));
+			removeThemeClasses(shouldUseDarkColors);
 		}
 	});
 
