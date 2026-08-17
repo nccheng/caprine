@@ -827,20 +827,17 @@ async function observeThemeBugs(): Promise<void> {
 // Listen for emoji element dom insertion
 document.addEventListener('animationstart', insertionListener, false);
 
-// Inject a CSS class on the messenger layout container to enable proper styling
-function injectMessengerLayoutClass(): void {
+// Inject stable Caprine-owned CSS classes around the Messenger thread list.
+function injectMessengerLayoutClasses(): void {
 	const threadListNavigation = document.querySelector('[role="navigation"]:has([role="grid"])');
+	threadListNavigation?.classList.add('caprine-sidebar');
 	threadListNavigation?.parentElement?.classList.add('caprine-thread-list-container');
 }
 
-// Observe for navigation changes and re-inject the class when needed
+// Observe for navigation changes and re-inject the classes when needed.
 function observeMessengerLayout(): void {
 	const observer = new MutationObserver(() => {
-		// Check if the class is missing but the navigation exists
-		const threadListNavigation = document.querySelector('[role="navigation"]:has([role="grid"])');
-		if (threadListNavigation?.parentElement && !threadListNavigation.parentElement.classList.contains('caprine-thread-list-container')) {
-			threadListNavigation.parentElement.classList.add('caprine-thread-list-container');
-		}
+		injectMessengerLayoutClasses();
 	});
 
 	observer.observe(document.body, {childList: true, subtree: true});
@@ -852,8 +849,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 	style.id = 'zoomFactor';
 	document.body.append(style);
 
-	// Inject messenger layout class for proper padding and spacing
-	injectMessengerLayoutClass();
+	// Inject Messenger layout classes for proper padding, spacing, and sidebar sizing.
+	injectMessengerLayoutClasses();
 	observeMessengerLayout();
 
 	// Set the zoom factor if it was set before quitting
