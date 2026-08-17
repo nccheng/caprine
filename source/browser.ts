@@ -1,4 +1,3 @@
-import process from 'node:process';
 import {webFrame} from 'electron';
 import {ipcRenderer as ipc} from 'electron-better-ipc';
 import elementReady from 'element-ready';
@@ -7,10 +6,12 @@ import {toggleVideoAutoplay} from './autoplay';
 import {sendConversationList} from './browser/conversation-list';
 import {IToggleSounds, IToggleMuteNotifications} from './types';
 
+// Sandboxed preloads receive Electron's limited process global but cannot load node:process.
+const {platform} = process; // eslint-disable-line n/prefer-global/process
 const is = {
-	linux: process.platform === 'linux',
-	macos: process.platform === 'darwin',
-	windows: process.platform === 'win32',
+	linux: platform === 'linux',
+	macos: platform === 'darwin',
+	windows: platform === 'win32',
 };
 
 let shouldUseDarkColors = false;
@@ -860,7 +861,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 	setZoom(zoomFactor);
 
 	// Enable OS specific styles
-	document.documentElement.classList.add(`os-${process.platform}`);
+	document.documentElement.classList.add(`os-${platform}`);
 
 	// Restore sidebar view state to what is was set before quitting
 	updateSidebar();
