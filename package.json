@@ -20,8 +20,9 @@
 		"lint": "npm run lint:xo && npm run lint:stylelint",
 		"test:tsc": "npm run build",
 		"test": "npm run test:tsc && npm run lint",
-		"start": "tsc && electron .",
-		"build": "tsc",
+		"start": "npm run build && electron .",
+		"build": "tsc && npm run build:preloads",
+		"build:preloads": "node scripts/build-preloads.mjs",
 		"dist:linux": "electron-builder --linux",
 		"dist:rpm": "bash build-rpm.sh",
 		"dist:mac": "electron-builder --mac",
@@ -58,6 +59,7 @@
 		"stylelint": "^14.10.0",
 		"stylelint-config-xo": "^0.22.0",
 		"typescript": "^5.3.3",
+		"webpack": "^5.105.2",
 		"xo": "^0.57.0"
 	},
 	"xo": {
