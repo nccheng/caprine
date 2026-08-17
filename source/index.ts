@@ -432,7 +432,7 @@ function createMainWindow(): BrowserWindow {
 	darkMode.onChange(() => {
 		if (darkMode.isEnabled !== previousDarkMode) {
 			previousDarkMode = darkMode.isEnabled;
-			win.webContents.send('set-theme');
+			ipc.callRenderer(win, 'set-theme');
 		}
 	});
 
