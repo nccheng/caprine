@@ -11,7 +11,7 @@
 	},
 	"main": "dist-js",
 	"engines": {
-		"node": ">=16"
+		"node": ">=22.12.0"
 	},
 	"scripts": {
 		"postinstall": "patch-package && electron-builder install-app-deps",
@@ -50,7 +50,7 @@
 		"@types/facebook-locales": "^1.0.2",
 		"@types/lodash": "^4.14.202",
 		"del-cli": "^5.1.0",
-		"electron": "^29.0.1",
+		"electron": "^43.4.0",
 		"electron-builder": "^24.12.0",
 		"husky": "^9.0.11",
 		"np": "^9.2.0",
