@@ -1,8 +1,9 @@
 import {TouchBar, nativeImage} from 'electron';
-import {ipcMain as ipc} from 'electron-better-ipc';
 import config from './config';
 import {sendAction, getWindow} from './util';
 import {caprineIconPath} from './constants';
+import {answerTrustedRenderer} from './trusted-ipc';
+import {isConversationList} from './ipc-validation';
 
 const {TouchBarButton} = TouchBar;
 const MAX_VISIBLE_LENGTH = 25;
@@ -39,7 +40,12 @@ function createTouchBarButton({label, selected, icon}: Conversation, index: numb
 	});
 }
 
-ipc.answerRenderer('conversations', (conversations: Conversation[]) => {
+answerTrustedRenderer<unknown, void>(getWindow(), 'conversations', value => {
+	if (!isConversationList(value)) {
+		throw new TypeError('Invalid payload for privileged IPC channel: conversations');
+	}
+
+	const conversations = value;
 	if (config.get('privateMode')) {
 		setTouchBar([privateModeTouchBarLabel]);
 	} else {

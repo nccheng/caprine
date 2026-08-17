@@ -2,7 +2,17 @@
 	const notifications = new Map<number, Notification>();
 
 	// Handle events sent from the browser process
-	window.addEventListener('message', ({data: {type, data}}) => {
+	window.addEventListener('message', event => {
+		if (
+			event.source !== window
+			|| event.origin !== window.location.origin
+			|| typeof event.data !== 'object'
+			|| event.data === null
+		) {
+			return;
+		}
+
+		const {type, data} = event.data as {type?: unknown; data?: any};
 		if (type === 'notification-callback') {
 			const {callbackName, id}: NotificationCallback = data;
 			const notification = notifications.get(id);
