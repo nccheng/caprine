@@ -1093,8 +1093,18 @@ document.addEventListener('keydown', async event => {
 	}
 });
 
-// Pass events sent via `window.postMessage` on to the main process
-window.addEventListener('message', async ({data: {type, data}}) => {
+// Pass same-document events sent via `window.postMessage` on to the main process.
+window.addEventListener('message', async event => {
+	if (
+		event.source !== window
+		|| event.origin !== window.location.origin
+		|| typeof event.data !== 'object'
+		|| event.data === null
+	) {
+		return;
+	}
+
+	const {type, data} = event.data as {type?: unknown; data?: any};
 	if (type === 'notification') {
 		showNotification(data as NotificationEvent);
 	}

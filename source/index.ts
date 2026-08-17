@@ -36,6 +36,17 @@ import {process as processEmojiUrl} from './emoji';
 import ensureOnline from './ensure-online';
 import {setUpMenuBarMode} from './menu-bar-mode';
 import {caprineIconPath} from './constants';
+import {answerTrustedRenderer} from './trusted-ipc';
+import {
+	externalUrl,
+	isConversationList,
+	isDownloadRequest,
+	isEmojiStyle,
+	isMessageCount,
+	isNotificationRequest,
+	isTrustedMessengerOrigin,
+	isZoomFactor,
+} from './ipc-validation';
 
 ipc.setMaxListeners(100);
 
@@ -287,28 +298,14 @@ function setUserLocale(): void {
 	session.defaultSession.cookies.set(cookie);
 }
 
-function isTrustedMessengerOrigin(url: string): boolean {
-	if (url === 'about:blank' || url === 'about:blank#blocked') {
-		return true;
-	}
-
-	try {
-		const {protocol, hostname} = new URL(url);
-		return protocol === 'https:' && (
-			hostname === 'facebook.com'
-			|| hostname.endsWith('.facebook.com')
-			|| hostname === 'workplace.com'
-			|| hostname.endsWith('.workplace.com')
-		);
-	} catch {
-		return false;
-	}
-}
-
 function configurePermissionHandlers(): void {
 	const allowedPermissions = new Set(['fullscreen', 'media', 'notifications']);
 	const isAllowed = (permission: string, requestingUrl: string): boolean =>
-		allowedPermissions.has(permission) && isTrustedMessengerOrigin(requestingUrl);
+		allowedPermissions.has(permission) && (
+			requestingUrl === 'about:blank'
+			|| requestingUrl === 'about:blank#blocked'
+			|| isTrustedMessengerOrigin(requestingUrl)
+		);
 
 	session.defaultSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
 		isAllowed(permission, requestingOrigin),
@@ -320,28 +317,37 @@ function configurePermissionHandlers(): void {
 	});
 }
 
-function externalUrl(url: unknown): string | undefined {
-	if (typeof url !== 'string') {
-		return;
-	}
-
-	try {
-		const parsedUrl = new URL(url);
-		if (!['http:', 'https:', 'mailto:'].includes(parsedUrl.protocol)) {
-			return undefined;
-		}
-
-		return parsedUrl.toString();
-	} catch {
-		return undefined;
-	}
-}
-
 async function openExternalUrl(url: unknown): Promise<void> {
 	const validatedUrl = externalUrl(url);
 	if (validatedUrl) {
 		await shell.openExternal(validatedUrl);
 	}
+}
+
+function invalidIpcPayload(channel: string): never {
+	throw new TypeError(`Invalid payload for privileged IPC channel: ${channel}`);
+}
+
+function requireNoIpcPayload(channel: string, value: unknown): void {
+	if (value !== undefined) {
+		invalidIpcPayload(channel);
+	}
+}
+
+function truncateUtf8(value: string, maximumBytes: number): string {
+	let result = value;
+	while (Buffer.byteLength(result) > maximumBytes) {
+		result = result.slice(0, -1);
+	}
+
+	return result;
+}
+
+function downloadFilename(requestedFilename: string): string {
+	const filename = path.basename(requestedFilename.trim()) || 'download';
+	const extension = truncateUtf8(path.extname(filename), 32);
+	const name = truncateUtf8(path.basename(filename, path.extname(filename)), 200 - Buffer.byteLength(extension));
+	return `${name || 'download'}${extension}`;
 }
 
 function setNotificationsMute(status: boolean): void {
@@ -498,6 +504,7 @@ function createMainWindow(): BrowserWindow {
 	await updateAppMenu();
 	configurePermissionHandlers();
 	mainWindow = createMainWindow();
+	registerMainIpcHandlers();
 
 	if (is.windows) {
 		const jumpToConversationMatch = process.argv.find(argument => /^--jump-to-conversation=\d+$/.test(argument));
@@ -534,13 +541,12 @@ function createMainWindow(): BrowserWindow {
 			app.dock!.show();
 		}
 
-		ipc.once('conversations', () => {
-			// Messenger sorts the conversations by unread state.
-			// We select the first conversation from the list.
-			sendAction('jump-to-conversation', 1);
-		});
+		answerTrustedRenderer<unknown, void>(mainWindow, 'conversations', value => {
+			if (!isConversationList(value)) {
+				invalidIpcPayload('conversations');
+			}
 
-		ipc.answerRenderer('conversations', (conversations: Conversation[]) => {
+			const conversations = value;
 			if (conversations.length === 0) {
 				return;
 			}
@@ -559,7 +565,12 @@ function createMainWindow(): BrowserWindow {
 	}
 
 	if (is.windows) {
-		ipc.answerRenderer('conversations', (conversations: Conversation[]) => {
+		answerTrustedRenderer<unknown, void>(mainWindow, 'conversations', value => {
+			if (!isConversationList(value)) {
+				invalidIpcPayload('conversations');
+			}
+
+			const conversations = value;
 			if (conversations.length === 0) {
 				app.setJumpList([]);
 				return;
@@ -587,13 +598,21 @@ function createMainWindow(): BrowserWindow {
 	}
 
 	// Update badge on conversations change
-	ipc.answerRenderer('update-tray-icon', async (messageCount: number) => {
-		updateBadge(messageCount);
+	answerTrustedRenderer<unknown, void>(mainWindow, 'update-tray-icon', async value => {
+		if (!isMessageCount(value)) {
+			invalidIpcPayload('update-tray-icon');
+		}
+
+		await updateBadge(value);
 	});
 
 	// Update titlebar on unread count change
-	ipc.answerRenderer('update-titlebar-count', (messageCount: number) => {
-		updateTitlebar(messageCount);
+	answerTrustedRenderer<unknown, void>(mainWindow, 'update-titlebar-count', value => {
+		if (!isMessageCount(value)) {
+			invalidIpcPayload('update-titlebar-count');
+		}
+
+		updateTitlebar(value);
 	});
 
 	enableHiresResources();
@@ -639,7 +658,12 @@ function createMainWindow(): BrowserWindow {
 
 		if (is.macos) {
 			// TODO: 'update-dnd-mode' is not called
-			ipc.answerRenderer('update-dnd-mode', async (initialSoundsValue: boolean) => {
+			answerTrustedRenderer<unknown, boolean>(mainWindow, 'update-dnd-mode', async value => {
+				if (typeof value !== 'boolean') {
+					invalidIpcPayload('update-dnd-mode');
+				}
+
+				const initialSoundsValue = value;
 				doNotDisturb.on('change', (doNotDisturb: boolean) => {
 					isDNDEnabled = doNotDisturb;
 					ipc.callRenderer(mainWindow, 'toggle-sounds', {checked: isDNDEnabled ? false : initialSoundsValue});
@@ -669,6 +693,7 @@ function createMainWindow(): BrowserWindow {
 			&& details.frameName !== 'about:blank'
 		) {
 			// Voice/video call popup
+			// Its preload does not call the main process, so privileged IPC remains scoped to the Messenger window.
 			return {
 				action: 'allow',
 				overrideBrowserWindowOptions: {
@@ -755,13 +780,6 @@ function createMainWindow(): BrowserWindow {
 	});
 })();
 
-if (is.macos) {
-	ipc.answerRenderer('set-vibrancy', () => {
-		mainWindow.setBackgroundColor('#80FFFFFF'); // Transparent, workaround for vibrancy issue.
-		mainWindow.setVibrancy('sidebar');
-	});
-}
-
 function toggleMaximized(): void {
 	if (mainWindow.isMaximized()) {
 		mainWindow.unmaximize();
@@ -769,55 +787,6 @@ function toggleMaximized(): void {
 		mainWindow.maximize();
 	}
 }
-
-ipc.answerRenderer('titlebar-doubleclick', () => {
-	if (is.macos) {
-		const doubleClickAction = systemPreferences.getUserDefault('AppleActionOnDoubleClick', 'string');
-
-		if (doubleClickAction === 'Minimize') {
-			mainWindow.minimize();
-		} else if (doubleClickAction === 'Maximize') {
-			toggleMaximized();
-		}
-	} else {
-		toggleMaximized();
-	}
-});
-
-ipc.answerRenderer('open-external', async (url: unknown) => {
-	await openExternalUrl(url);
-});
-
-ipc.answerRenderer('navigate-to-chats', () => {
-	mainWindow.webContents.loadURL('https://www.facebook.com/messages/');
-});
-
-ipc.answerRenderer('save-blob-file', async (request: unknown) => {
-	if (
-		typeof request !== 'object'
-		|| request === null
-		|| !('data' in request)
-		|| !('filename' in request)
-		|| !(request.data instanceof ArrayBuffer)
-		|| typeof request.filename !== 'string'
-	) {
-		return;
-	}
-
-	const {data, filename: requestedFilename} = request;
-	const filename = path.basename(requestedFilename.trim()).slice(0, 255) || 'download';
-	const downloadsDirectory = app.getPath('downloads');
-	let savePath = path.join(downloadsDirectory, filename);
-	let counter = 1;
-	const {name, ext} = path.parse(filename);
-	while (existsSync(savePath)) {
-		savePath = path.join(downloadsDirectory, `${name} (${counter})${ext}`);
-		counter++;
-	}
-
-	await fs.writeFile(savePath, Buffer.from(data));
-	shell.showItemInFolder(savePath);
-});
 
 app.on('activate', () => {
 	if (mainWindow) {
@@ -849,11 +818,95 @@ if (is.linux) {
 	});
 }
 
-const notifications = new Map();
+const MAX_ACTIVE_NOTIFICATIONS = 100;
+const MAX_DOWNLOAD_NAME_ATTEMPTS = 10_000;
+const notifications = new Map<number, Notification>();
 
-ipc.answerRenderer(
-	'notification',
-	({id, title, body, icon, silent}: {id: number; title: string; body: string; icon: string; silent: boolean}) => {
+function registerMainIpcHandlers(): void {
+	const answerNoPayload = <ReturnType>(channel: string, callback: () => ReturnType | PromiseLike<ReturnType>): void => {
+		answerTrustedRenderer<unknown, ReturnType>(mainWindow, channel, value => {
+			requireNoIpcPayload(channel, value);
+			return callback();
+		});
+	};
+
+	if (is.macos) {
+		answerNoPayload('set-vibrancy', () => {
+			mainWindow.setBackgroundColor('#80FFFFFF'); // Transparent, workaround for vibrancy issue.
+			mainWindow.setVibrancy('sidebar');
+		});
+	}
+
+	answerNoPayload('titlebar-doubleclick', () => {
+		if (is.macos) {
+			const doubleClickAction = systemPreferences.getUserDefault('AppleActionOnDoubleClick', 'string');
+
+			if (doubleClickAction === 'Minimize') {
+				mainWindow.minimize();
+			} else if (doubleClickAction === 'Maximize') {
+				toggleMaximized();
+			}
+		} else {
+			toggleMaximized();
+		}
+	});
+
+	answerTrustedRenderer<unknown, void>(mainWindow, 'open-external', async value => {
+		const url = externalUrl(value);
+		if (!url) {
+			invalidIpcPayload('open-external');
+		}
+
+		await shell.openExternal(url);
+	});
+
+	answerNoPayload('navigate-to-chats', () => {
+		mainWindow.webContents.loadURL('https://www.facebook.com/messages/');
+	});
+
+	answerTrustedRenderer<unknown, void>(mainWindow, 'save-blob-file', async value => {
+		if (!isDownloadRequest(value)) {
+			invalidIpcPayload('save-blob-file');
+		}
+
+		const filename = downloadFilename(value.filename);
+		const downloadsDirectory = path.resolve(app.getPath('downloads'));
+		const {name, ext} = path.parse(filename);
+		let savePath: string | undefined;
+
+		for (let counter = 0; counter < MAX_DOWNLOAD_NAME_ATTEMPTS; counter++) {
+			const candidate = counter === 0 ? filename : `${name} (${counter})${ext}`;
+			const candidatePath = path.resolve(downloadsDirectory, candidate);
+			if (path.dirname(candidatePath) !== downloadsDirectory) {
+				invalidIpcPayload('save-blob-file');
+			}
+
+			try {
+				// Retrying sequentially is required to preserve exclusive creation without a check/write race.
+				// eslint-disable-next-line no-await-in-loop
+				await fs.writeFile(candidatePath, Buffer.from(value.data), {flag: 'wx'});
+				savePath = candidatePath;
+				break;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+					throw error;
+				}
+			}
+		}
+
+		if (!savePath) {
+			throw new Error('Could not allocate a unique Downloads filename');
+		}
+
+		shell.showItemInFolder(savePath);
+	});
+
+	answerTrustedRenderer<unknown, void>(mainWindow, 'notification', value => {
+		if (!isNotificationRequest(value)) {
+			invalidIpcPayload('notification');
+		}
+
+		const {id, title, body = '', icon, silent} = value;
 		// Don't send notifications when the window is focused
 		if (mainWindow.isFocused()) {
 			return;
@@ -861,7 +914,7 @@ ipc.answerRenderer(
 
 		// Close existing notification with the same ID if present (prevents duplicates on GNOME/Linux)
 		if (notifications.has(id)) {
-			notifications.get(id).close();
+			notifications.get(id)!.close();
 			notifications.delete(id);
 		}
 
@@ -870,11 +923,20 @@ ipc.answerRenderer(
 			return;
 		}
 
+		if (!notifications.has(id) && notifications.size >= MAX_ACTIVE_NOTIFICATIONS) {
+			throw new Error('Too many active notifications');
+		}
+
+		const notificationIcon = nativeImage.createFromDataURL(icon);
+		if (notificationIcon.isEmpty()) {
+			invalidIpcPayload('notification');
+		}
+
 		const notification = new Notification({
 			title,
 			body: config.get('notificationMessagePreview') ? body : 'You have a new message',
 			hasReply: true,
-			icon: nativeImage.createFromDataURL(icon),
+			icon: notificationIcon,
 			silent: silent || is.linux || is.macos,
 		});
 
@@ -917,28 +979,40 @@ ipc.answerRenderer(
 		}
 
 		notification.show();
-	},
-);
+	});
 
-ipc.answerRenderer<undefined, StoreType['useWorkChat']>('get-config-useWorkChat', async () => config.get('useWorkChat'));
-ipc.answerRenderer<undefined, StoreType['showMessageButtons']>('get-config-showMessageButtons', async () => config.get('showMessageButtons'));
-ipc.answerRenderer<undefined, boolean>('get-native-theme-state', async () => {
-	nativeTheme.themeSource = config.get('theme');
-	return nativeTheme.shouldUseDarkColors;
-});
-ipc.answerRenderer<undefined, StoreType['privateMode']>('get-config-privateMode', async () => config.get('privateMode'));
-ipc.answerRenderer<undefined, StoreType['vibrancy']>('get-config-vibrancy', async () => config.get('vibrancy'));
-ipc.answerRenderer<undefined, StoreType['sidebar']>('get-config-sidebar', async () => config.get('sidebar'));
-ipc.answerRenderer<undefined, StoreType['zoomFactor']>('get-config-zoomFactor', async () => config.get('zoomFactor'));
-ipc.answerRenderer<StoreType['zoomFactor'], void>('set-config-zoomFactor', async zoomFactor => {
-	config.set('zoomFactor', zoomFactor);
-});
-ipc.answerRenderer<undefined, StoreType['keepMeSignedIn']>('get-config-keepMeSignedIn', async () => config.get('keepMeSignedIn'));
-ipc.answerRenderer<StoreType['keepMeSignedIn'], void>('set-config-keepMeSignedIn', async keepMeSignedIn => {
-	config.set('keepMeSignedIn', keepMeSignedIn);
-});
-ipc.answerRenderer<undefined, StoreType['autoplayVideos']>('get-config-autoplayVideos', async () => config.get('autoplayVideos'));
-ipc.answerRenderer<undefined, StoreType['emojiStyle']>('get-config-emojiStyle', async () => config.get('emojiStyle'));
-ipc.answerRenderer<StoreType['emojiStyle'], void>('set-config-emojiStyle', async emojiStyle => {
-	config.set('emojiStyle', emojiStyle);
-});
+	answerNoPayload<StoreType['useWorkChat']>('get-config-useWorkChat', () => config.get('useWorkChat'));
+	answerNoPayload<StoreType['showMessageButtons']>('get-config-showMessageButtons', () => config.get('showMessageButtons'));
+	answerNoPayload<boolean>('get-native-theme-state', () => {
+		nativeTheme.themeSource = config.get('theme');
+		return nativeTheme.shouldUseDarkColors;
+	});
+	answerNoPayload<StoreType['privateMode']>('get-config-privateMode', () => config.get('privateMode'));
+	answerNoPayload<StoreType['vibrancy']>('get-config-vibrancy', () => config.get('vibrancy'));
+	answerNoPayload<StoreType['sidebar']>('get-config-sidebar', () => config.get('sidebar'));
+	answerNoPayload<StoreType['zoomFactor']>('get-config-zoomFactor', () => config.get('zoomFactor'));
+	answerTrustedRenderer<unknown, void>(mainWindow, 'set-config-zoomFactor', value => {
+		if (!isZoomFactor(value)) {
+			invalidIpcPayload('set-config-zoomFactor');
+		}
+
+		config.set('zoomFactor', value);
+	});
+	answerNoPayload<StoreType['keepMeSignedIn']>('get-config-keepMeSignedIn', () => config.get('keepMeSignedIn'));
+	answerTrustedRenderer<unknown, void>(mainWindow, 'set-config-keepMeSignedIn', value => {
+		if (typeof value !== 'boolean') {
+			invalidIpcPayload('set-config-keepMeSignedIn');
+		}
+
+		config.set('keepMeSignedIn', value);
+	});
+	answerNoPayload<StoreType['autoplayVideos']>('get-config-autoplayVideos', () => config.get('autoplayVideos'));
+	answerNoPayload<StoreType['emojiStyle']>('get-config-emojiStyle', () => config.get('emojiStyle'));
+	answerTrustedRenderer<unknown, void>(mainWindow, 'set-config-emojiStyle', value => {
+		if (!isEmojiStyle(value)) {
+			invalidIpcPayload('set-config-emojiStyle');
+		}
+
+		config.set('emojiStyle', value);
+	});
+}
