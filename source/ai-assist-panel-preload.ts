@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 	close: async () => sendCommand({type: 'close'}),
 	deleteApiKey: async () => sendCommand({type: 'delete-api-key'}),
 	getState: async () => sendCommand({type: 'get-state'}),
+	refreshConversation: async () => sendCommand({type: 'refresh-conversation'}),
 	saveApiKey: async (apiKey: string) => sendCommand({type: 'save-api-key', apiKey}),
 	submitPrompt: async (prompt: string) => sendCommand({type: 'submit-prompt', prompt}),
 	testApiKey: async () => sendCommand({type: 'test-api-key'}),

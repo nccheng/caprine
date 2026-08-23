@@ -1,7 +1,12 @@
 import {
 	aiSessionInvalidationReasons,
 	AiSessionState,
+	ConversationBindingState,
 } from './ai-assist-state';
+import {
+	conversationIdentityFailureReasons,
+	ConversationIdentityFailureReason,
+} from './conversation-identity';
 import {
 	openAiAnswerCharacterLimit,
 	openAiErrorCodes,
@@ -17,6 +22,7 @@ export const aiAssistIpcChannels = {
 } as const;
 
 export type AiAssistPanelState = {
+	conversation: ConversationBindingState;
 	credentials: {
 		configured: boolean;
 		secureStorageAvailable: boolean;
@@ -38,18 +44,29 @@ export type AiAssistPanelCommand =
 	| {type: 'close'}
 	| {type: 'delete-api-key'}
 	| {type: 'get-state'}
+	| {type: 'refresh-conversation'}
 	| {type: 'save-api-key'; apiKey: string}
 	| {type: 'submit-prompt'; prompt: string}
 	| {type: 'test-api-key'};
 
-export type AiAssistMessengerCommand = {
-	enabled: boolean;
-	type: 'set-enabled';
-};
+export type AiAssistMessengerCommand =
+	| {enabled: boolean; type: 'set-enabled'}
+	| {requestId?: string; type: 'report-conversation'};
 
-export type AiAssistMessengerEvent = {
-	type: 'conversation-route-changed';
-};
+export type AiAssistMessengerEvent =
+	| {
+		conversationId: string;
+		displayName?: string;
+		requestId?: string;
+		status: 'available';
+		type: 'conversation-state';
+	}
+	| {
+		reason: ConversationIdentityFailureReason;
+		requestId?: string;
+		status: 'unavailable';
+		type: 'conversation-state';
+	};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null;
@@ -65,7 +82,7 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 		return false;
 	}
 
-	if (['cancel', 'close', 'delete-api-key', 'get-state', 'test-api-key'].includes(value.type)) {
+	if (['cancel', 'close', 'delete-api-key', 'get-state', 'refresh-conversation', 'test-api-key'].includes(value.type)) {
 		return hasExactKeys(value, ['type']);
 	}
 
@@ -95,6 +112,23 @@ function isRequestError(value: unknown): boolean {
 		&& hasExactKeys(value, ['code', 'message'])
 		&& openAiErrorCodes.includes(value.code as never)
 		&& typeof value.message === 'string';
+}
+
+function isConversationState(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const expectedKeys = ['captureGeneration', 'status'];
+	if (value.displayName !== undefined) {
+		expectedKeys.push('displayName');
+	}
+
+	return hasExactKeys(value, expectedKeys)
+		&& Number.isSafeInteger(value.captureGeneration)
+		&& (value.captureGeneration as number) >= 0
+		&& ['changed', 'ready', 'unavailable'].includes(value.status as string)
+		&& (value.displayName === undefined || (typeof value.displayName === 'string' && value.displayName.length <= 200));
 }
 
 function isRequestState(value: unknown): boolean {
@@ -149,7 +183,8 @@ function isSessionState(value: unknown): boolean {
 
 export function isAiAssistPanelState(value: unknown): value is AiAssistPanelState {
 	return isRecord(value)
-		&& hasExactKeys(value, ['credentials', 'enabled', 'request', 'session'])
+		&& hasExactKeys(value, ['conversation', 'credentials', 'enabled', 'request', 'session'])
+		&& isConversationState(value.conversation)
 		&& isCredentialsState(value.credentials)
 		&& typeof value.enabled === 'boolean'
 		&& isRequestState(value.request)
@@ -157,14 +192,58 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 }
 
 export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMessengerCommand {
-	return isRecord(value)
+	if (!isRecord(value) || typeof value.type !== 'string') {
+		return false;
+	}
+
+	if (value.type === 'report-conversation') {
+		const expectedKeys = ['type'];
+		if (value.requestId !== undefined) {
+			expectedKeys.push('requestId');
+		}
+
+		return hasExactKeys(value, expectedKeys)
+			&& (value.requestId === undefined || isConversationRequestId(value.requestId));
+	}
+
+	return value.type === 'set-enabled'
 		&& hasExactKeys(value, ['enabled', 'type'])
-		&& value.type === 'set-enabled'
 		&& typeof value.enabled === 'boolean';
 }
 
 export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMessengerEvent {
-	return isRecord(value)
-		&& hasExactKeys(value, ['type'])
-		&& value.type === 'conversation-route-changed';
+	if (!isRecord(value) || value.type !== 'conversation-state') {
+		return false;
+	}
+
+	if (value.status === 'unavailable') {
+		const expectedKeys = ['reason', 'status', 'type'];
+		if (value.requestId !== undefined) {
+			expectedKeys.push('requestId');
+		}
+
+		return hasExactKeys(value, expectedKeys)
+			&& (value.requestId === undefined || isConversationRequestId(value.requestId))
+			&& conversationIdentityFailureReasons.includes(value.reason as never);
+	}
+
+	const expectedKeys = ['conversationId', 'status', 'type'];
+	if (value.displayName !== undefined) {
+		expectedKeys.push('displayName');
+	}
+
+	if (value.requestId !== undefined) {
+		expectedKeys.push('requestId');
+	}
+
+	return value.status === 'available'
+		&& hasExactKeys(value, expectedKeys)
+		&& typeof value.conversationId === 'string'
+		&& /^messenger-thread:[\w.:-]{1,200}$/.test(value.conversationId)
+		&& (value.requestId === undefined || isConversationRequestId(value.requestId))
+		&& (value.displayName === undefined || (typeof value.displayName === 'string' && value.displayName.length <= 200));
+}
+
+function isConversationRequestId(value: unknown): value is string {
+	return typeof value === 'string' && /^conversation-report-\d{1,12}$/.test(value);
 }

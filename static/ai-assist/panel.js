@@ -5,6 +5,7 @@ const keyStatus = document.querySelector('#key-status');
 const saveKeyButton = document.querySelector('#save-key-button');
 const testKeyButton = document.querySelector('#test-key-button');
 const deleteKeyButton = document.querySelector('#delete-key-button');
+const refreshConversationButton = document.querySelector('#refresh-conversation-button');
 const promptForm = document.querySelector('#prompt-form');
 const promptInput = document.querySelector('#prompt');
 const askButton = document.querySelector('#ask-button');
@@ -13,17 +14,19 @@ const requestMessage = document.querySelector('#request-message');
 const answerOutput = document.querySelector('#answer-output');
 const closeButton = document.querySelector('#close-button');
 
-const statusLabels = {
-	cancelled: 'Request cancelled. Messenger remains available.',
-	closed: 'Local session closed.',
-	invalidated: 'Messenger changed. Reopen AI Assist to start a fresh session.',
-	open: 'Local session ready. Nothing has left Messenger.',
-	requesting: 'Request in progress…',
-};
-
 function render(state) {
 	const isRequesting = state.session.status === 'requesting';
-	statusElement.textContent = statusLabels[state.session.status] ?? 'AI Assist unavailable.';
+	const isConversationReady = state.conversation.status === 'ready';
+	if (state.conversation.status === 'changed') {
+		statusElement.textContent = 'Conversation changed — refresh context.';
+	} else if (isConversationReady) {
+		statusElement.textContent = state.conversation.displayName
+			? `Ready for ${state.conversation.displayName}. Nothing has left Messenger.`
+			: 'Conversation ready. Nothing has left Messenger.';
+	} else {
+		statusElement.textContent = 'No reliable Messenger conversation is active. AI actions are disabled.';
+	}
+
 	if (state.credentials.secureStorageAvailable) {
 		keyStatus.textContent = state.credentials.configured
 			? 'An OpenAI API key is encrypted with macOS secure storage.'
@@ -34,10 +37,11 @@ function render(state) {
 
 	apiKeyInput.disabled = isRequesting || !state.credentials.secureStorageAvailable;
 	saveKeyButton.disabled = isRequesting || !state.credentials.secureStorageAvailable;
-	testKeyButton.disabled = isRequesting || !state.credentials.configured || state.session.status === 'invalidated';
+	testKeyButton.disabled = isRequesting || !state.credentials.configured || !isConversationReady;
 	deleteKeyButton.disabled = isRequesting || !state.credentials.configured;
-	promptInput.disabled = isRequesting;
-	askButton.disabled = isRequesting || !state.credentials.configured || state.session.status === 'invalidated';
+	refreshConversationButton.disabled = isRequesting || isConversationReady;
+	promptInput.disabled = isRequesting || !isConversationReady;
+	askButton.disabled = isRequesting || !state.credentials.configured || !isConversationReady;
 	cancelButton.disabled = !isRequesting;
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));
@@ -61,6 +65,10 @@ testKeyButton.addEventListener('click', async () => {
 
 deleteKeyButton.addEventListener('click', async () => {
 	render(await window.caprineAiAssist.deleteApiKey());
+});
+
+refreshConversationButton.addEventListener('click', async () => {
+	render(await window.caprineAiAssist.refreshConversation());
 });
 
 promptForm.addEventListener('submit', async event => {

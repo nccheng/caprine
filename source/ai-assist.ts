@@ -16,6 +16,7 @@ import {
 	isAiAssistPanelCommand,
 } from './ai-assist-ipc';
 import {
+	AiConversationBinding,
 	AiAssistSessionStateMachine,
 	AiSessionInvalidationReason,
 } from './ai-assist-state';
@@ -35,9 +36,12 @@ class AiAssistController {
 	};
 
 	private answer?: string;
+	private readonly conversationBinding = new AiConversationBinding();
+	private conversationReportCounter = 0;
 	private error?: {code: OpenAiErrorCode; message: string};
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
+	private readonly pendingConversationReports = new Map<string, (reported: boolean) => void>();
 	private requestCounter = 0;
 	private readonly sessionState = new AiAssistSessionStateMachine();
 	private panelUrl?: string;
@@ -64,6 +68,7 @@ class AiAssistController {
 		}
 
 		return {
+			conversation: this.conversationBinding.panelState,
 			credentials: {
 				configured: this.hasApiKey,
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
@@ -101,8 +106,8 @@ class AiAssistController {
 			return;
 		}
 
-		this.sessionState.open();
 		this.panelWindow = this.createPanelWindow();
+		void this.refreshConversation();
 		this.broadcastState();
 	}
 
@@ -144,6 +149,11 @@ class AiAssistController {
 				break;
 			}
 
+			case 'refresh-conversation': {
+				await this.refreshConversation();
+				break;
+			}
+
 			case 'test-api-key': {
 				await this.runOpenAiRequest('Reply with exactly: OK', true);
 				break;
@@ -165,7 +175,29 @@ class AiAssistController {
 			return;
 		}
 
-		this.invalidate('conversation-changed');
+		if (value.status === 'available') {
+			const shouldInvalidate = this.conversationBinding.reportAvailable(
+				value.conversationId,
+				value.displayName,
+			);
+			if (shouldInvalidate) {
+				this.invalidate('conversation-changed', false);
+			} else {
+				this.broadcastState();
+			}
+
+			this.resolveConversationReport(value.requestId);
+			return;
+		}
+
+		const shouldInvalidate = this.conversationBinding.reportUnavailable();
+		if (shouldInvalidate) {
+			this.invalidate('conversation-unavailable', false);
+		} else {
+			this.broadcastState();
+		}
+
+		this.resolveConversationReport(value.requestId);
 	};
 
 	private bindMessengerLifecycle(): void {
@@ -180,6 +212,7 @@ class AiAssistController {
 		webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
 			if (isMainFrame) {
 				this.invalidate('conversation-changed');
+				this.notifyMessenger({type: 'report-conversation'});
 			}
 		});
 
@@ -256,9 +289,13 @@ class AiAssistController {
 		panel.on('closed', () => {
 			if (this.panelWindow === panel) {
 				this.cancelActiveRequest();
+				this.conversationBinding.close();
+				if (this.sessionState.snapshot.status !== 'invalidated') {
+					this.sessionState.invalidate('panel-closed');
+				}
+
 				this.panelWindow = undefined;
 				this.panelUrl = undefined;
-				this.sessionState.close();
 			}
 		});
 
@@ -286,10 +323,71 @@ class AiAssistController {
 			&& isTrustedMessengerOrigin(event.senderFrame.origin);
 	}
 
-	private invalidate(reason: AiSessionInvalidationReason): void {
+	private invalidate(reason: AiSessionInvalidationReason, invalidateConversation = true): void {
 		this.cancelActiveRequest();
+		if (invalidateConversation) {
+			this.conversationBinding.invalidate();
+		}
+
 		this.sessionState.invalidate(reason);
 		this.broadcastState();
+	}
+
+	private bindCurrentConversation(): void {
+		const {sessionId} = this.sessionState.snapshot;
+		if (
+			!sessionId
+			|| !this.conversationBinding.bind(sessionId, this.messengerWindow.webContents.id)
+		) {
+			this.sessionState.invalidate('conversation-unavailable');
+		}
+	}
+
+	private async refreshConversation(): Promise<void> {
+		if (!await this.requestConversationState()) {
+			this.conversationBinding.reportUnavailable();
+			this.invalidate('conversation-unavailable', false);
+			return;
+		}
+
+		this.cancelActiveRequest();
+		this.answer = undefined;
+		this.error = undefined;
+		this.notice = undefined;
+		this.sessionState.open();
+		this.bindCurrentConversation();
+		this.broadcastState();
+	}
+
+	private async requestConversationState(): Promise<boolean> {
+		if (this.messengerWindow.isDestroyed() || this.messengerWindow.webContents.isDestroyed()) {
+			return false;
+		}
+
+		const requestId = `conversation-report-${++this.conversationReportCounter}`;
+		return new Promise(resolve => {
+			const timeout = setTimeout(() => {
+				this.pendingConversationReports.delete(requestId);
+				resolve(false);
+			}, 1500);
+			this.pendingConversationReports.set(requestId, reported => {
+				clearTimeout(timeout);
+				resolve(reported);
+			});
+			this.notifyMessenger({requestId, type: 'report-conversation'});
+		});
+	}
+
+	private resolveConversationReport(requestId: string | undefined): void {
+		if (!requestId) {
+			return;
+		}
+
+		const resolve = this.pendingConversationReports.get(requestId);
+		if (resolve) {
+			this.pendingConversationReports.delete(requestId);
+			resolve(true);
+		}
 	}
 
 	private saveApiKey(apiKey: string): void {
@@ -335,10 +433,22 @@ class AiAssistController {
 	}
 
 	private async runOpenAiRequest(prompt: string, isConnectionTest: boolean): Promise<void> {
-		if (this.sessionState.snapshot.status === 'closed' || this.sessionState.snapshot.status === 'invalidated') {
+		if (!await this.requestConversationState()) {
+			this.conversationBinding.reportUnavailable();
+			this.invalidate('conversation-unavailable', false);
+		}
+
+		const conversationSnapshot = this.conversationBinding.currentSnapshot;
+		if (
+			this.sessionState.snapshot.status === 'closed'
+			|| this.sessionState.snapshot.status === 'invalidated'
+			|| !this.conversationBinding.isCurrent(conversationSnapshot)
+			|| conversationSnapshot?.messengerWebContentsId !== this.messengerWindow.webContents.id
+			|| conversationSnapshot?.sessionId !== this.sessionState.snapshot.sessionId
+		) {
 			this.error = {
 				code: 'provider-unavailable',
-				message: 'Reopen AI Assist to start a fresh private session.',
+				message: 'Conversation changed — refresh context before asking AI.',
 			};
 			this.broadcastState();
 			return;
