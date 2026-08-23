@@ -1,10 +1,14 @@
-import {webFrame} from 'electron';
+import {ipcRenderer as electronIpcRenderer, webFrame} from 'electron';
 import {ipcRenderer as ipc} from 'electron-better-ipc';
 import elementReady from 'element-ready';
 import selectors from './browser/selectors';
 import {toggleVideoAutoplay} from './autoplay';
 import {sendConversationList} from './browser/conversation-list';
 import {IToggleSounds, IToggleMuteNotifications} from './types';
+import {
+	aiAssistIpcChannels,
+	isAiAssistMessengerCommand,
+} from './ai-assist-ipc';
 
 // Sandboxed preloads receive Electron's limited process global but cannot load node:process.
 const {platform} = process; // eslint-disable-line n/prefer-global/process
@@ -15,6 +19,24 @@ const is = {
 };
 
 let shouldUseDarkColors = false;
+let isAiAssistEnabled = false;
+
+electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unknown) => {
+	if (isAiAssistMessengerCommand(value)) {
+		isAiAssistEnabled = value.enabled;
+	}
+});
+
+const notifyConversationRouteChanged = (): void => {
+	if (isAiAssistEnabled) {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			type: 'conversation-route-changed',
+		});
+	}
+};
+
+window.addEventListener('hashchange', notifyConversationRouteChanged);
+window.addEventListener('popstate', notifyConversationRouteChanged);
 
 // Inject scrollbar-hiding CSS immediately in preload to prevent white flash
 webFrame.insertCSS('html::-webkit-scrollbar { display: none !important; }');

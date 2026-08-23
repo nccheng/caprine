@@ -28,6 +28,7 @@ import {
 import {generateSubmenu as generateEmojiSubmenu} from './emoji';
 import {toggleMenuBarMode} from './menu-bar-mode';
 import {caprineIconPath} from './constants';
+import {openAiAssistPanel, setAiAssistEnabled} from './ai-assist';
 
 export default async function updateMenu(): Promise<Menu> {
 	const newConversationItem: MenuItemConstructorOptions = {
@@ -237,6 +238,20 @@ Press Command/Ctrl+R in Caprine to see your changes.
 	];
 
 	const preferencesSubmenu: MenuItemConstructorOptions[] = [
+		{
+			label: 'Enable AI Assist',
+			type: 'checkbox',
+			visible: is.macos,
+			checked: config.get('aiAssistEnabled'),
+			async click(menuItem) {
+				setAiAssistEnabled(menuItem.checked);
+				await updateMenu();
+			},
+		},
+		{
+			type: 'separator',
+			visible: is.macos,
+		},
 		{
 			/* TODO: Fix privacy features */
 			/* If you want to help, see #1688 */
@@ -749,6 +764,18 @@ ${debugInfo()}`;
 
 	const macosTemplate: MenuItemConstructorOptions[] = [
 		appMenu([
+			{
+				label: 'Open AI Assist…',
+				accelerator: 'CommandOrControl+Shift+A',
+				visible: config.get('aiAssistEnabled'),
+				click() {
+					openAiAssistPanel();
+				},
+			},
+			{
+				type: 'separator',
+				visible: config.get('aiAssistEnabled'),
+			},
 			{
 				label: 'Caprine Preferences',
 				submenu: preferencesSubmenu,
