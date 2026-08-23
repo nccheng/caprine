@@ -67,6 +67,84 @@ section p {
 	line-height: 1.45;
 }
 
+form {
+	margin-top: 12px;
+}
+
+label {
+	display: block;
+	margin-bottom: 6px;
+	font-size: 13px;
+	font-weight: 650;
+}
+
+input,
+textarea {
+	width: 100%;
+	padding: 10px 11px;
+	border: 1px solid #454b59;
+	border-radius: 9px;
+	background: #12151b;
+	color: inherit;
+	font: inherit;
+}
+
+textarea {
+	resize: vertical;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+	outline: 3px solid #aeb7ff;
+	outline-offset: 2px;
+}
+
+.field-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 8px;
+	align-items: start;
+}
+
+.field-row button {
+	margin-top: 0;
+}
+
+.button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.secondary {
+	background: #404657;
+}
+
+.danger {
+	background: #9d3d48;
+}
+
+.request-message {
+	min-height: 20px;
+	margin-top: 10px;
+}
+
+.request-message.error {
+	color: #ffadb5;
+}
+
+pre {
+	min-height: 72px;
+	margin: 12px 0 0;
+	padding: 12px;
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+	border-radius: 9px;
+	background: #12151b;
+	color: #eef0f5;
+	font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
 button {
 	margin-top: 12px;
 	padding: 9px 13px;
@@ -107,6 +185,14 @@ footer {
 	section {
 		border-color: #d9dce5;
 		background: rgb(255 255 255 / 90%);
+	}
+
+	input,
+	textarea,
+	pre {
+		border-color: #c8ccd6;
+		background: #f8f9fc;
+		color: #15171c;
 	}
 
 	.status,

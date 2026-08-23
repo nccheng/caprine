@@ -37,8 +37,16 @@ export class AiAssistSessionStateMachine {
 	}
 
 	beginRequest(): Readonly<AiSessionState> {
-		if (this.state.status === 'open') {
+		if (this.state.status === 'open' || this.state.status === 'cancelled') {
 			this.state = {...this.state, status: 'requesting'};
+		}
+
+		return this.snapshot;
+	}
+
+	completeRequest(): Readonly<AiSessionState> {
+		if (this.state.status === 'requesting') {
+			this.state = {...this.state, status: 'open'};
 		}
 
 		return this.snapshot;
