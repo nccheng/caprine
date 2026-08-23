@@ -1,6 +1,18 @@
 const assert = require('node:assert/strict');
+const {readFileSync} = require('node:fs');
 const test = require('node:test');
-const {AiAssistSessionStateMachine} = require('../dist-js/ai-assist-state.js');
+const vm = require('node:vm');
+const {
+	AiAssistSessionStateMachine,
+	AiConversationBinding,
+	ConversationBoundAnswer,
+	ConversationLifecycle,
+	ConversationReportGate,
+} = require('../dist-js/ai-assist-state.js');
+const {
+	conversationIdFromMessengerUrl,
+	deriveConversationIdentity,
+} = require('../dist-js/conversation-identity.js');
 const {
 	isAiAssistMessengerCommand,
 	isAiAssistMessengerEvent,
@@ -36,12 +48,14 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'open'}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'close', extra: true}), false);
 	assert.equal(isAiAssistPanelState({
+		conversation: {captureGeneration: 2, displayName: 'Derek', status: 'ready'},
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		request: {answer: 'private'},
 		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
 	}), true);
 	assert.equal(isAiAssistPanelState({
+		conversation: {captureGeneration: 2, status: 'ready'},
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		request: {apiKey: 'secret'},
@@ -52,7 +66,223 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: 'Hello'}), true);
 	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: ''}), false);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
+	assert.equal(isAiAssistMessengerCommand({type: 'report-conversation'}), true);
+	assert.equal(isAiAssistMessengerCommand({
+		requestId: 'conversation-report-1',
+		type: 'report-conversation',
+	}), true);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: 'yes'}), false);
-	assert.equal(isAiAssistMessengerEvent({type: 'conversation-route-changed'}), true);
-	assert.equal(isAiAssistMessengerEvent({type: 'conversation-route-changed', url: 'secret'}), false);
+	assert.equal(isAiAssistMessengerEvent({
+		conversationId: 'messenger-thread:123',
+		requestId: 'conversation-report-1',
+		status: 'available',
+		type: 'conversation-state',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		conversationId: 'messenger-thread:123',
+		status: 'available',
+		type: 'conversation-state',
+		url: 'secret',
+	}), false);
+	assert.equal(isAiAssistMessengerEvent({
+		reason: 'no-reliable-identity',
+		status: 'unavailable',
+		type: 'conversation-state',
+	}), true);
+});
+
+test('Messenger identity uses stable route IDs rather than display names', () => {
+	assert.equal(
+		conversationIdFromMessengerUrl('https://www.facebook.com/messages/t/111'),
+		'messenger-thread:111',
+	);
+	assert.equal(
+		conversationIdFromMessengerUrl('https://www.facebook.com/messages/e2ee/t/222/'),
+		'messenger-thread:222',
+	);
+	assert.equal(
+		conversationIdFromMessengerUrl('https://example.com/messages/t/111'),
+		undefined,
+	);
+
+	const first = deriveConversationIdentity('https://www.facebook.com/messages/t/111', [
+		{displayName: 'Alex', href: '/messages/t/111'},
+	]);
+	const second = deriveConversationIdentity('https://www.facebook.com/messages/t/222', [
+		{displayName: 'Alex', href: '/messages/t/222'},
+	]);
+	assert.equal(first.status, 'available');
+	assert.equal(second.status, 'available');
+	assert.notEqual(first.conversationId, second.conversationId);
+});
+
+test('Messenger identity fails closed for ambiguous or missing active threads', () => {
+	assert.deepEqual(
+		deriveConversationIdentity('https://www.facebook.com/messages/t/111', [
+			{displayName: 'Wrong thread', href: '/messages/t/222'},
+		]),
+		{reason: 'ambiguous-identity', status: 'unavailable'},
+	);
+	assert.deepEqual(
+		deriveConversationIdentity('https://www.facebook.com/login', []),
+		{reason: 'no-reliable-identity', status: 'unavailable'},
+	);
+});
+
+test('conversation snapshots never revive after rapid thread switches', () => {
+	const binding = new AiConversationBinding();
+	assert.equal(binding.reportAvailable('messenger-thread:111', 'Alex'), false);
+	const first = binding.bind('ai-session-1', 7);
+	assert.equal(binding.isCurrent(first), true);
+	assert.deepEqual(first, {
+		captureGeneration: 2,
+		conversationId: 'messenger-thread:111',
+		messengerWebContentsId: 7,
+		sessionId: 'ai-session-1',
+	});
+
+	assert.equal(binding.reportAvailable('messenger-thread:222', 'Alex'), true);
+	assert.equal(binding.isCurrent(first), false);
+	assert.equal(binding.currentSnapshot, undefined);
+	assert.equal(binding.panelState.status, 'changed');
+
+	assert.equal(binding.reportAvailable('messenger-thread:111', 'Alex'), true);
+	assert.equal(binding.isCurrent(first), false);
+	assert.equal(binding.panelState.status, 'changed');
+
+	const refreshed = binding.bind('ai-session-2', 7);
+	assert.equal(binding.isCurrent(refreshed), true);
+	assert.notEqual(refreshed.captureGeneration, first.captureGeneration);
+	assert.equal(binding.reportUnavailable(), true);
+	assert.equal(binding.isCurrent(refreshed), false);
+	assert.equal(binding.panelState.status, 'unavailable');
+});
+
+test('stale conversation reports cannot cross reload or panel lifecycle boundaries', () => {
+	const lifecycle = new ConversationLifecycle();
+	const reportStartedBeforeReload = lifecycle.snapshot;
+	assert.equal(lifecycle.isCurrent(reportStartedBeforeReload), true);
+
+	lifecycle.advance();
+	assert.equal(lifecycle.isCurrent(reportStartedBeforeReload), false);
+	const reportStartedAfterReload = lifecycle.snapshot;
+	assert.equal(lifecycle.isCurrent(reportStartedAfterReload), true);
+
+	lifecycle.advance();
+	assert.equal(lifecycle.isCurrent(reportStartedAfterReload), false);
+});
+
+test('conversation-bound answers never cross snapshot boundaries or revive', () => {
+	const binding = new AiConversationBinding();
+	const answer = new ConversationBoundAnswer();
+	binding.reportAvailable('messenger-thread:111', 'Alex');
+	const sessionA = binding.bind('ai-session-1', 7);
+
+	assert.equal(answer.store('Answer for A', sessionA, binding.currentSnapshot), true);
+	assert.equal(answer.read(binding.currentSnapshot), 'Answer for A');
+
+	binding.reportAvailable('messenger-thread:222', 'Alex');
+	assert.equal(answer.read(binding.currentSnapshot), undefined);
+	answer.clear();
+	const sessionB = binding.bind('ai-session-2', 7);
+	assert.equal(answer.read(sessionB), undefined);
+
+	binding.reportAvailable('messenger-thread:111', 'Alex');
+	const newSessionA = binding.bind('ai-session-3', 7);
+	assert.equal(answer.read(newSessionA), undefined);
+
+	binding.reportUnavailable();
+	assert.equal(answer.read(binding.currentSnapshot), undefined);
+	answer.clear();
+	binding.close();
+	binding.reportAvailable('messenger-thread:111', 'Alex');
+	const reopenedA = binding.bind('ai-session-4', 7);
+	assert.equal(answer.read(reopenedA), undefined);
+
+	assert.equal(answer.store('Late answer for A', sessionA, reopenedA), false);
+	assert.equal(answer.read(reopenedA), undefined);
+});
+
+test('conversation reports are rejected until the replacement document is ready', () => {
+	const gate = new ConversationReportGate();
+	assert.equal(gate.acceptsReports, false);
+	gate.markDocumentReady();
+	assert.equal(gate.acceptsReports, true);
+	gate.markNavigationStarted(true);
+	assert.equal(gate.acceptsReports, true);
+	gate.markNavigationStarted();
+	assert.equal(gate.acceptsReports, false);
+	gate.markDocumentReady();
+	assert.equal(gate.acceptsReports, true);
+});
+
+test('panel clears stale prompts and hides stale answers outside ready state', () => {
+	const elements = new Map();
+	const element = id => {
+		if (!elements.has(id)) {
+			const listeners = new Map();
+			elements.set(id, {
+				addEventListener(type, listener) {
+					listeners.set(type, listener);
+				},
+				classList: {toggle() {}},
+				disabled: false,
+				listeners,
+				textContent: '',
+				value: '',
+			});
+		}
+
+		return elements.get(id);
+	};
+
+	let renderState;
+	const context = {
+		document: {querySelector: selector => element(selector.slice(1))},
+		window: {
+			caprineAiAssist: {
+				async cancel() {},
+				async close() {},
+				async deleteApiKey() {},
+				async getState() {
+					return new Promise(() => {});
+				},
+				onStateChanged(callback) {
+					renderState = callback;
+				},
+				async refreshConversation() {},
+				async saveApiKey() {},
+				async submitPrompt() {},
+				async testApiKey() {},
+			},
+		},
+	};
+	vm.runInNewContext(
+		readFileSync('static/ai-assist/panel.js', 'utf8'),
+		context,
+	);
+
+	const state = (status, captureGeneration, request = {}) => ({
+		conversation: {captureGeneration, status},
+		credentials: {configured: true, secureStorageAvailable: true},
+		enabled: true,
+		request,
+		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
+	});
+	renderState(state('ready', 1));
+	const prompt = element('prompt');
+	prompt.value = 'Question for A';
+	prompt.listeners.get('input')();
+
+	renderState(state('changed', 2, {answer: 'Stale answer for A'}));
+	assert.equal(prompt.value, '');
+	assert.equal(element('answer-output').textContent, 'No answer yet.');
+
+	renderState(state('ready', 3));
+	assert.equal(prompt.value, '');
+	assert.equal(element('ask-button').disabled, false);
+	prompt.value = 'Question for B';
+	prompt.listeners.get('input')();
+	renderState(state('ready', 4));
+	assert.equal(prompt.value, '');
 });

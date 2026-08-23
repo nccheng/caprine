@@ -9,6 +9,10 @@ import {
 	aiAssistIpcChannels,
 	isAiAssistMessengerCommand,
 } from './ai-assist-ipc';
+import {
+	ConversationIdentityCandidate,
+	deriveConversationIdentity,
+} from './conversation-identity';
 
 // Sandboxed preloads receive Electron's limited process global but cannot load node:process.
 const {platform} = process; // eslint-disable-line n/prefer-global/process
@@ -20,19 +24,106 @@ const is = {
 
 let shouldUseDarkColors = false;
 let isAiAssistEnabled = false;
+let conversationObserver: MutationObserver | undefined;
+let conversationReportTimer: ReturnType<typeof setTimeout> | undefined;
+
+const selectedThreadSelectors = [
+	'a[aria-current="page"][href*="/messages/"]',
+	'[aria-selected="true"] a[href*="/messages/"]',
+	'[role="row"][aria-selected="true"] a[href*="/messages/"]',
+];
+
+function selectedConversationCandidates(): ConversationIdentityCandidate[] {
+	const anchors = document.querySelectorAll<HTMLAnchorElement>(selectedThreadSelectors.join(','));
+	return [...anchors].map(anchor => {
+		const candidate: ConversationIdentityCandidate = {href: anchor.href};
+		const displayName = anchor.getAttribute('aria-label')
+			?? anchor.getAttribute('title')
+			?? anchor.textContent
+			?? undefined;
+		if (displayName) {
+			candidate.displayName = displayName;
+		}
+
+		return candidate;
+	});
+}
+
+function reportConversationState(requestId?: string): void {
+	if (!isAiAssistEnabled) {
+		return;
+	}
+
+	const state = deriveConversationIdentity(window.location.href, selectedConversationCandidates());
+	const event = {
+		...state,
+		type: 'conversation-state',
+	};
+	electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, requestId
+		? {...event, requestId}
+		: event);
+}
+
+function scheduleConversationStateReport(): void {
+	if (!isAiAssistEnabled || conversationReportTimer) {
+		return;
+	}
+
+	conversationReportTimer = setTimeout(() => {
+		conversationReportTimer = undefined;
+		reportConversationState();
+	}, 50);
+}
+
+function startConversationObserver(): void {
+	if (conversationObserver !== undefined || !document.documentElement) {
+		return;
+	}
+
+	conversationObserver = new MutationObserver(scheduleConversationStateReport);
+	conversationObserver.observe(document.documentElement, {
+		attributeFilter: ['aria-current', 'aria-selected', 'href'],
+		attributes: true,
+		childList: true,
+		subtree: true,
+	});
+}
+
+function stopConversationObserver(): void {
+	conversationObserver?.disconnect();
+	conversationObserver = undefined;
+	if (conversationReportTimer) {
+		clearTimeout(conversationReportTimer);
+		conversationReportTimer = undefined;
+	}
+}
 
 electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unknown) => {
-	if (isAiAssistMessengerCommand(value)) {
-		isAiAssistEnabled = value.enabled;
+	if (!isAiAssistMessengerCommand(value)) {
+		return;
+	}
+
+	if (value.type === 'report-conversation') {
+		if (value.requestId) {
+			reportConversationState(value.requestId);
+		} else {
+			scheduleConversationStateReport();
+		}
+
+		return;
+	}
+
+	isAiAssistEnabled = value.enabled;
+	if (value.enabled) {
+		startConversationObserver();
+		scheduleConversationStateReport();
+	} else {
+		stopConversationObserver();
 	}
 });
 
 const notifyConversationRouteChanged = (): void => {
-	if (isAiAssistEnabled) {
-		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
-			type: 'conversation-route-changed',
-		});
-	}
+	scheduleConversationStateReport();
 };
 
 window.addEventListener('hashchange', notifyConversationRouteChanged);
