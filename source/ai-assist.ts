@@ -167,9 +167,10 @@ class AiAssistController {
 			}
 		});
 		panel.webContents.on('did-fail-load', (_event, errorCode, _description, url) => {
-			if (url === panelUrl) {
+			if (url === panelUrl && !panel.isDestroyed()) {
 				console.error(`AI Assist panel failed to load (${errorCode})`);
 				this.invalidate('panel-failed');
+				panel.destroy();
 			}
 		});
 		panel.webContents.on('dom-ready', () => {
@@ -186,7 +187,13 @@ class AiAssistController {
 			}
 		});
 
-		void panel.loadFile(panelHtmlPath);
+		void panel.loadFile(panelHtmlPath).catch(() => {
+			if (!panel.isDestroyed()) {
+				console.error('AI Assist panel failed to load');
+				this.invalidate('panel-failed');
+				panel.destroy();
+			}
+		});
 		return panel;
 	}
 
