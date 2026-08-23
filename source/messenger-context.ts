@@ -216,6 +216,21 @@ function candidateContentSignature(candidate: MessengerContextCandidate): string
 	});
 }
 
+function semanticDedupeKey(candidate: MessengerContextCandidate): string | undefined {
+	const timestamp = normalizedInline(candidate.timestamp, maximumStringLengths.timestamp);
+	const sender = normalizedInline(candidate.senderDisplayName, maximumStringLengths.displayName)
+		?? candidate.senderRole;
+	const hasContent = [
+		normalizedMultiline(candidate.text, maximumStringLengths.text),
+		normalizedReply(candidate.reply),
+		normalizedLinkPreview(candidate.linkPreview),
+		normalizedAttachments(candidate.attachments),
+	].some(value => value !== undefined);
+	return timestamp && sender && hasContent
+		? `semantic:${candidateContentSignature(candidate)}`
+		: undefined;
+}
+
 function normalizedCandidate(candidate: MessengerContextCandidate): ConversationContextItem {
 	const sender: ConversationContextItem['sender'] = {
 		role: ['incoming', 'outgoing'].includes(candidate.senderRole ?? '')
@@ -295,20 +310,21 @@ export function extractConversationContextCandidates(
 
 	for (const {candidate} of ordered) {
 		const stableId = normalizedMessageId(candidate.stableId);
-		if (!stableId) {
+		const dedupeKey = stableId ? `id:${stableId}` : semanticDedupeKey(candidate);
+		if (!dedupeKey) {
 			result.push(normalizedCandidate(candidate));
 			continue;
 		}
 
 		const signature = candidateContentSignature(candidate);
-		const previous = stableCandidates.get(stableId);
+		const previous = stableCandidates.get(dedupeKey);
 		if (!previous) {
-			stableCandidates.set(stableId, {resultIndex: result.length, signature});
+			stableCandidates.set(dedupeKey, {resultIndex: result.length, signature});
 			result.push(normalizedCandidate(candidate));
 			continue;
 		}
 
-		if (previous.signature !== signature && result[previous.resultIndex]) {
+		if (stableId && previous.signature !== signature && result[previous.resultIndex]) {
 			result[previous.resultIndex] = {
 				confidence: 'low',
 				messageId: stableId,
@@ -328,7 +344,14 @@ function visibleElement(element: Element): boolean {
 function textFromElements(elements: readonly Element[], excludedSelector?: string): string | undefined {
 	const fragments: string[] = [];
 	for (const element of elements) {
-		if (!visibleElement(element) || (excludedSelector && element.closest(excludedSelector))) {
+		const isExcluded = excludedSelector
+			? Boolean(element.closest(excludedSelector) ?? element.querySelector(excludedSelector))
+			: false;
+		if (
+			!visibleElement(element)
+			|| Boolean(element.querySelector(messengerContextSelectors.text))
+			|| isExcluded
+		) {
 			continue;
 		}
 
@@ -342,11 +365,23 @@ function textFromElements(elements: readonly Element[], excludedSelector?: strin
 }
 
 function stableIdFromElement(element: Element): string | undefined {
-	return normalizedMessageId(
-		(element as HTMLElement).dataset.messageId
-		?? (element as HTMLElement).dataset.messageid
-		?? element.id,
-	);
+	const selector = '[data-message-id], [data-messageid], [id]';
+	let stableId: string | undefined;
+	for (const candidate of [element, element.closest(selector), element.querySelector(selector)]) {
+		const identifier = candidate
+			? normalizedMessageId(
+				(candidate as HTMLElement).dataset.messageId
+				?? (candidate as HTMLElement).dataset.messageid
+				?? candidate.id,
+			)
+			: undefined;
+		if (identifier) {
+			stableId = identifier;
+			break;
+		}
+	}
+
+	return stableId;
 }
 
 function senderFromElement(element: Element): Pick<MessengerContextCandidate, 'senderDisplayName' | 'senderRole'> {

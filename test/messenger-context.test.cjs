@@ -2,8 +2,51 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
 	extractConversationContextCandidates,
+	extractLoadedMessengerConversationContext,
 	maximumLoadedConversationContextItems,
+	messengerContextSelectors,
 } = require('../dist-js/messenger-context.js');
+
+class FixtureElement {
+	constructor({attributes = {}, children = {}, closest = [], href, id = '', text = ''} = {}) {
+		this.attributes = attributes;
+		this.children = children;
+		this.closestSelectors = closest;
+		this.dataset = {
+			messageId: attributes['data-message-id'],
+			messageid: attributes['data-messageid'],
+		};
+		this.href = href;
+		this.id = id;
+		this.textContent = text;
+	}
+
+	closest(selector) {
+		return this.closestSelectors.some(value => selector.includes(value)) ? this : undefined;
+	}
+
+	getAttribute(name) {
+		return this.attributes[name] ?? null;
+	}
+
+	querySelector(selector) {
+		return this.querySelectorAll(selector)[0];
+	}
+
+	querySelectorAll(selector) {
+		if (this.children[selector]) {
+			return this.children[selector];
+		}
+
+		for (const [childSelector, children] of Object.entries(this.children)) {
+			if (selector.includes(childSelector)) {
+				return children;
+			}
+		}
+
+		return [];
+	}
+}
 
 test('context fixtures preserve chronological incoming and outgoing multiline text', () => {
 	const result = extractConversationContextCandidates([
@@ -147,4 +190,70 @@ test('context extraction stays bounded to the most recent loaded messages', () =
 	assert.equal(result.length, maximumLoadedConversationContextItems);
 	assert.equal(result[0].text, 'Message 2');
 	assert.equal(result.at(-1).text, `Message ${maximumLoadedConversationContextItems + 1}`);
+});
+
+test('sanitized semantic DOM fixtures exercise traversal and deduplicate virtualized copies', () => {
+	const makeRow = () => {
+		const avatar = new FixtureElement({attributes: {alt: 'Alex'}});
+		const quotedAvatar = new FixtureElement({attributes: {alt: 'Taylor'}});
+		const currentText = new FixtureElement({text: 'Current message'});
+		const reply = new FixtureElement({
+			children: {'img[alt]': [quotedAvatar]},
+			closest: [messengerContextSelectors.reply],
+			text: 'Earlier message',
+		});
+		const wrappingText = new FixtureElement({
+			children: {[messengerContextSelectors.reply]: [reply]},
+			text: 'Earlier message\nCurrent message\n👍 2\nExample page',
+		});
+		const reaction = new FixtureElement({
+			attributes: {'aria-label': '👍 2 reactions'},
+			closest: [messengerContextSelectors.reaction],
+			text: '👍',
+		});
+		const linkTitle = new FixtureElement({text: 'Example page'});
+		const linkDescription = new FixtureElement({text: 'Visible description'});
+		const link = new FixtureElement({
+			children: {'[dir="auto"]': [linkTitle, linkDescription]},
+			href: 'https://example.com/article',
+		});
+		const timestamp = new FixtureElement({attributes: {datetime: '2026-08-23T13:00:00-07:00'}});
+		const photo = new FixtureElement({attributes: {alt: 'Photo'}});
+		return new FixtureElement({
+			children: {
+				'[aria-label]': [reaction],
+				'a[href]': [link],
+				audio: [new FixtureElement()],
+				'img[alt]': [avatar, photo],
+				[messengerContextSelectors.message]: [],
+				[messengerContextSelectors.reaction]: [reaction],
+				[messengerContextSelectors.reply]: [reply],
+				[messengerContextSelectors.text]: [wrappingText, reply, currentText],
+				[messengerContextSelectors.timestamp]: [timestamp],
+			},
+		});
+	};
+
+	const conversation = new FixtureElement({
+		children: {[messengerContextSelectors.message]: [makeRow(), makeRow()]},
+	});
+	const root = new FixtureElement({
+		children: {[messengerContextSelectors.conversation]: [conversation]},
+	});
+	global.window = {location: {href: 'https://www.facebook.com/messages/t/123'}};
+
+	const result = extractLoadedMessengerConversationContext(root);
+
+	assert.equal(result.length, 1);
+	assert.equal(result[0].text, 'Current message');
+	assert.deepEqual(result[0].sender, {displayName: 'Alex', role: 'incoming'});
+	assert.deepEqual(result[0].reply, {quotedSender: 'Taylor', text: 'Earlier message'});
+	assert.deepEqual(result[0].reactions, [{count: 2, emoji: '👍'}]);
+	assert.deepEqual(result[0].linkPreview, {
+		description: 'Visible description',
+		domain: 'example.com',
+		title: 'Example page',
+		url: 'https://example.com/article',
+	});
+	assert.deepEqual(result[0].attachments, [{kind: 'audio'}, {kind: 'image'}]);
 });
