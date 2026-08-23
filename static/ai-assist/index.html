@@ -38,6 +38,19 @@
 				<h2 id="context-heading">Context review</h2>
 				<p>This temporary validation flow sends only the prompt you enter below. No Messenger content is captured or shared.</p>
 				<button id="refresh-conversation-button" class="secondary" type="button">Refresh conversation</button>
+				<p id="media-candidates" class="media-summary">No loaded voice or video messages detected.</p>
+				<form id="media-form">
+					<label for="media-message-id">Logical message ID</label>
+					<div class="field-row media-fields">
+						<input id="media-message-id" name="media-message-id" maxlength="200" pattern="[A-Za-z0-9_.:-]+" required>
+						<select id="media-kind" name="media-kind" aria-label="Media kind">
+							<option value="audio">Voice</option>
+							<option value="video">Video</option>
+						</select>
+						<button id="resolve-media-button" type="submit">Resolve bytes</button>
+					</div>
+				</form>
+				<p id="media-status" class="request-message" role="status">Media bytes have not been requested.</p>
 			</section>
 			<section aria-labelledby="progress-heading">
 				<h2 id="progress-heading">Private prompt</h2>

@@ -1,0 +1,32 @@
+{
+	"dom": {
+		"tag": "div",
+		"attributes": {"role": "main"},
+		"children": [{
+			"tag": "div",
+			"attributes": {"role": "grid"},
+			"children": [{
+				"tag": "div",
+				"attributes": {"data-message-id": "voice-message-101"},
+				"children": [{
+					"tag": "audio",
+					"duration": 13.25,
+					"src": "blob:https://www.facebook.com/voice-fixture"
+				}]
+			}]
+		}]
+	},
+	"expectedCandidate": {
+		"durationSeconds": 13.25,
+		"kind": "audio",
+		"messageId": "voice-message-101"
+	},
+	"expectedResolution": {
+		"durationSeconds": 13.25,
+		"kind": "audio",
+		"messageId": "voice-message-101",
+		"sourceType": "blob",
+		"status": "available",
+		"url": "blob:https://www.facebook.com/voice-fixture"
+	}
+}

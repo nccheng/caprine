@@ -6,6 +6,12 @@ const saveKeyButton = document.querySelector('#save-key-button');
 const testKeyButton = document.querySelector('#test-key-button');
 const deleteKeyButton = document.querySelector('#delete-key-button');
 const refreshConversationButton = document.querySelector('#refresh-conversation-button');
+const mediaCandidates = document.querySelector('#media-candidates');
+const mediaForm = document.querySelector('#media-form');
+const mediaMessageId = document.querySelector('#media-message-id');
+const mediaKind = document.querySelector('#media-kind');
+const resolveMediaButton = document.querySelector('#resolve-media-button');
+const mediaStatus = document.querySelector('#media-status');
 const promptForm = document.querySelector('#prompt-form');
 const promptInput = document.querySelector('#prompt');
 const askButton = document.querySelector('#ask-button');
@@ -30,9 +36,37 @@ function answerForState(state) {
 		: 'No answer yet.';
 }
 
+function mediaStatusForState(state) {
+	const {resolution} = state.media;
+	if (!resolution) {
+		return 'Media bytes have not been requested.';
+	}
+
+	const size = resolution.byteLength === undefined
+		? ''
+		: `, ${resolution.byteLength.toLocaleString()} bytes`;
+	const duration = resolution.durationSeconds === undefined
+		? ''
+		: `, ${resolution.durationSeconds.toFixed(1)} seconds`;
+	if (resolution.status === 'ready') {
+		return `${resolution.kind} bytes ready (${resolution.mimeType}${size}${duration}). They remain temporary and private.`;
+	}
+
+	if (resolution.status === 'resolving') {
+		return `Resolving ${resolution.kind} bytes…`;
+	}
+
+	if (resolution.status === 'unsupported') {
+		return `This ${resolution.kind} uses a segmented or MediaSource player that cannot provide one complete file yet${duration}.`;
+	}
+
+	return `${resolution.kind} bytes are unavailable${duration}.`;
+}
+
 function render(state) {
 	const isRequesting = state.session.status === 'requesting';
 	const isConversationReady = state.conversation.status === 'ready';
+	const isMediaResolving = state.media.resolution?.status === 'resolving';
 	if (shouldClearPrompt(state)) {
 		promptInput.value = '';
 		promptCaptureGeneration = undefined;
@@ -62,9 +96,16 @@ function render(state) {
 	testKeyButton.disabled = isRequesting || !state.credentials.configured || !isConversationReady;
 	deleteKeyButton.disabled = isRequesting || !state.credentials.configured;
 	refreshConversationButton.disabled = isRequesting || isConversationReady;
+	mediaCandidates.textContent = state.media.candidates.length > 0
+		? `Loaded media: ${state.media.candidates.map(candidate => `${candidate.kind} ${candidate.messageId}`).join(', ')}`
+		: 'No loaded voice or video messages detected.';
+	mediaMessageId.disabled = isRequesting || isMediaResolving || !isConversationReady;
+	mediaKind.disabled = isRequesting || isMediaResolving || !isConversationReady;
+	resolveMediaButton.disabled = isRequesting || isMediaResolving || !isConversationReady;
+	mediaStatus.textContent = mediaStatusForState(state);
 	promptInput.disabled = isRequesting || !isConversationReady;
 	askButton.disabled = isRequesting || !state.credentials.configured || !isConversationReady;
-	cancelButton.disabled = !isRequesting;
+	cancelButton.disabled = !isRequesting && !isMediaResolving;
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));
 	answerOutput.textContent = answerForState(state);
@@ -95,6 +136,11 @@ deleteKeyButton.addEventListener('click', async () => {
 
 refreshConversationButton.addEventListener('click', async () => {
 	render(await window.caprineAiAssist.refreshConversation());
+});
+
+mediaForm.addEventListener('submit', async event => {
+	event.preventDefault();
+	render(await window.caprineAiAssist.resolveMedia(mediaMessageId.value, mediaKind.value));
 });
 
 promptForm.addEventListener('submit', async event => {

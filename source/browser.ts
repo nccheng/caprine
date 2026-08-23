@@ -7,12 +7,22 @@ import {sendConversationList} from './browser/conversation-list';
 import {IToggleSounds, IToggleMuteNotifications} from './types';
 import {
 	aiAssistIpcChannels,
+	isAiAssistMessengerEvent,
 	isAiAssistMessengerCommand,
 } from './ai-assist-ipc';
 import {
 	ConversationIdentityCandidate,
 	deriveConversationIdentity,
 } from './conversation-identity';
+import {maximumMediaBytes, MediaKind} from './media-contract';
+import {
+	extractLoadedMessengerMediaCandidates,
+	resolveMessengerMediaDomCandidate,
+} from './messenger-media-dom';
+import {
+	messengerMediaResolverChannel,
+	MessengerMediaResolverRequest,
+} from './media-resolver-ipc';
 
 // Sandboxed preloads receive Electron's limited process global but cannot load node:process.
 const {platform} = process; // eslint-disable-line n/prefer-global/process
@@ -57,6 +67,7 @@ function reportConversationState(requestId?: string): void {
 	const state = deriveConversationIdentity(window.location.href, selectedConversationCandidates());
 	const event = {
 		...state,
+		...(state.status === 'available' ? {mediaCandidates: extractLoadedMessengerMediaCandidates(document)} : {}),
 		type: 'conversation-state',
 	};
 	electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, requestId
@@ -98,6 +109,129 @@ function stopConversationObserver(): void {
 	}
 }
 
+async function readBoundedBlobMedia(url: string, kind: MediaKind): Promise<{buffer: ArrayBuffer; mimeType: string}> {
+	const abortController = new AbortController();
+	const timeout = setTimeout(() => {
+		abortController.abort();
+	}, 30_000);
+	try {
+		const response = await fetch(url, {credentials: 'same-origin', signal: abortController.signal});
+		if (!response.ok || !response.body) {
+			throw new Error('unavailable');
+		}
+
+		const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+		if (!mimeType.startsWith(`${kind}/`)) {
+			throw new TypeError('mime-mismatch');
+		}
+
+		const advertisedLength = Number(response.headers.get('content-length') ?? 0);
+		if (!Number.isSafeInteger(advertisedLength) || advertisedLength < 0 || advertisedLength > maximumMediaBytes[kind]) {
+			throw new RangeError('oversized');
+		}
+
+		const reader = response.body.getReader();
+		const chunks: Uint8Array[] = [];
+		let byteLength = 0;
+		try {
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				// eslint-disable-next-line no-await-in-loop
+				const {done, value} = await reader.read();
+				if (done) {
+					break;
+				}
+
+				byteLength += value.byteLength;
+				if (byteLength > maximumMediaBytes[kind]) {
+					throw new RangeError('oversized');
+				}
+
+				chunks.push(value);
+			}
+		} finally {
+			await reader.cancel().catch(() => undefined);
+		}
+
+		const bytes = new Uint8Array(byteLength);
+		let offset = 0;
+		for (const chunk of chunks) {
+			bytes.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+
+		if (bytes.byteLength === 0) {
+			throw new Error('unavailable');
+		}
+
+		return {buffer: bytes.buffer, mimeType};
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+async function resolveMessengerMedia(requestId: string, messageId: string, kind: MediaKind): Promise<void> {
+	const candidate = resolveMessengerMediaDomCandidate(document, messageId, kind);
+	const {durationSeconds} = candidate;
+	const request = {
+		...(durationSeconds === undefined ? {} : {durationSeconds}),
+		kind,
+		messageId,
+		requestId,
+	};
+	const base = {
+		...request,
+		type: 'media-resolution',
+	} as const;
+	if (candidate.status === 'unavailable') {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {...base, status: 'unavailable'});
+		return;
+	}
+
+	if (candidate.status === 'unsupported') {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			...base,
+			sourceType: 'segmented',
+			status: 'unsupported',
+		});
+		return;
+	}
+
+	try {
+		const resolverRequestBase = {kind, messageId, requestId};
+		let resolverRequest: MessengerMediaResolverRequest;
+		if (candidate.sourceType === 'https') {
+			resolverRequest = {
+				...resolverRequestBase,
+				sourceType: 'https',
+				url: candidate.url!,
+			};
+		} else {
+			const {buffer, mimeType} = await readBoundedBlobMedia(candidate.url!, kind);
+			resolverRequest = {
+				...resolverRequestBase,
+				byteLength: buffer.byteLength,
+				bytes: buffer,
+				mimeType,
+				sourceType: 'blob',
+			};
+		}
+
+		const resolution: unknown = await electronIpcRenderer.invoke(messengerMediaResolverChannel, resolverRequest);
+		if (!isAiAssistMessengerEvent(resolution) || resolution.type !== 'media-resolution') {
+			throw new TypeError('invalid-media-resolution');
+		}
+
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, resolution);
+	} catch {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			...base,
+			sourceType: candidate.sourceType,
+			status: 'unavailable',
+		});
+	}
+}
+
 electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unknown) => {
 	if (!isAiAssistMessengerCommand(value)) {
 		return;
@@ -110,6 +244,11 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 			scheduleConversationStateReport();
 		}
 
+		return;
+	}
+
+	if (value.type === 'resolve-media') {
+		void resolveMessengerMedia(value.requestId, value.messageId, value.kind);
 		return;
 	}
 

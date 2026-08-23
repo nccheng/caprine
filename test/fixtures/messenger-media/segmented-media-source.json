@@ -1,0 +1,38 @@
+{
+	"dom": {
+		"tag": "div",
+		"attributes": {"role": "main"},
+		"children": [{
+			"tag": "div",
+			"attributes": {"role": "grid"},
+			"children": [{
+				"tag": "div",
+				"attributes": {"data-message-id": "video-segmented-303"},
+				"children": [{
+					"tag": "video",
+					"currentSrc": "https://video.xx.fbcdn.net/segmented-fixture.m3u8",
+					"duration": 42,
+					"children": [{
+						"tag": "source",
+						"attributes": {
+							"src": "https://video.xx.fbcdn.net/segmented-fixture.m3u8",
+							"type": "application/vnd.apple.mpegurl"
+						}
+					}]
+				}]
+			}]
+		}]
+	},
+	"expectedCandidate": {
+		"durationSeconds": 42,
+		"kind": "video",
+		"messageId": "video-segmented-303"
+	},
+	"expectedResolution": {
+		"durationSeconds": 42,
+		"kind": "video",
+		"messageId": "video-segmented-303",
+		"sourceType": "segmented",
+		"status": "unsupported"
+	}
+}

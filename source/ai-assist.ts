@@ -1,6 +1,7 @@
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {
+	app,
 	BrowserWindow,
 	IpcMainEvent,
 	IpcMainInvokeEvent,
@@ -11,9 +12,12 @@ import config from './config';
 import {
 	aiAssistIpcChannels,
 	AiAssistMessengerCommand,
+	AiAssistMessengerEvent,
 	AiAssistPanelState,
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
+	MessengerMediaCandidate,
+	MessengerMediaResolution,
 } from './ai-assist-ipc';
 import {
 	AiConversationBinding,
@@ -25,6 +29,15 @@ import {
 	ConversationSnapshot,
 } from './ai-assist-state';
 import {isTrustedMessengerOrigin} from './ipc-validation';
+import {MediaKind} from './media-contract';
+import {
+	MediaDiagnostic,
+	MessengerMediaResolver,
+} from './media-resolver';
+import {
+	isMessengerMediaResolverRequest,
+	messengerMediaResolverChannel,
+} from './media-resolver-ipc';
 import {
 	OpenAiClient,
 	OpenAiErrorCode,
@@ -46,16 +59,39 @@ class AiAssistController {
 	private conversationReportCounter = 0;
 	private readonly conversationReportGate = new ConversationReportGate();
 	private error?: {code: OpenAiErrorCode; message: string};
+	private mediaCandidates: MessengerMediaCandidate[] = [];
+	private mediaRequestCounter = 0;
+	private mediaResolution?: MessengerMediaResolution;
+	private readonly mediaCleanupReady: Promise<void>;
+	private readonly mediaResolver: MessengerMediaResolver;
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
 	private readonly pendingConversationReports = new Map<string, (generation?: number) => void>();
+	private readonly pendingMediaRequests = new Map<string, {
+		abortController: AbortController;
+		durationSeconds?: number;
+		kind: MediaKind;
+		messageId: string;
+		resolve: () => void;
+		snapshot: Readonly<ConversationSnapshot>;
+	}>();
+
 	private requestCounter = 0;
 	private readonly sessionState = new AiAssistSessionStateMachine();
 	private panelUrl?: string;
 	private panelWindow?: BrowserWindow;
 
 	constructor(private readonly messengerWindow: BrowserWindow) {
+		this.mediaResolver = new MessengerMediaResolver(
+			path.join(app.getPath('temp'), 'caprine-ai-assist-media'),
+			async (url, init) => messengerWindow.webContents.session.fetch(url, init),
+			diagnostic => {
+				this.reportMediaDiagnostic(diagnostic);
+			},
+		);
+		this.mediaCleanupReady = this.mediaResolver.cleanupRestartArtifacts().catch(() => undefined);
 		ipcMain.handle(aiAssistIpcChannels.panelCommand, this.handlePanelCommand);
+		ipcMain.handle(messengerMediaResolverChannel, this.handleMessengerMediaResolverRequest);
 		ipcMain.on(aiAssistIpcChannels.messengerEvent, this.handleMessengerEvent);
 		this.bindMessengerLifecycle();
 	}
@@ -82,6 +118,10 @@ class AiAssistController {
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
 			},
 			enabled: config.get('aiAssistEnabled'),
+			media: {
+				candidates: this.mediaCandidates,
+				...(this.mediaResolution ? {resolution: this.mediaResolution} : {}),
+			},
 			request,
 			session: this.sessionState.snapshot,
 		};
@@ -130,6 +170,7 @@ class AiAssistController {
 		switch (value.type) {
 			case 'cancel': {
 				this.cancelActiveRequest();
+				this.cancelMediaResolution();
 				this.sessionState.cancel();
 				this.notice = 'Request cancelled.';
 				this.broadcastState();
@@ -160,6 +201,11 @@ class AiAssistController {
 				break;
 			}
 
+			case 'resolve-media': {
+				await this.resolveMedia(value.messageId, value.kind);
+				break;
+			}
+
 			case 'test-api-key': {
 				await this.runOpenAiRequest('Reply with exactly: OK', true);
 				break;
@@ -185,6 +231,11 @@ class AiAssistController {
 			return;
 		}
 
+		if (value.type === 'media-resolution') {
+			void this.handleMediaResolution(value);
+			return;
+		}
+
 		if (value.requestId && !this.pendingConversationReports.has(value.requestId)) {
 			return;
 		}
@@ -197,6 +248,7 @@ class AiAssistController {
 			if (shouldInvalidate) {
 				this.invalidate('conversation-changed', false, value.requestId);
 			} else {
+				this.mediaCandidates = value.mediaCandidates ?? [];
 				this.broadcastState();
 			}
 
@@ -212,6 +264,59 @@ class AiAssistController {
 		}
 
 		this.resolveConversationReport(value.requestId);
+	};
+
+	private readonly handleMessengerMediaResolverRequest = async (
+		event: IpcMainInvokeEvent,
+		value: unknown,
+	): Promise<Extract<AiAssistMessengerEvent, {type: 'media-resolution'}>> => {
+		if (!this.isExpectedMessengerSender(event) || !isMessengerMediaResolverRequest(value)) {
+			throw new TypeError('Rejected invalid AI Assist media resolver IPC');
+		}
+
+		const pending = this.pendingMediaRequests.get(value.requestId);
+		if (
+			!pending
+			|| pending.kind !== value.kind
+			|| pending.messageId !== value.messageId
+			|| pending.abortController.signal.aborted
+			|| !this.isRequestSnapshotCurrent(pending.snapshot)
+		) {
+			throw new TypeError('Rejected stale AI Assist media resolver IPC');
+		}
+
+		const media = value.sourceType === 'https'
+			? await this.mediaResolver.resolveHttps(
+				value.url!,
+				value.kind,
+				value.messageId,
+				pending.snapshot,
+				pending.durationSeconds,
+				pending.abortController.signal,
+			)
+			: await this.mediaResolver.resolveBlob(
+				value.bytes!,
+				value.mimeType!,
+				value.kind,
+				value.messageId,
+				pending.snapshot,
+				pending.durationSeconds,
+			);
+		if (
+			this.pendingMediaRequests.get(value.requestId) !== pending
+			|| pending.abortController.signal.aborted
+			|| !this.isRequestSnapshotCurrent(pending.snapshot)
+		) {
+			await this.mediaResolver.releaseHandle(media.handleId);
+			throw new TypeError('Rejected stale AI Assist media handle');
+		}
+
+		return {
+			...media,
+			requestId: value.requestId,
+			status: 'available',
+			type: 'media-resolution',
+		};
 	};
 
 	private bindMessengerLifecycle(): void {
@@ -307,6 +412,7 @@ class AiAssistController {
 			if (this.panelWindow === panel) {
 				this.advanceConversationLifecycle();
 				this.clearConversationBoundRequestState();
+				this.clearMediaState();
 				this.conversationBinding.close();
 				if (this.sessionState.snapshot.status !== 'invalidated') {
 					this.sessionState.invalidate('panel-closed');
@@ -335,7 +441,7 @@ class AiAssistController {
 			&& event.senderFrame.url === this.panelUrl;
 	}
 
-	private isExpectedMessengerSender(event: IpcMainEvent): boolean {
+	private isExpectedMessengerSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
 		return event.sender === this.messengerWindow.webContents
 			&& event.senderFrame === this.messengerWindow.webContents.mainFrame
 			&& isTrustedMessengerOrigin(event.senderFrame.origin);
@@ -348,6 +454,7 @@ class AiAssistController {
 	): void {
 		this.advanceConversationLifecycle(preserveConversationReportId);
 		this.clearConversationBoundRequestState();
+		this.clearMediaState();
 		if (invalidateConversation) {
 			this.conversationBinding.invalidate();
 		}
@@ -367,6 +474,7 @@ class AiAssistController {
 	}
 
 	private async refreshConversation(): Promise<void> {
+		this.clearMediaState();
 		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
 		const reportedGeneration = await this.requestConversationState();
 		if (reportedGeneration === undefined) {
@@ -424,6 +532,122 @@ class AiAssistController {
 		if (resolve) {
 			this.pendingConversationReports.delete(requestId);
 			resolve(this.conversationLifecycle.snapshot);
+		}
+	}
+
+	private async resolveMedia(messageId: string, kind: MediaKind): Promise<void> {
+		await this.mediaCleanupReady;
+		const snapshot = this.conversationBinding.currentSnapshot;
+		const candidate = this.mediaCandidates.find(item => item.messageId === messageId && item.kind === kind);
+		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot) || !candidate) {
+			this.mediaResolution = {kind, messageId, status: 'unavailable'};
+			this.broadcastState();
+			return;
+		}
+
+		this.cancelPendingMediaRequests();
+		await this.mediaResolver.releaseAll();
+		this.mediaResolution = {...candidate, status: 'resolving'};
+		this.broadcastState();
+		const requestId = `media-request-${++this.mediaRequestCounter}`;
+		await new Promise<void>(resolvePromise => {
+			const abortController = new AbortController();
+			const timeout = setTimeout(() => {
+				abortController.abort();
+				this.pendingMediaRequests.delete(requestId);
+				void this.mediaResolver.releaseAll();
+				this.mediaResolution = {...candidate, status: 'unavailable'};
+				this.broadcastState();
+				resolvePromise();
+			}, 32_000);
+			this.pendingMediaRequests.set(requestId, {
+				abortController,
+				durationSeconds: candidate.durationSeconds,
+				kind,
+				messageId,
+				resolve() {
+					clearTimeout(timeout);
+					resolvePromise();
+				},
+				snapshot,
+			});
+			this.notifyMessenger({
+				kind,
+				messageId,
+				requestId,
+				type: 'resolve-media',
+			});
+		});
+	}
+
+	private async handleMediaResolution(
+		value: Extract<AiAssistMessengerEvent, {type: 'media-resolution'}>,
+	): Promise<void> {
+		const pending = this.pendingMediaRequests.get(value.requestId);
+		if (!pending || pending.kind !== value.kind || pending.messageId !== value.messageId) {
+			return;
+		}
+
+		try {
+			if (!this.isRequestSnapshotCurrent(pending.snapshot)) {
+				await this.mediaResolver.releaseAll();
+				return;
+			}
+
+			if (value.status === 'unsupported') {
+				this.mediaResolver.reportUnsupported(value.kind, value.durationSeconds);
+				this.mediaResolution = {
+					...(value.durationSeconds === undefined ? {} : {durationSeconds: value.durationSeconds}),
+					kind: value.kind,
+					messageId: value.messageId,
+					sourceType: 'segmented',
+					status: 'unsupported',
+				};
+				return;
+			}
+
+			if (value.status === 'unavailable') {
+				if (value.sourceType === 'blob' || value.sourceType === 'https') {
+					this.mediaResolver.reportUnavailable(value.sourceType, value.kind, value.durationSeconds);
+				}
+
+				this.mediaResolution = {
+					...(value.durationSeconds === undefined ? {} : {durationSeconds: value.durationSeconds}),
+					kind: value.kind,
+					messageId: value.messageId,
+					status: 'unavailable',
+				};
+				return;
+			}
+
+			const media = this.mediaResolver.describeHandle(
+				value.handleId!,
+				value.messageId,
+				pending.snapshot,
+			);
+			if (
+				media.kind !== value.kind
+				|| media.sourceType !== value.sourceType
+				|| media.byteLength !== value.byteLength
+				|| media.mimeType !== value.mimeType
+			) {
+				await this.mediaResolver.releaseHandle(media.handleId);
+				throw new TypeError('Rejected mismatched AI Assist media handle');
+			}
+
+			this.mediaResolution = {...media, status: 'ready'};
+		} catch {
+			this.mediaResolution = {
+				...(value.durationSeconds === undefined ? {} : {durationSeconds: value.durationSeconds}),
+				kind: value.kind,
+				messageId: value.messageId,
+				...(value.sourceType === undefined ? {} : {sourceType: value.sourceType}),
+				status: 'unavailable',
+			};
+		} finally {
+			this.pendingMediaRequests.delete(value.requestId);
+			pending.resolve();
+			this.broadcastState();
 		}
 	}
 
@@ -602,6 +826,29 @@ class AiAssistController {
 		this.answer.clear();
 		this.error = undefined;
 		this.notice = undefined;
+	}
+
+	private clearMediaState(): void {
+		this.cancelMediaResolution();
+		this.mediaCandidates = [];
+	}
+
+	private cancelMediaResolution(): void {
+		this.cancelPendingMediaRequests();
+		this.mediaResolution = undefined;
+		void this.mediaResolver.releaseAll();
+	}
+
+	private cancelPendingMediaRequests(): void {
+		for (const [requestId, pending] of this.pendingMediaRequests) {
+			this.pendingMediaRequests.delete(requestId);
+			pending.abortController.abort();
+			pending.resolve();
+		}
+	}
+
+	private reportMediaDiagnostic(diagnostic: MediaDiagnostic): void {
+		console.info('AI Assist media resolver', diagnostic);
 	}
 
 	private setRequestError(error: unknown): void {
