@@ -20,6 +20,7 @@ const requestMessage = document.querySelector('#request-message');
 const answerOutput = document.querySelector('#answer-output');
 const closeButton = document.querySelector('#close-button');
 let renderedCaptureGeneration;
+let renderedInvocationSequence;
 let promptCaptureGeneration;
 
 function shouldClearPrompt(state) {
@@ -73,6 +74,13 @@ function render(state) {
 	}
 
 	renderedCaptureGeneration = state.conversation.captureGeneration;
+	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
+		promptInput.value = state.invocation.prompt;
+		promptCaptureGeneration = state.conversation.captureGeneration;
+		renderedInvocationSequence = state.invocation.sequence;
+		promptInput.focus?.();
+	}
+
 	if (state.conversation.status === 'changed') {
 		statusElement.textContent = 'Conversation changed — refresh context.';
 	} else if (isConversationReady) {

@@ -14,6 +14,8 @@ const {
 	deriveConversationIdentity,
 } = require('../dist-js/conversation-identity.js');
 const {
+	isAiComposerCommandRequest,
+	isAiComposerCommandResult,
 	isAiAssistMessengerCommand,
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
@@ -68,6 +70,16 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'save-api-key', apiKey: 'short'}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: 'Hello'}), true);
 	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: ''}), false);
+	assert.equal(isAiComposerCommandRequest({
+		conversationId: 'messenger-thread:123',
+		prompt: 'Exact inline question',
+	}), true);
+	assert.equal(isAiComposerCommandRequest({
+		conversationId: 'display-name-only',
+		prompt: 'Question',
+	}), false);
+	assert.equal(isAiComposerCommandResult({accepted: true}), true);
+	assert.equal(isAiComposerCommandResult({accepted: true, prompt: 'leak'}), false);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
 	assert.equal(isAiAssistMessengerCommand({
 		kind: 'video',
@@ -179,6 +191,10 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		session: {generation: 1, status: 'open'},
 	};
 	assert.equal(isAiAssistPanelState(panelStateWithHandle), true);
+	assert.equal(isAiAssistPanelState({
+		...panelStateWithHandle,
+		invocation: {prompt: 'Exact inline question', sequence: 1},
+	}), true);
 	assert.equal(isAiAssistPanelState({
 		...panelStateWithHandle,
 		media: {
@@ -380,6 +396,23 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 	renderState(state('ready', 3));
 	assert.equal(prompt.value, '');
 	assert.equal(element('ask-button').disabled, false);
+	renderState({
+		...state('ready', 3),
+		invocation: {prompt: 'Exact inline question', sequence: 1},
+	});
+	assert.equal(prompt.value, 'Exact inline question');
+	prompt.value = 'Locally edited question';
+	prompt.listeners.get('input')();
+	renderState({
+		...state('ready', 3),
+		invocation: {prompt: 'Exact inline question', sequence: 1},
+	});
+	assert.equal(prompt.value, 'Locally edited question');
+	renderState({
+		...state('ready', 3),
+		invocation: {prompt: '', sequence: 2},
+	});
+	assert.equal(prompt.value, '');
 	prompt.value = 'Question for B';
 	prompt.listeners.get('input')();
 	renderState(state('ready', 4));

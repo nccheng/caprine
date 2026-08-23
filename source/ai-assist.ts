@@ -11,11 +11,14 @@ import {
 import config from './config';
 import {
 	aiAssistIpcChannels,
+	AiComposerCommandRequest,
+	AiComposerCommandResult,
 	AiAssistMessengerCommand,
 	AiAssistMessengerEvent,
 	AiAssistPanelState,
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
+	isAiComposerCommandRequest,
 	MessengerMediaCandidate,
 	MessengerMediaResolution,
 } from './ai-assist-ipc';
@@ -59,6 +62,8 @@ class AiAssistController {
 	private conversationReportCounter = 0;
 	private readonly conversationReportGate = new ConversationReportGate();
 	private error?: {code: OpenAiErrorCode; message: string};
+	private invocation?: AiAssistPanelState['invocation'];
+	private invocationSequence = 0;
 	private mediaCandidates: MessengerMediaCandidate[] = [];
 	private mediaRequestCounter = 0;
 	private mediaResolution?: MessengerMediaResolution;
@@ -79,6 +84,7 @@ class AiAssistController {
 	private requestCounter = 0;
 	private readonly sessionState = new AiAssistSessionStateMachine();
 	private panelUrl?: string;
+	private panelReady?: Promise<boolean>;
 	private panelWindow?: BrowserWindow;
 
 	constructor(private readonly messengerWindow: BrowserWindow) {
@@ -90,6 +96,7 @@ class AiAssistController {
 			},
 		);
 		this.mediaCleanupReady = this.mediaResolver.cleanupRestartArtifacts().catch(() => undefined);
+		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
 		ipcMain.handle(aiAssistIpcChannels.panelCommand, this.handlePanelCommand);
 		ipcMain.handle(messengerMediaResolverChannel, this.handleMessengerMediaResolverRequest);
 		ipcMain.on(aiAssistIpcChannels.messengerEvent, this.handleMessengerEvent);
@@ -118,6 +125,7 @@ class AiAssistController {
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
 			},
 			enabled: config.get('aiAssistEnabled'),
+			...(this.invocation ? {invocation: this.invocation} : {}),
 			media: {
 				candidates: this.mediaCandidates,
 				...(this.mediaResolution ? {resolution: this.mediaResolution} : {}),
@@ -148,16 +156,21 @@ class AiAssistController {
 			return;
 		}
 
-		if (this.panelWindow && !this.panelWindow.isDestroyed()) {
-			this.panelWindow.show();
-			this.panelWindow.focus();
-			return;
-		}
-
-		this.panelWindow = this.createPanelWindow();
+		this.showPanelWindow();
 		void this.refreshConversation();
 		this.broadcastState();
 	}
+
+	private readonly handleComposerCommand = async (
+		event: IpcMainInvokeEvent,
+		value: unknown,
+	): Promise<AiComposerCommandResult> => {
+		if (!this.isExpectedMessengerSender(event) || !isAiComposerCommandRequest(value)) {
+			throw new TypeError('Rejected invalid AI Assist composer command IPC');
+		}
+
+		return {accepted: await this.acceptComposerCommand(value)};
+	};
 
 	private readonly handlePanelCommand = async (
 		event: IpcMainInvokeEvent,
@@ -287,7 +300,7 @@ class AiAssistController {
 
 		const media = value.sourceType === 'https'
 			? await this.mediaResolver.resolveHttps(
-				value.url!,
+				value.url,
 				value.kind,
 				value.messageId,
 				pending.snapshot,
@@ -295,8 +308,8 @@ class AiAssistController {
 				pending.abortController.signal,
 			)
 			: await this.mediaResolver.resolveBlob(
-				value.bytes!,
-				value.mimeType!,
+				value.bytes,
+				value.mimeType,
 				value.kind,
 				value.messageId,
 				pending.snapshot,
@@ -348,6 +361,49 @@ class AiAssistController {
 				enabled: config.get('aiAssistEnabled'),
 			});
 		});
+	}
+
+	private showPanelWindow(): void {
+		if (this.panelWindow && !this.panelWindow.isDestroyed()) {
+			this.panelWindow.show();
+			this.panelWindow.focus();
+			return;
+		}
+
+		this.panelWindow = this.createPanelWindow();
+	}
+
+	private async acceptComposerCommand(value: Readonly<AiComposerCommandRequest>): Promise<boolean> {
+		if (!config.get('aiAssistEnabled')) {
+			return false;
+		}
+
+		this.showPanelWindow();
+		if (!await this.panelReady || !this.panelWindow || this.panelWindow.isDestroyed()) {
+			return false;
+		}
+
+		await this.refreshConversation();
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (
+			!snapshot
+			|| snapshot.conversationId !== value.conversationId
+			|| !this.isRequestSnapshotCurrent(snapshot)
+		) {
+			return false;
+		}
+
+		this.invocation = {
+			prompt: value.prompt,
+			sequence: ++this.invocationSequence,
+		};
+		this.notice = value.prompt
+			? 'The /ai question moved here without being sent to Messenger.'
+			: 'Enter your question here for the strongest private-input path.';
+		this.panelWindow.show();
+		this.panelWindow.focus();
+		this.broadcastState();
+		return true;
 	}
 
 	private createPanelWindow(): BrowserWindow {
@@ -419,16 +475,20 @@ class AiAssistController {
 				}
 
 				this.panelWindow = undefined;
+				this.panelReady = undefined;
 				this.panelUrl = undefined;
 			}
 		});
 
-		void panel.loadFile(panelHtmlPath).catch(() => {
-			if (!panel.isDestroyed()) {
-				console.error('AI Assist panel failed to load');
-				this.invalidate('panel-failed');
-				panel.destroy();
+		this.panelReady = panel.loadFile(panelHtmlPath).then(() => !panel.isDestroyed()).catch(() => {
+			if (panel.isDestroyed()) {
+				return false;
 			}
+
+			console.error('AI Assist panel failed to load');
+			this.invalidate('panel-failed');
+			panel.destroy();
+			return false;
 		});
 		return panel;
 	}
@@ -825,6 +885,7 @@ class AiAssistController {
 		this.cancelActiveRequest();
 		this.answer.clear();
 		this.error = undefined;
+		this.invocation = undefined;
 		this.notice = undefined;
 	}
 

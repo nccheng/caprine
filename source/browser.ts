@@ -7,9 +7,16 @@ import {sendConversationList} from './browser/conversation-list';
 import {IToggleSounds, IToggleMuteNotifications} from './types';
 import {
 	aiAssistIpcChannels,
+	isAiComposerCommandResult,
 	isAiAssistMessengerEvent,
 	isAiAssistMessengerCommand,
 } from './ai-assist-ipc';
+import {
+	consumeAiComposerCommand,
+	parseAiComposerCommand,
+	shouldInterceptAiComposerEnter,
+	shouldInterceptAiComposerSend,
+} from './ai-composer-command';
 import {
 	ConversationIdentityCandidate,
 	deriveConversationIdentity,
@@ -36,12 +43,250 @@ let shouldUseDarkColors = false;
 let isAiAssistEnabled = false;
 let conversationObserver: MutationObserver | undefined;
 let conversationReportTimer: ReturnType<typeof setTimeout> | undefined;
+let armedAiComposer: HTMLElement | undefined;
+let composerCommandInFlight = false;
+let composingAiComposer: HTMLElement | undefined;
+let composerStatusHost: HTMLElement | undefined;
+let composerStatusText: HTMLElement | undefined;
 
 const selectedThreadSelectors = [
 	'a[aria-current="page"][href*="/messages/"]',
 	'[aria-selected="true"] a[href*="/messages/"]',
 	'[role="row"][aria-selected="true"] a[href*="/messages/"]',
 ];
+
+const messengerComposerSelector = '[role="main"] [role="textbox"][contenteditable="true"]';
+
+function composerText(composer: HTMLElement): string {
+	return composer.innerText; // eslint-disable-line unicorn/prefer-dom-node-text-content
+}
+
+function currentConversationId(): string | undefined {
+	const identity = deriveConversationIdentity(window.location.href, selectedConversationCandidates());
+	return identity.status === 'available' ? identity.conversationId : undefined;
+}
+
+function composerFromTarget(target: EventTarget | undefined): HTMLElement | undefined {
+	return target instanceof Element
+		? target.closest<HTMLElement>(messengerComposerSelector) ?? undefined
+		: undefined;
+}
+
+function activeMessengerComposer(): HTMLElement | undefined {
+	const focused = composerFromTarget(document.activeElement ?? undefined);
+	if (focused) {
+		return focused;
+	}
+
+	if (armedAiComposer?.isConnected && armedAiComposer.matches(messengerComposerSelector)) {
+		return armedAiComposer;
+	}
+
+	const composers = [...document.querySelectorAll<HTMLElement>(messengerComposerSelector)];
+	return composers[composers.length - 1];
+}
+
+function removeComposerStatus(): void {
+	composerStatusHost?.remove();
+	composerStatusHost = undefined;
+	composerStatusText = undefined;
+}
+
+function showComposerStatus(hasInlinePrompt: boolean): void {
+	if (!composerStatusHost) {
+		const host = document.createElement('div');
+		host.id = 'caprine-ai-composer-status';
+		host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;pointer-events:none';
+		const shadow = host.attachShadow({mode: 'closed'});
+		const status = document.createElement('div');
+		status.setAttribute('role', 'status');
+		status.style.cssText = 'max-width:340px;padding:10px 12px;border-radius:10px;background:#20232a;color:#fff;font:13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 4px 18px #0006';
+		shadow.append(status);
+		document.documentElement.append(host);
+		composerStatusHost = host;
+		composerStatusText = status;
+	}
+
+	const message = hasInlinePrompt
+		? 'Caprine AI Assist is armed. This command will not be sent. Text after /ai is visible to Messenger while you type it.'
+		: 'Caprine AI Assist is armed. Enter opens a private prompt and Messenger will not send /ai.';
+	if (composerStatusText!.textContent !== message) {
+		composerStatusText!.textContent = message;
+	}
+}
+
+function updateComposerStatus(candidate?: HTMLElement): void {
+	if (!isAiAssistEnabled) {
+		armedAiComposer = undefined;
+		removeComposerStatus();
+		return;
+	}
+
+	const composer = candidate ?? activeMessengerComposer();
+	const command = composer ? parseAiComposerCommand(composerText(composer)) : undefined;
+	if (!composer || !command) {
+		if (!candidate || candidate === armedAiComposer) {
+			armedAiComposer = undefined;
+			removeComposerStatus();
+		}
+
+		return;
+	}
+
+	armedAiComposer = composer;
+	showComposerStatus(command.prompt.length > 0);
+}
+
+function setComposerText(composer: HTMLElement, value: string): void {
+	composer.innerText = value; // eslint-disable-line unicorn/prefer-dom-node-text-content
+	composer.dispatchEvent(new InputEvent('input', {
+		bubbles: true,
+		composed: true,
+		inputType: value ? 'insertText' : 'deleteContentBackward',
+	}));
+}
+
+function isMessengerSendControl(target: EventTarget | undefined, composer: HTMLElement): boolean {
+	if (!(target instanceof Element)) {
+		return false;
+	}
+
+	const control = target.closest<HTMLElement>('button, [role="button"]');
+	if (!control || control.getAttribute('aria-disabled') === 'true' || control.hasAttribute('disabled')) {
+		return false;
+	}
+
+	const composerForm = composer.closest('form');
+	if (control instanceof HTMLButtonElement && control.type === 'submit') {
+		return Boolean(composerForm && control.form === composerForm);
+	}
+
+	const description = [
+		control.getAttribute('aria-label'),
+		control.dataset.testid,
+		control.getAttribute('title'),
+	].filter(Boolean).join(' ');
+	if (!/\b(send|press enter)\b/i.test(description)) {
+		return false;
+	}
+
+	if (composerForm) {
+		return composerForm.contains(control);
+	}
+
+	let ancestor: Element | undefined = composer.parentElement ?? undefined;
+	for (let depth = 0; ancestor && depth < 6; depth += 1, ancestor = ancestor.parentElement ?? undefined) {
+		if (ancestor.contains(control)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+async function consumeComposerCommand(composer: HTMLElement): Promise<void> {
+	if (composerCommandInFlight) {
+		return;
+	}
+
+	const command = parseAiComposerCommand(composerText(composer));
+	const conversationId = currentConversationId();
+	if (!command || !conversationId) {
+		return;
+	}
+
+	composerCommandInFlight = true;
+	try {
+		await consumeAiComposerCommand(command, {
+			clear() {
+				setComposerText(composer, '');
+				updateComposerStatus(composer);
+			},
+			isCurrent() {
+				return isAiAssistEnabled
+					&& composer.isConnected
+					&& composer.matches(messengerComposerSelector)
+					&& composerText(composer) === command.draftText
+					&& currentConversationId() === conversationId;
+			},
+			async openPanel(prompt) {
+				const result: unknown = await electronIpcRenderer.invoke(aiAssistIpcChannels.composerCommand, {
+					conversationId,
+					prompt,
+				});
+				return isAiComposerCommandResult(result) && result.accepted;
+			},
+			restore(draftText) {
+				if (composer.isConnected && composerText(composer) === '') {
+					setComposerText(composer, draftText);
+					composer.focus();
+					updateComposerStatus(composer);
+				}
+			},
+		});
+	} finally {
+		composerCommandInFlight = false;
+	}
+}
+
+function handleAiComposerInput(event: Event): void {
+	if (!event.isTrusted) {
+		return;
+	}
+
+	const composer = composerFromTarget(event.target ?? undefined);
+	if (composer) {
+		updateComposerStatus(composer);
+	}
+}
+
+function handleAiComposerCompositionStart(event: CompositionEvent): void {
+	if (event.isTrusted) {
+		composingAiComposer = composerFromTarget(event.target ?? undefined);
+	}
+}
+
+function handleAiComposerCompositionEnd(event: CompositionEvent): void {
+	if (event.isTrusted && composerFromTarget(event.target ?? undefined) === composingAiComposer) {
+		composingAiComposer = undefined;
+	}
+}
+
+function handleAiComposerKeydown(event: KeyboardEvent): void {
+	if (!isAiAssistEnabled || !event.isTrusted) {
+		return;
+	}
+
+	const composer = composerFromTarget(event.target ?? undefined);
+	const command = composer ? parseAiComposerCommand(composerText(composer)) : undefined;
+	if (!composer || !shouldInterceptAiComposerEnter(event, command)) {
+		return;
+	}
+
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	void consumeComposerCommand(composer);
+}
+
+function handleAiComposerClick(event: MouseEvent): void {
+	if (!isAiAssistEnabled || !event.isTrusted) {
+		return;
+	}
+
+	const composer = activeMessengerComposer();
+	const command = composer ? parseAiComposerCommand(composerText(composer)) : undefined;
+	if (
+		!composer
+		|| composer === composingAiComposer
+		|| !shouldInterceptAiComposerSend(isMessengerSendControl(event.target ?? undefined, composer), command)
+	) {
+		return;
+	}
+
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	void consumeComposerCommand(composer);
+}
 
 function selectedConversationCandidates(): ConversationIdentityCandidate[] {
 	const anchors = document.querySelectorAll<HTMLAnchorElement>(selectedThreadSelectors.join(','));
@@ -91,18 +336,38 @@ function startConversationObserver(): void {
 		return;
 	}
 
-	conversationObserver = new MutationObserver(scheduleConversationStateReport);
+	conversationObserver = new MutationObserver(() => {
+		scheduleConversationStateReport();
+		updateComposerStatus();
+	});
 	conversationObserver.observe(document.documentElement, {
 		attributeFilter: ['aria-current', 'aria-selected', 'href'],
 		attributes: true,
 		childList: true,
 		subtree: true,
 	});
+	window.addEventListener('click', handleAiComposerClick, true);
+	window.addEventListener('compositionend', handleAiComposerCompositionEnd, true);
+	window.addEventListener('compositionstart', handleAiComposerCompositionStart, true);
+	window.addEventListener('input', handleAiComposerInput, true);
+	window.addEventListener('keydown', handleAiComposerKeydown, true);
+	window.addEventListener('pointerdown', handleAiComposerClick, true);
+	updateComposerStatus();
 }
 
 function stopConversationObserver(): void {
 	conversationObserver?.disconnect();
 	conversationObserver = undefined;
+	window.removeEventListener('click', handleAiComposerClick, true);
+	window.removeEventListener('compositionend', handleAiComposerCompositionEnd, true);
+	window.removeEventListener('compositionstart', handleAiComposerCompositionStart, true);
+	window.removeEventListener('input', handleAiComposerInput, true);
+	window.removeEventListener('keydown', handleAiComposerKeydown, true);
+	window.removeEventListener('pointerdown', handleAiComposerClick, true);
+	armedAiComposer = undefined;
+	composerCommandInFlight = false;
+	composingAiComposer = undefined;
+	removeComposerStatus();
 	if (conversationReportTimer) {
 		clearTimeout(conversationReportTimer);
 		conversationReportTimer = undefined;
