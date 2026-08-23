@@ -1,100 +1,136 @@
-# Caprine AGENTS.md
+# Caprine Agent Contract
 
-## Build/Lint/Test Commands
+## Product and repository scope
 
-- **Build**: `npm run build` or `npm run start` (runs TypeScript compiler)
-- **Lint**: `npm run lint` (runs both `npm run lint:xo` and `npm run lint:stylelint`)
-- **Type checking**: `npm run test:tsc` (runs `npm run build`)
-- **Full test suite**: `npm run test` (type check + lint)
-- **Distribution**: `npm run dist:mac`, `npm run dist:linux`, or `npm run dist:win`
+- Repository: `nccheng/caprine`; default branch: `main`.
+- Caprine AI Assist is a personal, local-first, macOS-only product for Derek.
+- Messenger is an untrusted remote renderer. Keep secrets, provider requests,
+  private AI output, persistence, and media processing in Caprine-owned local
+  surfaces or the Electron main process.
+- AI answers remain private until Derek explicitly inserts one into the current
+  Messenger draft. Caprine must never press Send.
+- Preserve normal Messenger behavior when AI Assist is disabled or a DOM
+  adapter fails.
+- Use the smallest direct macOS-specific solution. Do not add multi-user,
+  multi-provider, plugin, enterprise, or generalized orchestration layers.
 
-Note: There are no unit tests in this project. The test command only runs type checking and linting.
+The current Linear `Caprine AI Assist` project and its attached product contract
+define the complete MVP behavior and delivery dependencies. An active issue may
+narrow that contract but must not silently expand it.
 
-## Code Style Guidelines
+## Authority and bare-link routing
 
-### TypeScript/JavaScript (via XO)
+Use authority in this order:
 
-- Extends XO with TypeScript support
-- Target: ES2022, Module: commonjs
-- Enabled esnext, dom, and dom.iterable lib types
+1. Derek's explicit instruction in the current task.
+2. The active Linear issue or pull request supplied for the task.
+3. The current `Caprine AI Assist` Linear project and attached product contract.
+4. Current code, executable checks, and user-facing documentation.
 
-#### Disabled Rules (explicitly allowed):
-- `@typescript-eslint/ban-ts-comment` - `@ts-expect-error` comments allowed
-- `@typescript-eslint/consistent-type-imports` - Dynamic imports allowed
-- `@typescript-eslint/naming-convention` - No strict naming requirements
-- `@typescript-eslint/no-floating-promises` - Async functions without await allowed
-- `@typescript-eslint/no-loop-func` - Functions in loops allowed
-- `@typescript-eslint/no-non-null-assertion` - Non-null assertions (!) allowed
-- `@typescript-eslint/no-require-imports` - CommonJS require() allowed
-- `@typescript-eslint/no-unsafe-*` - Many type safety checks disabled for flexibility
-- `import/extensions` - File extensions in imports allowed
-- `import/no-anonymous-default-export` - Anonymous default exports allowed
-- `import/no-cycle` - Circular dependencies allowed
-- `n/file-extension-in-import` - File extensions in imports allowed
-- `unicorn/prefer-at` - Use of .at() not required
-- `unicorn/prefer-module` - CommonJS allowed
-- `unicorn/prefer-top-level-await` - Top-level await not required
+A bare active Linear issue URL from the `Caprine AI Assist` project is a direct
+implementation request. Fetch the full issue, project, attached product
+contract, and `blockedBy` relations; inspect the current code and checks; then
+begin the issue without requiring a label, embedded prompt, ADR, separate
+approval, delivery classification, or repo-local issue spec.
 
-#### Conventions:
-- Use `const` for variables, `let` for reassignment, avoid `var`
-- Use double quotes for strings
-- Use 2-space indentation (configured inxo config)
-- No trailing semicolons (XO default)
-- Use `camelCase` for functions/variables, `PascalCase` for types/classes
-- Use `ts-expect-error` for known type issues
-- Prioritize readability over strict type safety
+Done, Canceled, Duplicate, and other terminal issues are read-only. If an issue
+is outside `Caprine AI Assist`, treat its URL as context unless Derek explicitly
+authorizes implementation.
 
-### CSS/Style (via Stylelint)
+A bare pull-request URL is a request to inspect and resume that PR's existing
+lineage. Fetch the PR, linked Linear issue, project contract, latest head,
+checks, reviews, and unresolved threads before acting. Reuse the primary PR and
+its branch/worktree rather than creating parallel lineage. The PR does not
+authorize work beyond its linked issue and review findings.
 
-- Extends `stylelint-config-xo`
-- Based on XO style guide (2-space indentation, double quotes)
+## Dependency-aware work selection
 
-#### Disabled Rules:
-- `declaration-no-important` - `!important` allowed
-- `no-descending-specificity` - Specificity order not enforced
-- `no-duplicate-selectors` - Duplicate selectors allowed
-- `rule-empty-line-before` - No empty line requirement before rules
-- `selector-class-pattern` - No naming pattern enforced
-- `selector-id-pattern` - No ID naming pattern enforced
-- `selector-max-class` - No class count limit
+Linear `blockedBy` relations are the only work-order gate. Parent/child,
+milestone, label, cycle, or issue-number order does not imply blocking.
 
-#### Conventions:
-- Use BEM-style class names (e.g., `.x9f619`, `.x1n2onr6`)
-- Prefer attribute selectors for Facebook elements (fragile but necessary)
-- Use `!important` liberally to override Facebook's inline styles
-- Organize CSS by feature (browser.css, dark-mode.css, etc.)
+The daily worker resumes durable active lineage before starting new work:
 
-### Error Handling
+1. An open primary PR or issue in `In Review`.
+2. An issue-matching branch/worktree or issue in `In Progress`.
+3. The highest-priority unblocked unfinished project issue.
+4. When no unblocked target is available, the deepest unfinished blocker
+   required by a blocked project issue.
 
-- Use `try-catch` for async operations where appropriate
-- Prefer returning undefined/null over throwing for recoverable errors
-- Use `dialog.showMessageBoxSync` for critical errors requiring user interaction
-- Log errors to console when appropriate
+At the same dependency level, order by Linear priority, creation time ascending,
+then numeric issue identifier ascending. Detect dependency cycles and stop rather
+than guessing through one. Never autonomously implement an out-of-project
+blocker.
 
-### Naming Conventions
+Start at most one new issue per run. One issue maps to one writer, one
+branch/worktree, and one primary PR. Refresh Linear, GitHub, branches, and
+worktrees before selection, and resume existing lineage rather than duplicating
+it. Preserve unknown or user-owned changes; do not reset, stash, delete, or
+force-push them.
 
-- Functions/variables: `camelCase` (e.g., `sendAction`, `getWindow`, `toggleTrayIcon`)
-- Types/Interfaces: `PascalCase` with `I` prefix for interfaces (e.g., `IToggleSounds`)
-- Constants: `UPPER_SNAKE_CASE` (e.g., `messengerDomain`)
-- Selectors: lowercase with hyphens (Facebook's naming)
-- File names: `camelCase` or `kebab-case`
+## Implementation, review, and completion
 
-### Imports
+For the one selected issue:
 
-- Use ES module syntax (`import`) where possible
-- CommonJS `require()` allowed when needed (e.g., electron modules)
-- Import from `./` relative paths within project
-- Order: external libs → internal modules → types
+1. Revalidate that the issue is active, in-project, and unblocked, then set it
+   to `In Progress`.
+2. Implement the smallest complete solution and focused deterministic tests
+   where executable behavior changes.
+3. Run relevant checks, inspect the complete diff, commit, push, and open or
+   update the one primary PR.
+4. Set the issue to `In Review`.
+5. Start one fresh clean-context adversarial sub-agent against the exact latest
+   head. It reviews correctness, edge cases and tests, privacy and security
+   boundaries, simplicity, and issue scope.
+6. If that review finds concrete blockers, the original writer revises the
+   implementation and reruns checks.
+7. Start a new clean-context adversarial sub-agent against the revised latest
+   head for the second and final review round.
+8. If blockers remain after round two, stop and report them to Derek. Do not
+   start another issue.
+9. If the latest-head review is clean and required checks pass, squash-merge the
+   primary PR and mark the Linear issue `Done`.
 
-## Additional Notes
+Every implementation or review-driven revision requires a new clean-context
+review. A same-context self-review is useful preflight but cannot substitute for
+the required adversarial review. The maximum is two review rounds total: the
+initial review and one post-fix review.
 
-- **Electron version**: v29.0.1
-- **Node requirement**: >=16
-- **Main output**: `dist-js/` directory
-- **Build system**: TypeScript + electron-builder
-- **License**: MIT
-- **Platform support**: macOS, Linux, Windows
+Do not claim manual Messenger, notification, signing, media, or end-to-end
+acceptance from source inspection, builds, lint, or packaging alone. Report the
+remaining real-device or credential-dependent acceptance step explicitly.
 
-## Cursor/Copilot Rules
+## Daily Codex worker
 
-No Cursor rules or Copilot instructions found in the repository.
+The single scheduled workflow is `Caprine AI Assist Autonomous Worker`:
+
+- Schedule: every day at 11:00 AM `America/Los_Angeles`.
+- Default model: GPT 5.6 Sol with High reasoning.
+- Runtime: the local Codex project for `/Users/nccheng/Documents/GitHub/caprine`.
+- Per run: resume active lineage first and start at most one new Linear issue.
+- Review: one fresh adversarial sub-agent per round, with no more than two rounds.
+- Success: green required checks and a clean latest-head review may squash-merge
+  and move the issue to `Done`.
+
+Do not create separate selector, writer, reviewer, reconciler, or merge
+automations. Do not simulate locks with Linear comments, marker schemas, prompt
+hashes, or review digests.
+
+## Development commands and conventions
+
+- Required Node.js version: `>=22.12.0`.
+- Electron: `^43.4.0`.
+- Build: `npm run build`.
+- Lint: `npm run lint`.
+- Full automated check: `npm test` (build/type checking plus lint; this
+  repository currently has no unit-test runner).
+- macOS distribution: `npm run dist:mac`.
+- Required issue checks: `npm run build`, `npm run lint`, and
+  `git diff --check`, plus any focused checks added by the issue.
+- Compiled main output: `dist-js/`; bundled preloads are built by
+  `scripts/build-preloads.mjs`.
+
+Use TypeScript and ES module imports where practical, `const` by default,
+2-space indentation, no semicolons, and the existing XO/stylelint configuration.
+Keep renderer IPC bound to the owning window/main frame and trusted Messenger
+origins, validate payloads before native side effects, and never expose
+privileged APIs or secrets to the remote page.
