@@ -14,6 +14,10 @@ test('AI session state transitions are bounded and generation-safe', () => {
 	assert.deepEqual(state.snapshot, {generation: 0, status: 'closed'});
 	assert.equal(state.open().sessionId, 'ai-session-1');
 	assert.equal(state.beginRequest().status, 'requesting');
+	assert.equal(state.completeRequest().status, 'open');
+	assert.equal(state.beginRequest().status, 'requesting');
+	assert.equal(state.cancel().status, 'cancelled');
+	assert.equal(state.beginRequest().status, 'requesting');
 	assert.equal(state.cancel().status, 'cancelled');
 	assert.equal(state.invalidate('conversation-changed').status, 'invalidated');
 	assert.deepEqual(state.close(), {generation: 1, status: 'closed'});
@@ -32,13 +36,21 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'open'}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'close', extra: true}), false);
 	assert.equal(isAiAssistPanelState({
+		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
+		request: {answer: 'private'},
 		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
 	}), true);
 	assert.equal(isAiAssistPanelState({
+		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
-		session: {generation: 1, status: 'open', answer: 'private'},
+		request: {apiKey: 'secret'},
+		session: {generation: 1, status: 'open'},
 	}), false);
+	assert.equal(isAiAssistPanelCommand({type: 'save-api-key', apiKey: 'sk-test-value'}), true);
+	assert.equal(isAiAssistPanelCommand({type: 'save-api-key', apiKey: 'short'}), false);
+	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: 'Hello'}), true);
+	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: ''}), false);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: 'yes'}), false);
 	assert.equal(isAiAssistMessengerEvent({type: 'conversation-route-changed'}), true);

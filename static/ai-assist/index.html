@@ -21,20 +21,39 @@
 		<main>
 			<section aria-labelledby="settings-heading">
 				<h2 id="settings-heading">Settings</h2>
-				<p>OpenAI key setup will appear here in the next delivery step.</p>
+				<p id="key-status">No OpenAI API key is configured.</p>
+				<form id="key-form">
+					<label for="api-key">OpenAI API key</label>
+					<div class="field-row">
+						<input id="api-key" name="api-key" type="password" autocomplete="off" minlength="10" maxlength="512" required>
+						<button id="save-key-button" type="submit">Save key</button>
+					</div>
+				</form>
+				<div class="button-row">
+					<button id="test-key-button" class="secondary" type="button">Test saved key</button>
+					<button id="delete-key-button" class="danger" type="button">Delete key</button>
+				</div>
 			</section>
 			<section aria-labelledby="context-heading">
 				<h2 id="context-heading">Context review</h2>
-				<p>No Messenger content has been captured or shared.</p>
+				<p>This temporary validation flow sends only the prompt you enter below. No Messenger content is captured or shared.</p>
 			</section>
 			<section aria-labelledby="progress-heading">
-				<h2 id="progress-heading">Request progress</h2>
-				<p>No provider request is active.</p>
-				<button id="cancel-button" type="button" disabled>Cancel request</button>
+				<h2 id="progress-heading">Private prompt</h2>
+				<form id="prompt-form">
+					<label for="prompt">Ask OpenAI</label>
+					<textarea id="prompt" name="prompt" rows="5" maxlength="20000" required></textarea>
+					<div class="button-row">
+						<button id="ask-button" type="submit">Ask privately</button>
+						<button id="cancel-button" class="secondary" type="button" disabled>Cancel request</button>
+					</div>
+				</form>
+				<p id="request-message" class="request-message" role="status"></p>
 			</section>
 			<section aria-labelledby="answer-heading">
 				<h2 id="answer-heading">Answer preview</h2>
-				<p>Answers stay private until you explicitly insert one into Messenger.</p>
+				<p>Answers stay private in this Caprine-owned panel. Messenger insertion is not enabled yet.</p>
+				<pre id="answer-output" tabindex="0">No answer yet.</pre>
 			</section>
 			<section aria-labelledby="history-heading">
 				<h2 id="history-heading">History</h2>

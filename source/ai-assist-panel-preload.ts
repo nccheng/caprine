@@ -18,7 +18,11 @@ const sendCommand = async (command: AiAssistPanelCommand): Promise<AiAssistPanel
 contextBridge.exposeInMainWorld('caprineAiAssist', {
 	cancel: async () => sendCommand({type: 'cancel'}),
 	close: async () => sendCommand({type: 'close'}),
+	deleteApiKey: async () => sendCommand({type: 'delete-api-key'}),
 	getState: async () => sendCommand({type: 'get-state'}),
+	saveApiKey: async (apiKey: string) => sendCommand({type: 'save-api-key', apiKey}),
+	submitPrompt: async (prompt: string) => sendCommand({type: 'submit-prompt', prompt}),
+	testApiKey: async () => sendCommand({type: 'test-api-key'}),
 	onStateChanged(callback: (state: AiAssistPanelState) => void) {
 		const listener = (_event: Electron.IpcRendererEvent, state: AiAssistPanelState): void => {
 			if (isAiAssistPanelState(state)) {

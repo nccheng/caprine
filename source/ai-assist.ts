@@ -5,6 +5,7 @@ import {
 	IpcMainEvent,
 	IpcMainInvokeEvent,
 	ipcMain,
+	safeStorage,
 } from 'electron';
 import config from './config';
 import {
@@ -19,10 +20,25 @@ import {
 	AiSessionInvalidationReason,
 } from './ai-assist-state';
 import {isTrustedMessengerOrigin} from './ipc-validation';
+import {
+	OpenAiClient,
+	OpenAiErrorCode,
+	OpenAiRequestError,
+} from './openai-client';
 
 const panelPartition = 'ai-assist';
 
 class AiAssistController {
+	private activeRequest?: {
+		abortController: AbortController;
+		id: number;
+	};
+
+	private answer?: string;
+	private error?: {code: OpenAiErrorCode; message: string};
+	private notice?: string;
+	private readonly openAiClient = new OpenAiClient();
+	private requestCounter = 0;
 	private readonly sessionState = new AiAssistSessionStateMachine();
 	private panelUrl?: string;
 	private panelWindow?: BrowserWindow;
@@ -34,10 +50,32 @@ class AiAssistController {
 	}
 
 	get state(): AiAssistPanelState {
+		const request: AiAssistPanelState['request'] = {};
+		if (this.answer !== undefined) {
+			request.answer = this.answer;
+		}
+
+		if (this.error !== undefined) {
+			request.error = this.error;
+		}
+
+		if (this.notice !== undefined) {
+			request.notice = this.notice;
+		}
+
 		return {
+			credentials: {
+				configured: this.hasApiKey,
+				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
+			},
 			enabled: config.get('aiAssistEnabled'),
+			request,
 			session: this.sessionState.snapshot,
 		};
+	}
+
+	private get hasApiKey(): boolean {
+		return config.get('aiAssistOpenAiKeyCiphertext').length > 0;
 	}
 
 	setEnabled(enabled: boolean): void {
@@ -76,11 +114,47 @@ class AiAssistController {
 			throw new TypeError('Rejected invalid AI Assist panel IPC');
 		}
 
-		if (value.type === 'cancel') {
-			this.sessionState.cancel();
-			this.broadcastState();
-		} else if (value.type === 'close') {
-			this.panelWindow?.close();
+		switch (value.type) {
+			case 'cancel': {
+				this.cancelActiveRequest();
+				this.sessionState.cancel();
+				this.notice = 'Request cancelled.';
+				this.broadcastState();
+				break;
+			}
+
+			case 'close': {
+				this.panelWindow?.close();
+				break;
+			}
+
+			case 'save-api-key': {
+				this.saveApiKey(value.apiKey);
+				this.broadcastState();
+				break;
+			}
+
+			case 'delete-api-key': {
+				this.cancelActiveRequest();
+				config.delete('aiAssistOpenAiKeyCiphertext');
+				this.answer = undefined;
+				this.error = undefined;
+				this.notice = 'OpenAI API key deleted.';
+				this.broadcastState();
+				break;
+			}
+
+			case 'test-api-key': {
+				await this.runOpenAiRequest('Reply with exactly: OK', true);
+				break;
+			}
+
+			case 'submit-prompt': {
+				await this.runOpenAiRequest(value.prompt, false);
+				break;
+			}
+
+			default:
 		}
 
 		return this.state;
@@ -181,6 +255,7 @@ class AiAssistController {
 		});
 		panel.on('closed', () => {
 			if (this.panelWindow === panel) {
+				this.cancelActiveRequest();
 				this.panelWindow = undefined;
 				this.panelUrl = undefined;
 				this.sessionState.close();
@@ -212,8 +287,132 @@ class AiAssistController {
 	}
 
 	private invalidate(reason: AiSessionInvalidationReason): void {
+		this.cancelActiveRequest();
 		this.sessionState.invalidate(reason);
 		this.broadcastState();
+	}
+
+	private saveApiKey(apiKey: string): void {
+		this.error = undefined;
+		this.notice = undefined;
+		if (!safeStorage.isEncryptionAvailable()) {
+			this.error = {
+				code: 'provider-unavailable',
+				message: 'macOS secure storage is unavailable. The API key was not saved.',
+			};
+			return;
+		}
+
+		const normalizedApiKey = apiKey.trim();
+		if (normalizedApiKey.length < 10 || normalizedApiKey.length > 512) {
+			this.error = {
+				code: 'authentication',
+				message: 'Enter a valid OpenAI API key.',
+			};
+			return;
+		}
+
+		const encryptedKey = safeStorage.encryptString(normalizedApiKey).toString('base64');
+		config.set('aiAssistOpenAiKeyCiphertext', encryptedKey);
+		this.notice = 'OpenAI API key saved securely on this Mac.';
+	}
+
+	private readApiKey(): string {
+		const encryptedKey = config.get('aiAssistOpenAiKeyCiphertext');
+		if (!encryptedKey) {
+			throw new OpenAiRequestError('missing-key', 'Add an OpenAI API key in Settings first.');
+		}
+
+		if (!safeStorage.isEncryptionAvailable()) {
+			throw new OpenAiRequestError('provider-unavailable', 'macOS secure storage is unavailable. Restart Caprine and try again.');
+		}
+
+		try {
+			return safeStorage.decryptString(Buffer.from(encryptedKey, 'base64'));
+		} catch {
+			throw new OpenAiRequestError('authentication', 'The saved OpenAI API key could not be unlocked. Replace it in Settings.');
+		}
+	}
+
+	private async runOpenAiRequest(prompt: string, isConnectionTest: boolean): Promise<void> {
+		if (this.sessionState.snapshot.status === 'closed' || this.sessionState.snapshot.status === 'invalidated') {
+			this.error = {
+				code: 'provider-unavailable',
+				message: 'Reopen AI Assist to start a fresh private session.',
+			};
+			this.broadcastState();
+			return;
+		}
+
+		if (this.activeRequest) {
+			return;
+		}
+
+		let apiKey: string;
+		try {
+			apiKey = this.readApiKey();
+		} catch (error) {
+			this.setRequestError(error);
+			this.broadcastState();
+			return;
+		}
+
+		const request = {
+			abortController: new AbortController(),
+			id: ++this.requestCounter,
+		};
+		this.activeRequest = request;
+		this.answer = undefined;
+		this.error = undefined;
+		this.notice = isConnectionTest ? 'Testing the saved OpenAI API key…' : undefined;
+		this.sessionState.beginRequest();
+		this.broadcastState();
+
+		try {
+			const answer = await this.openAiClient.createResponse(apiKey, prompt, request.abortController.signal);
+			if (this.activeRequest?.id !== request.id) {
+				return;
+			}
+
+			if (isConnectionTest) {
+				this.error = undefined;
+				this.notice = 'OpenAI API key works.';
+			} else {
+				this.answer = answer;
+				this.error = undefined;
+				this.notice = undefined;
+			}
+		} catch (error) {
+			if (this.activeRequest?.id !== request.id) {
+				return;
+			}
+
+			this.setRequestError(error);
+		} finally {
+			apiKey = '';
+			if (this.activeRequest?.id === request.id) {
+				this.activeRequest = undefined;
+				this.sessionState.completeRequest();
+				this.broadcastState();
+			}
+		}
+	}
+
+	private setRequestError(error: unknown): void {
+		const requestError = error instanceof OpenAiRequestError
+			? error
+			: new OpenAiRequestError('provider-unavailable', 'OpenAI is unavailable right now. Try again later.');
+		this.answer = undefined;
+		this.notice = undefined;
+		this.error = {
+			code: requestError.code,
+			message: requestError.message,
+		};
+	}
+
+	private cancelActiveRequest(): void {
+		this.activeRequest?.abortController.abort();
+		this.activeRequest = undefined;
 	}
 
 	private broadcastState(): void {
