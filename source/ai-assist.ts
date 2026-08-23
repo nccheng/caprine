@@ -19,7 +19,10 @@ import {
 	AiConversationBinding,
 	AiAssistSessionStateMachine,
 	AiSessionInvalidationReason,
+	ConversationBoundAnswer,
 	ConversationLifecycle,
+	ConversationReportGate,
+	ConversationSnapshot,
 } from './ai-assist-state';
 import {isTrustedMessengerOrigin} from './ipc-validation';
 import {
@@ -34,12 +37,14 @@ class AiAssistController {
 	private activeRequest?: {
 		abortController: AbortController;
 		id: number;
+		snapshot: Readonly<ConversationSnapshot>;
 	};
 
-	private answer?: string;
+	private readonly answer = new ConversationBoundAnswer();
 	private readonly conversationBinding = new AiConversationBinding();
 	private readonly conversationLifecycle = new ConversationLifecycle();
 	private conversationReportCounter = 0;
+	private readonly conversationReportGate = new ConversationReportGate();
 	private error?: {code: OpenAiErrorCode; message: string};
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
@@ -57,8 +62,9 @@ class AiAssistController {
 
 	get state(): AiAssistPanelState {
 		const request: AiAssistPanelState['request'] = {};
-		if (this.answer !== undefined) {
-			request.answer = this.answer;
+		const answer = this.answer.read(this.conversationBinding.currentSnapshot);
+		if (answer !== undefined) {
+			request.answer = answer;
 		}
 
 		if (this.error !== undefined) {
@@ -142,10 +148,8 @@ class AiAssistController {
 			}
 
 			case 'delete-api-key': {
-				this.cancelActiveRequest();
+				this.clearConversationBoundRequestState();
 				config.delete('aiAssistOpenAiKeyCiphertext');
-				this.answer = undefined;
-				this.error = undefined;
 				this.notice = 'OpenAI API key deleted.';
 				this.broadcastState();
 				break;
@@ -174,6 +178,10 @@ class AiAssistController {
 
 	private readonly handleMessengerEvent = (event: IpcMainEvent, value: unknown): void => {
 		if (!this.isExpectedMessengerSender(event) || !isAiAssistMessengerEvent(value)) {
+			return;
+		}
+
+		if (!this.conversationReportGate.acceptsReports) {
 			return;
 		}
 
@@ -209,8 +217,9 @@ class AiAssistController {
 	private bindMessengerLifecycle(): void {
 		const {webContents} = this.messengerWindow;
 
-		webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+		webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
 			if (isMainFrame) {
+				this.conversationReportGate.markNavigationStarted(isInPlace);
 				this.invalidate('messenger-reloaded');
 			}
 		});
@@ -223,10 +232,12 @@ class AiAssistController {
 		});
 
 		webContents.on('render-process-gone', () => {
+			this.conversationReportGate.markNavigationStarted();
 			this.invalidate('messenger-reloaded');
 		});
 
 		webContents.on('dom-ready', () => {
+			this.conversationReportGate.markDocumentReady();
 			this.notifyMessenger({
 				type: 'set-enabled',
 				enabled: config.get('aiAssistEnabled'),
@@ -295,7 +306,7 @@ class AiAssistController {
 		panel.on('closed', () => {
 			if (this.panelWindow === panel) {
 				this.advanceConversationLifecycle();
-				this.cancelActiveRequest();
+				this.clearConversationBoundRequestState();
 				this.conversationBinding.close();
 				if (this.sessionState.snapshot.status !== 'invalidated') {
 					this.sessionState.invalidate('panel-closed');
@@ -336,7 +347,7 @@ class AiAssistController {
 		preserveConversationReportId?: string,
 	): void {
 		this.advanceConversationLifecycle(preserveConversationReportId);
-		this.cancelActiveRequest();
+		this.clearConversationBoundRequestState();
 		if (invalidateConversation) {
 			this.conversationBinding.invalidate();
 		}
@@ -375,17 +386,18 @@ class AiAssistController {
 			return;
 		}
 
-		this.cancelActiveRequest();
-		this.answer = undefined;
-		this.error = undefined;
-		this.notice = undefined;
+		this.clearConversationBoundRequestState();
 		this.sessionState.open();
 		this.bindCurrentConversation();
 		this.broadcastState();
 	}
 
 	private async requestConversationState(): Promise<number | undefined> {
-		if (this.messengerWindow.isDestroyed() || this.messengerWindow.webContents.isDestroyed()) {
+		if (
+			!this.conversationReportGate.acceptsReports
+			|| this.messengerWindow.isDestroyed()
+			|| this.messengerWindow.webContents.isDestroyed()
+		) {
 			return;
 		}
 
@@ -484,13 +496,8 @@ class AiAssistController {
 		}
 
 		const conversationSnapshot = this.conversationBinding.currentSnapshot;
-		if (
-			this.sessionState.snapshot.status === 'closed'
-			|| this.sessionState.snapshot.status === 'invalidated'
-			|| !this.conversationBinding.isCurrent(conversationSnapshot)
-			|| conversationSnapshot?.messengerWebContentsId !== this.messengerWindow.webContents.id
-			|| conversationSnapshot?.sessionId !== this.sessionState.snapshot.sessionId
-		) {
+		if (!this.canStartRequestForSnapshot(conversationSnapshot)) {
+			this.clearConversationBoundRequestState();
 			this.error = {
 				code: 'provider-unavailable',
 				message: 'Conversation changed — refresh context before asking AI.',
@@ -502,6 +509,8 @@ class AiAssistController {
 		if (this.activeRequest) {
 			return;
 		}
+
+		this.clearConversationBoundRequestState();
 
 		let apiKey: string;
 		try {
@@ -515,10 +524,9 @@ class AiAssistController {
 		const request = {
 			abortController: new AbortController(),
 			id: ++this.requestCounter,
+			snapshot: conversationSnapshot,
 		};
 		this.activeRequest = request;
-		this.answer = undefined;
-		this.error = undefined;
 		this.notice = isConnectionTest ? 'Testing the saved OpenAI API key…' : undefined;
 		this.sessionState.beginRequest();
 		this.broadcastState();
@@ -529,16 +537,37 @@ class AiAssistController {
 				return;
 			}
 
+			if (!this.isRequestSnapshotCurrent(request.snapshot)) {
+				this.clearConversationBoundRequestState();
+				this.broadcastState();
+				return;
+			}
+
 			if (isConnectionTest) {
 				this.error = undefined;
 				this.notice = 'OpenAI API key works.';
 			} else {
-				this.answer = answer;
+				if (!this.answer.store(
+					answer,
+					request.snapshot,
+					this.conversationBinding.currentSnapshot,
+				)) {
+					this.clearConversationBoundRequestState();
+					this.broadcastState();
+					return;
+				}
+
 				this.error = undefined;
 				this.notice = undefined;
 			}
 		} catch (error) {
 			if (this.activeRequest?.id !== request.id) {
+				return;
+			}
+
+			if (!this.isRequestSnapshotCurrent(request.snapshot)) {
+				this.clearConversationBoundRequestState();
+				this.broadcastState();
 				return;
 			}
 
@@ -553,11 +582,33 @@ class AiAssistController {
 		}
 	}
 
+	private canStartRequestForSnapshot(
+		snapshot: Readonly<ConversationSnapshot> | undefined,
+	): snapshot is Readonly<ConversationSnapshot> {
+		return snapshot !== undefined
+			&& this.sessionState.snapshot.status !== 'closed'
+			&& this.sessionState.snapshot.status !== 'invalidated'
+			&& this.isRequestSnapshotCurrent(snapshot);
+	}
+
+	private isRequestSnapshotCurrent(snapshot: Readonly<ConversationSnapshot>): boolean {
+		return this.conversationBinding.isCurrent(snapshot)
+			&& snapshot.messengerWebContentsId === this.messengerWindow.webContents.id
+			&& snapshot.sessionId === this.sessionState.snapshot.sessionId;
+	}
+
+	private clearConversationBoundRequestState(): void {
+		this.cancelActiveRequest();
+		this.answer.clear();
+		this.error = undefined;
+		this.notice = undefined;
+	}
+
 	private setRequestError(error: unknown): void {
 		const requestError = error instanceof OpenAiRequestError
 			? error
 			: new OpenAiRequestError('provider-unavailable', 'OpenAI is unavailable right now. Try again later.');
-		this.answer = undefined;
+		this.answer.clear();
 		this.notice = undefined;
 		this.error = {
 			code: requestError.code,

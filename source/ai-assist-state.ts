@@ -31,6 +31,71 @@ export type ConversationSnapshot = {
 	sessionId: string;
 };
 
+function isSameConversationSnapshot(
+	left: Readonly<ConversationSnapshot> | undefined,
+	right: Readonly<ConversationSnapshot> | undefined,
+): boolean {
+	if (!left || !right) {
+		return false;
+	}
+
+	return left.captureGeneration === right.captureGeneration
+		&& left.conversationId === right.conversationId
+		&& left.messengerWebContentsId === right.messengerWebContentsId
+		&& left.sessionId === right.sessionId;
+}
+
+export class ConversationBoundAnswer {
+	private stored?: {
+		answer: string;
+		snapshot: ConversationSnapshot;
+	};
+
+	clear(): void {
+		this.stored = undefined;
+	}
+
+	store(
+		answer: string,
+		requestSnapshot: Readonly<ConversationSnapshot>,
+		currentSnapshot: Readonly<ConversationSnapshot> | undefined,
+	): boolean {
+		if (!isSameConversationSnapshot(requestSnapshot, currentSnapshot)) {
+			return false;
+		}
+
+		this.stored = {
+			answer,
+			snapshot: {...requestSnapshot},
+		};
+		return true;
+	}
+
+	read(currentSnapshot: Readonly<ConversationSnapshot> | undefined): string | undefined {
+		return isSameConversationSnapshot(this.stored?.snapshot, currentSnapshot)
+			? this.stored!.answer
+			: undefined;
+	}
+}
+
+export class ConversationReportGate {
+	private ready = false;
+
+	get acceptsReports(): boolean {
+		return this.ready;
+	}
+
+	markDocumentReady(): void {
+		this.ready = true;
+	}
+
+	markNavigationStarted(isInPlace = false): void {
+		if (!isInPlace) {
+			this.ready = false;
+		}
+	}
+}
+
 export class ConversationLifecycle {
 	private generation = 0;
 

@@ -13,10 +13,32 @@ const cancelButton = document.querySelector('#cancel-button');
 const requestMessage = document.querySelector('#request-message');
 const answerOutput = document.querySelector('#answer-output');
 const closeButton = document.querySelector('#close-button');
+let renderedCaptureGeneration;
+let promptCaptureGeneration;
+
+function shouldClearPrompt(state) {
+	return state.conversation.status !== 'ready'
+		|| Boolean(
+			promptInput.value
+			&& promptCaptureGeneration !== state.conversation.captureGeneration,
+		);
+}
+
+function answerForState(state) {
+	return state.conversation.status === 'ready'
+		? (state.request.answer ?? 'No answer yet.')
+		: 'No answer yet.';
+}
 
 function render(state) {
 	const isRequesting = state.session.status === 'requesting';
 	const isConversationReady = state.conversation.status === 'ready';
+	if (shouldClearPrompt(state)) {
+		promptInput.value = '';
+		promptCaptureGeneration = undefined;
+	}
+
+	renderedCaptureGeneration = state.conversation.captureGeneration;
 	if (state.conversation.status === 'changed') {
 		statusElement.textContent = 'Conversation changed — refresh context.';
 	} else if (isConversationReady) {
@@ -45,8 +67,12 @@ function render(state) {
 	cancelButton.disabled = !isRequesting;
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));
-	answerOutput.textContent = state.request.answer ?? 'No answer yet.';
+	answerOutput.textContent = answerForState(state);
 }
+
+promptInput.addEventListener('input', () => {
+	promptCaptureGeneration = renderedCaptureGeneration;
+});
 
 keyForm.addEventListener('submit', async event => {
 	event.preventDefault();

@@ -1,9 +1,13 @@
 const assert = require('node:assert/strict');
+const {readFileSync} = require('node:fs');
 const test = require('node:test');
+const vm = require('node:vm');
 const {
 	AiAssistSessionStateMachine,
 	AiConversationBinding,
+	ConversationBoundAnswer,
 	ConversationLifecycle,
+	ConversationReportGate,
 } = require('../dist-js/ai-assist-state.js');
 const {
 	conversationIdFromMessengerUrl,
@@ -166,4 +170,119 @@ test('stale conversation reports cannot cross reload or panel lifecycle boundari
 
 	lifecycle.advance();
 	assert.equal(lifecycle.isCurrent(reportStartedAfterReload), false);
+});
+
+test('conversation-bound answers never cross snapshot boundaries or revive', () => {
+	const binding = new AiConversationBinding();
+	const answer = new ConversationBoundAnswer();
+	binding.reportAvailable('messenger-thread:111', 'Alex');
+	const sessionA = binding.bind('ai-session-1', 7);
+
+	assert.equal(answer.store('Answer for A', sessionA, binding.currentSnapshot), true);
+	assert.equal(answer.read(binding.currentSnapshot), 'Answer for A');
+
+	binding.reportAvailable('messenger-thread:222', 'Alex');
+	assert.equal(answer.read(binding.currentSnapshot), undefined);
+	answer.clear();
+	const sessionB = binding.bind('ai-session-2', 7);
+	assert.equal(answer.read(sessionB), undefined);
+
+	binding.reportAvailable('messenger-thread:111', 'Alex');
+	const newSessionA = binding.bind('ai-session-3', 7);
+	assert.equal(answer.read(newSessionA), undefined);
+
+	binding.reportUnavailable();
+	assert.equal(answer.read(binding.currentSnapshot), undefined);
+	answer.clear();
+	binding.close();
+	binding.reportAvailable('messenger-thread:111', 'Alex');
+	const reopenedA = binding.bind('ai-session-4', 7);
+	assert.equal(answer.read(reopenedA), undefined);
+
+	assert.equal(answer.store('Late answer for A', sessionA, reopenedA), false);
+	assert.equal(answer.read(reopenedA), undefined);
+});
+
+test('conversation reports are rejected until the replacement document is ready', () => {
+	const gate = new ConversationReportGate();
+	assert.equal(gate.acceptsReports, false);
+	gate.markDocumentReady();
+	assert.equal(gate.acceptsReports, true);
+	gate.markNavigationStarted(true);
+	assert.equal(gate.acceptsReports, true);
+	gate.markNavigationStarted();
+	assert.equal(gate.acceptsReports, false);
+	gate.markDocumentReady();
+	assert.equal(gate.acceptsReports, true);
+});
+
+test('panel clears stale prompts and hides stale answers outside ready state', () => {
+	const elements = new Map();
+	const element = id => {
+		if (!elements.has(id)) {
+			const listeners = new Map();
+			elements.set(id, {
+				addEventListener(type, listener) {
+					listeners.set(type, listener);
+				},
+				classList: {toggle() {}},
+				disabled: false,
+				listeners,
+				textContent: '',
+				value: '',
+			});
+		}
+
+		return elements.get(id);
+	};
+
+	let renderState;
+	const context = {
+		document: {querySelector: selector => element(selector.slice(1))},
+		window: {
+			caprineAiAssist: {
+				async cancel() {},
+				async close() {},
+				async deleteApiKey() {},
+				async getState() {
+					return new Promise(() => {});
+				},
+				onStateChanged(callback) {
+					renderState = callback;
+				},
+				async refreshConversation() {},
+				async saveApiKey() {},
+				async submitPrompt() {},
+				async testApiKey() {},
+			},
+		},
+	};
+	vm.runInNewContext(
+		readFileSync('static/ai-assist/panel.js', 'utf8'),
+		context,
+	);
+
+	const state = (status, captureGeneration, request = {}) => ({
+		conversation: {captureGeneration, status},
+		credentials: {configured: true, secureStorageAvailable: true},
+		enabled: true,
+		request,
+		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
+	});
+	renderState(state('ready', 1));
+	const prompt = element('prompt');
+	prompt.value = 'Question for A';
+	prompt.listeners.get('input')();
+
+	renderState(state('changed', 2, {answer: 'Stale answer for A'}));
+	assert.equal(prompt.value, '');
+	assert.equal(element('answer-output').textContent, 'No answer yet.');
+
+	renderState(state('ready', 3));
+	assert.equal(prompt.value, '');
+	assert.equal(element('ask-button').disabled, false);
+	prompt.value = 'Question for B';
+	prompt.listeners.get('input')();
+	renderState(state('ready', 4));
+	assert.equal(prompt.value, '');
 });
