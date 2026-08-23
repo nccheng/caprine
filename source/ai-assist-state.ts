@@ -31,6 +31,23 @@ export type ConversationSnapshot = {
 	sessionId: string;
 };
 
+export class ConversationLifecycle {
+	private generation = 0;
+
+	get snapshot(): number {
+		return this.generation;
+	}
+
+	advance(): number {
+		this.generation += 1;
+		return this.generation;
+	}
+
+	isCurrent(generation: number): boolean {
+		return generation === this.generation;
+	}
+}
+
 export class AiConversationBinding {
 	private captureGeneration = 0;
 	private conversationId?: string;

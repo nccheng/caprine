@@ -19,6 +19,7 @@ import {
 	AiConversationBinding,
 	AiAssistSessionStateMachine,
 	AiSessionInvalidationReason,
+	ConversationLifecycle,
 } from './ai-assist-state';
 import {isTrustedMessengerOrigin} from './ipc-validation';
 import {
@@ -37,11 +38,12 @@ class AiAssistController {
 
 	private answer?: string;
 	private readonly conversationBinding = new AiConversationBinding();
+	private readonly conversationLifecycle = new ConversationLifecycle();
 	private conversationReportCounter = 0;
 	private error?: {code: OpenAiErrorCode; message: string};
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
-	private readonly pendingConversationReports = new Map<string, (reported: boolean) => void>();
+	private readonly pendingConversationReports = new Map<string, (generation?: number) => void>();
 	private requestCounter = 0;
 	private readonly sessionState = new AiAssistSessionStateMachine();
 	private panelUrl?: string;
@@ -175,13 +177,17 @@ class AiAssistController {
 			return;
 		}
 
+		if (value.requestId && !this.pendingConversationReports.has(value.requestId)) {
+			return;
+		}
+
 		if (value.status === 'available') {
 			const shouldInvalidate = this.conversationBinding.reportAvailable(
 				value.conversationId,
 				value.displayName,
 			);
 			if (shouldInvalidate) {
-				this.invalidate('conversation-changed', false);
+				this.invalidate('conversation-changed', false, value.requestId);
 			} else {
 				this.broadcastState();
 			}
@@ -192,7 +198,7 @@ class AiAssistController {
 
 		const shouldInvalidate = this.conversationBinding.reportUnavailable();
 		if (shouldInvalidate) {
-			this.invalidate('conversation-unavailable', false);
+			this.invalidate('conversation-unavailable', false, value.requestId);
 		} else {
 			this.broadcastState();
 		}
@@ -288,6 +294,7 @@ class AiAssistController {
 		});
 		panel.on('closed', () => {
 			if (this.panelWindow === panel) {
+				this.advanceConversationLifecycle();
 				this.cancelActiveRequest();
 				this.conversationBinding.close();
 				if (this.sessionState.snapshot.status !== 'invalidated') {
@@ -323,7 +330,12 @@ class AiAssistController {
 			&& isTrustedMessengerOrigin(event.senderFrame.origin);
 	}
 
-	private invalidate(reason: AiSessionInvalidationReason, invalidateConversation = true): void {
+	private invalidate(
+		reason: AiSessionInvalidationReason,
+		invalidateConversation = true,
+		preserveConversationReportId?: string,
+	): void {
+		this.advanceConversationLifecycle(preserveConversationReportId);
 		this.cancelActiveRequest();
 		if (invalidateConversation) {
 			this.conversationBinding.invalidate();
@@ -344,9 +356,22 @@ class AiAssistController {
 	}
 
 	private async refreshConversation(): Promise<void> {
-		if (!await this.requestConversationState()) {
-			this.conversationBinding.reportUnavailable();
-			this.invalidate('conversation-unavailable', false);
+		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
+		const reportedGeneration = await this.requestConversationState();
+		if (reportedGeneration === undefined) {
+			if (this.conversationLifecycle.isCurrent(lifecycleBeforeReport)) {
+				this.conversationBinding.reportUnavailable();
+				this.invalidate('conversation-unavailable', false);
+			}
+
+			return;
+		}
+
+		if (
+			!this.conversationLifecycle.isCurrent(reportedGeneration)
+			|| !this.panelWindow
+			|| this.panelWindow.isDestroyed()
+		) {
 			return;
 		}
 
@@ -359,20 +384,20 @@ class AiAssistController {
 		this.broadcastState();
 	}
 
-	private async requestConversationState(): Promise<boolean> {
+	private async requestConversationState(): Promise<number | undefined> {
 		if (this.messengerWindow.isDestroyed() || this.messengerWindow.webContents.isDestroyed()) {
-			return false;
+			return;
 		}
 
 		const requestId = `conversation-report-${++this.conversationReportCounter}`;
 		return new Promise(resolve => {
 			const timeout = setTimeout(() => {
 				this.pendingConversationReports.delete(requestId);
-				resolve(false);
+				resolve(undefined);
 			}, 1500);
-			this.pendingConversationReports.set(requestId, reported => {
+			this.pendingConversationReports.set(requestId, generation => {
 				clearTimeout(timeout);
-				resolve(reported);
+				resolve(generation);
 			});
 			this.notifyMessenger({requestId, type: 'report-conversation'});
 		});
@@ -386,7 +411,17 @@ class AiAssistController {
 		const resolve = this.pendingConversationReports.get(requestId);
 		if (resolve) {
 			this.pendingConversationReports.delete(requestId);
-			resolve(true);
+			resolve(this.conversationLifecycle.snapshot);
+		}
+	}
+
+	private advanceConversationLifecycle(preserveRequestId?: string): void {
+		this.conversationLifecycle.advance();
+		for (const [requestId, resolve] of this.pendingConversationReports) {
+			if (requestId !== preserveRequestId) {
+				this.pendingConversationReports.delete(requestId);
+				resolve(undefined);
+			}
 		}
 	}
 
@@ -433,9 +468,19 @@ class AiAssistController {
 	}
 
 	private async runOpenAiRequest(prompt: string, isConnectionTest: boolean): Promise<void> {
-		if (!await this.requestConversationState()) {
-			this.conversationBinding.reportUnavailable();
-			this.invalidate('conversation-unavailable', false);
+		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
+		const reportedGeneration = await this.requestConversationState();
+		if (reportedGeneration === undefined) {
+			if (this.conversationLifecycle.isCurrent(lifecycleBeforeReport)) {
+				this.conversationBinding.reportUnavailable();
+				this.invalidate('conversation-unavailable', false);
+			}
+
+			return;
+		}
+
+		if (!this.conversationLifecycle.isCurrent(reportedGeneration)) {
+			return;
 		}
 
 		const conversationSnapshot = this.conversationBinding.currentSnapshot;

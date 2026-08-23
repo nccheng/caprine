@@ -3,6 +3,7 @@ const test = require('node:test');
 const {
 	AiAssistSessionStateMachine,
 	AiConversationBinding,
+	ConversationLifecycle,
 } = require('../dist-js/ai-assist-state.js');
 const {
 	conversationIdFromMessengerUrl,
@@ -151,4 +152,18 @@ test('conversation snapshots never revive after rapid thread switches', () => {
 	assert.equal(binding.reportUnavailable(), true);
 	assert.equal(binding.isCurrent(refreshed), false);
 	assert.equal(binding.panelState.status, 'unavailable');
+});
+
+test('stale conversation reports cannot cross reload or panel lifecycle boundaries', () => {
+	const lifecycle = new ConversationLifecycle();
+	const reportStartedBeforeReload = lifecycle.snapshot;
+	assert.equal(lifecycle.isCurrent(reportStartedBeforeReload), true);
+
+	lifecycle.advance();
+	assert.equal(lifecycle.isCurrent(reportStartedBeforeReload), false);
+	const reportStartedAfterReload = lifecycle.snapshot;
+	assert.equal(lifecycle.isCurrent(reportStartedAfterReload), true);
+
+	lifecycle.advance();
+	assert.equal(lifecycle.isCurrent(reportStartedAfterReload), false);
 });
