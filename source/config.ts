@@ -3,6 +3,7 @@ import {is} from 'electron-util';
 import {EmojiStyle} from './emoji';
 
 export type StoreType = {
+	aiAssistEnabled: boolean;
 	theme: 'system' | 'light' | 'dark';
 	privateMode: boolean;
 	showPrivateModePrompt: boolean;
@@ -48,6 +49,10 @@ export type StoreType = {
 };
 
 const schema: Store.Schema<StoreType> = {
+	aiAssistEnabled: {
+		type: 'boolean',
+		default: false,
+	},
 	theme: {
 		type: 'string',
 		enum: ['system', 'light', 'dark'],

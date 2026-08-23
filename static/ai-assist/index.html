@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta
+			http-equiv="Content-Security-Policy"
+			content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+		>
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>Caprine AI Assist</title>
+		<link rel="stylesheet" href="panel.css">
+		<script src="panel.js" defer></script>
+	</head>
+	<body>
+		<header>
+			<p class="eyebrow">Private to Caprine</p>
+			<h1>AI Assist</h1>
+			<p id="session-status" class="status" role="status">Opening local session…</p>
+		</header>
+
+		<main>
+			<section aria-labelledby="settings-heading">
+				<h2 id="settings-heading">Settings</h2>
+				<p>OpenAI key setup will appear here in the next delivery step.</p>
+			</section>
+			<section aria-labelledby="context-heading">
+				<h2 id="context-heading">Context review</h2>
+				<p>No Messenger content has been captured or shared.</p>
+			</section>
+			<section aria-labelledby="progress-heading">
+				<h2 id="progress-heading">Request progress</h2>
+				<p>No provider request is active.</p>
+				<button id="cancel-button" type="button" disabled>Cancel request</button>
+			</section>
+			<section aria-labelledby="answer-heading">
+				<h2 id="answer-heading">Answer preview</h2>
+				<p>Answers stay private until you explicitly insert one into Messenger.</p>
+			</section>
+			<section aria-labelledby="history-heading">
+				<h2 id="history-heading">History</h2>
+				<p>Local conversation history will appear here.</p>
+			</section>
+		</main>
+
+		<footer>
+			<button id="close-button" type="button">Close AI Assist</button>
+		</footer>
+	</body>
+</html>

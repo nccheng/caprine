@@ -37,6 +37,7 @@ import ensureOnline from './ensure-online';
 import {setUpMenuBarMode} from './menu-bar-mode';
 import {caprineIconPath} from './constants';
 import {answerTrustedRenderer} from './trusted-ipc';
+import {initializeAiAssist} from './ai-assist';
 import {
 	externalUrl,
 	isConversationList,
@@ -505,6 +506,7 @@ function createMainWindow(): BrowserWindow {
 	configurePermissionHandlers();
 	mainWindow = createMainWindow();
 	registerMainIpcHandlers();
+	initializeAiAssist(mainWindow);
 
 	if (is.windows) {
 		const jumpToConversationMatch = process.argv.find(argument => /^--jump-to-conversation=\d+$/.test(argument));

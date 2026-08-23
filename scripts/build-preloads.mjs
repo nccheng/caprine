@@ -6,6 +6,7 @@ const stats = await new Promise((resolve, reject) => {
 		mode: 'none',
 		target: ['web', 'es2022'],
 		entry: {
+			'ai-assist-panel': './dist-js/ai-assist-panel-preload.js',
 			browser: './dist-js/browser.js',
 			'browser-call': './dist-js/browser-call.js',
 		},
