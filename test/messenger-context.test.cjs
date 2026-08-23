@@ -3,7 +3,7 @@ const test = require('node:test');
 const {
 	extractConversationContextCandidates,
 	extractLoadedMessengerConversationContext,
-	maximumLoadedConversationContextItems,
+	maximumMessengerDomExtractionItems,
 	messengerContextSelectors,
 } = require('../dist-js/messenger-context.js');
 
@@ -145,13 +145,72 @@ test('missing fields stay unknown and stable duplicate mutations emit one plain 
 	assert.equal(JSON.stringify(result).includes('element'), false);
 });
 
+test('same sender and text without a shared stable ID preserve distinct message instances', () => {
+	const result = extractConversationContextCandidates([
+		{
+			domOrder: 0,
+			senderDisplayName: 'Alex',
+			senderRole: 'incoming',
+			text: 'Repeated words',
+			timestamp: '2026-08-23T13:00:00-07:00',
+		},
+		{
+			domOrder: 1,
+			senderDisplayName: 'Alex',
+			senderRole: 'incoming',
+			text: 'Repeated words',
+			timestamp: '2026-08-23T13:00:00-07:00',
+		},
+	]);
+
+	assert.equal(result.length, 2);
+	assert.equal(result[0].text, 'Repeated words');
+	assert.equal(result[1].text, 'Repeated words');
+});
+
+test('repeated messages with distinct stable IDs are never semantically collapsed', () => {
+	const result = extractConversationContextCandidates([
+		{
+			domOrder: 0, senderRole: 'outgoing', stableId: 'message-one', text: 'Again',
+		},
+		{
+			domOrder: 1, senderRole: 'outgoing', stableId: 'message-two', text: 'Again',
+		},
+	]);
+
+	assert.deepEqual(result.map(item => item.messageId), ['message-one', 'message-two']);
+});
+
+test('virtualized mutations with one stable ID retain the latest mutable metadata', () => {
+	const result = extractConversationContextCandidates([
+		{
+			domOrder: 0,
+			reactions: [{count: 1, emoji: '👍'}],
+			senderRole: 'incoming',
+			stableId: 'message-virtualized',
+			text: 'One logical message',
+		},
+		{
+			domOrder: 7,
+			reactions: [{count: 2, emoji: '👍'}],
+			senderRole: 'incoming',
+			stableId: 'message-virtualized',
+			text: 'One logical message',
+		},
+	]);
+
+	assert.equal(result.length, 1);
+	assert.deepEqual(result[0].reactions, [{count: 2, emoji: '👍'}]);
+});
+
 test('conflicting duplicate mutations and malformed content fail closed', () => {
 	const result = extractConversationContextCandidates([
 		{domOrder: 0, stableId: 'message-conflict', text: 'First value'},
 		{domOrder: 1, stableId: 'message-conflict', text: 'Different value'},
-		{domOrder: 2, malformed: true},
-		{domOrder: 3, unsupported: true},
-		{domOrder: 4},
+		{domOrder: 2, stableId: 'message-conflict', text: 'First value'},
+		{domOrder: 3, malformed: true},
+		{domOrder: 4, unsupported: true},
+		{domOrder: 5},
 		{domOrder: Number.NaN, text: 'Ignored invalid fixture'},
 	]);
 
@@ -182,23 +241,23 @@ test('conflicting duplicate mutations and malformed content fail closed', () => 
 
 test('context extraction stays bounded to the most recent loaded messages', () => {
 	const candidates = Array.from(
-		{length: maximumLoadedConversationContextItems + 2},
+		{length: maximumMessengerDomExtractionItems + 2},
 		(_, domOrder) => ({domOrder, text: `Message ${domOrder}`}),
 	);
 	const result = extractConversationContextCandidates(candidates);
 
-	assert.equal(result.length, maximumLoadedConversationContextItems);
+	assert.equal(result.length, maximumMessengerDomExtractionItems);
 	assert.equal(result[0].text, 'Message 2');
-	assert.equal(result.at(-1).text, `Message ${maximumLoadedConversationContextItems + 1}`);
+	assert.equal(result.at(-1).text, `Message ${maximumMessengerDomExtractionItems + 1}`);
 });
 
 test('sanitized semantic DOM fixtures exercise traversal and deduplicate virtualized copies', () => {
 	const makeRow = () => {
-		const avatar = new FixtureElement({attributes: {alt: 'Alex'}});
-		const quotedAvatar = new FixtureElement({attributes: {alt: 'Taylor'}});
+		const avatar = new FixtureElement({attributes: {alt: 'Alex', 'data-message-author': ''}});
+		const quotedAvatar = new FixtureElement({attributes: {alt: 'Taylor', 'data-message-author': ''}});
 		const currentText = new FixtureElement({text: 'Current message'});
 		const reply = new FixtureElement({
-			children: {'img[alt]': [quotedAvatar]},
+			children: {[messengerContextSelectors.senderAvatar]: [quotedAvatar]},
 			closest: [messengerContextSelectors.reply],
 			text: 'Earlier message',
 		});
@@ -220,15 +279,17 @@ test('sanitized semantic DOM fixtures exercise traversal and deduplicate virtual
 		const timestamp = new FixtureElement({attributes: {datetime: '2026-08-23T13:00:00-07:00'}});
 		const photo = new FixtureElement({attributes: {alt: 'Photo'}});
 		return new FixtureElement({
+			attributes: {'data-message-id': 'message-rich'},
 			children: {
 				'[aria-label]': [reaction],
 				'a[href]': [link],
 				audio: [new FixtureElement()],
 				'img[alt]': [avatar, photo],
+				[messengerContextSelectors.senderAvatar]: [avatar],
 				[messengerContextSelectors.message]: [],
 				[messengerContextSelectors.reaction]: [reaction],
 				[messengerContextSelectors.reply]: [reply],
-				[messengerContextSelectors.text]: [wrappingText, reply, currentText],
+				[messengerContextSelectors.messageText]: [wrappingText, reply, currentText],
 				[messengerContextSelectors.timestamp]: [timestamp],
 			},
 		});
@@ -256,4 +317,85 @@ test('sanitized semantic DOM fixtures exercise traversal and deduplicate virtual
 		url: 'https://example.com/article',
 	});
 	assert.deepEqual(result[0].attachments, [{kind: 'audio'}, {kind: 'image'}]);
+});
+
+test('DOM boundary rejects unrelated UI placeholders and incomplete containers with reasons', () => {
+	const unrelatedAccessibilityText = new FixtureElement({
+		attributes: {'aria-label': 'Navigation notice'},
+		children: {
+			'[aria-label]': [new FixtureElement({attributes: {'aria-label': 'Press Escape to close'}})],
+			'[dir="auto"]': [new FixtureElement({text: 'Keyboard shortcut help'})],
+			[messengerContextSelectors.message]: [],
+		},
+	});
+	const sidebarRow = new FixtureElement({
+		children: {
+			[messengerContextSelectors.message]: [],
+			[messengerContextSelectors.messageText]: [new FixtureElement({text: 'Pinned chats'})],
+		},
+		closest: ['[data-messenger-sidebar]'],
+	});
+	const placeholder = new FixtureElement({
+		children: {[messengerContextSelectors.message]: []},
+		closest: ['[aria-busy="true"]'],
+	});
+	const incompleteMessage = new FixtureElement({
+		children: {
+			'img[alt]': [new FixtureElement({attributes: {alt: 'Article thumbnail'}})],
+			[messengerContextSelectors.message]: [],
+			[messengerContextSelectors.messageText]: [new FixtureElement({text: 'Unanchored text'})],
+			[messengerContextSelectors.senderAvatar]: [],
+		},
+	});
+	const conversation = new FixtureElement({
+		children: {
+			[messengerContextSelectors.message]: [
+				unrelatedAccessibilityText,
+				sidebarRow,
+				placeholder,
+				incompleteMessage,
+			],
+		},
+	});
+	const root = new FixtureElement({
+		children: {[messengerContextSelectors.conversation]: [conversation]},
+	});
+
+	assert.deepEqual(
+		extractLoadedMessengerConversationContext(root).map(item => item.omittedReason),
+		['non-message-ui', 'non-message-ui', 'virtualized-placeholder', 'incomplete-message'],
+	);
+});
+
+test('integration seam normalizes renderer candidates and fails closed on malformed input', () => {
+	const result = extractConversationContextCandidates([
+		{
+			domOrder: 0,
+			senderDisplayName: '  Alex  ',
+			senderRole: 'incoming',
+			stableId: 'message-normalized',
+			text: ' first line \n   second line ',
+		},
+		{domOrder: 1, text: 42},
+	]);
+
+	assert.deepEqual(result, [
+		{
+			confidence: 'high',
+			messageId: 'message-normalized',
+			sender: {displayName: 'Alex', role: 'incoming'},
+			text: 'first line\nsecond line',
+		},
+		{
+			confidence: 'low',
+			omittedReason: 'no-supported-content',
+			sender: {role: 'unknown'},
+		},
+	]);
+	assert.deepEqual(extractConversationContextCandidates(null), []);
+	assert.deepEqual(extractLoadedMessengerConversationContext({
+		querySelector() {
+			throw new Error('malformed renderer root');
+		},
+	}), []);
 });

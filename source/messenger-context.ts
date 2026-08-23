@@ -1,12 +1,16 @@
 export const conversationContextConfidenceLevels = ['high', 'medium', 'low'] as const;
 export type ConversationContextConfidence = typeof conversationContextConfidenceLevels[number];
-export const maximumLoadedConversationContextItems = 500;
+// This bounds loaded DOM traversal only; AI context selection belongs to a later layer.
+export const maximumMessengerDomExtractionItems = 500;
 
 export const conversationContextOmittedReasons = [
 	'ambiguous-message',
+	'incomplete-message',
 	'malformed-message',
 	'no-supported-content',
+	'non-message-ui',
 	'unsupported-message',
+	'virtualized-placeholder',
 ] as const;
 export type ConversationContextOmittedReason = typeof conversationContextOmittedReasons[number];
 
@@ -51,6 +55,7 @@ export type MessengerContextCandidate = {
 		url?: string;
 	};
 	malformed?: boolean;
+	omittedReason?: ConversationContextOmittedReason;
 	reactions?: Array<{
 		count?: number;
 		emoji?: string;
@@ -70,9 +75,13 @@ export type MessengerContextCandidate = {
 export const messengerContextSelectors = {
 	conversation: '[role="main"] [role="grid"]',
 	message: '[role="row"]',
+	messageIdentity: '[data-message-id], [data-messageid]',
+	messageText: '[data-ad-preview="message"]',
+	nonMessageUi: '[role="navigation"], [role="complementary"], [role="tablist"], [data-messenger-sidebar]',
+	placeholder: '[aria-busy="true"], [data-virtualized-placeholder], [data-placeholder="true"]',
 	reaction: '[aria-label*="reaction" i], [aria-label*="reacted" i]',
 	reply: 'blockquote, [data-reply-to-message-id], [aria-label*="replied to" i]',
-	text: '[data-ad-preview="message"], [dir="auto"]',
+	senderAvatar: 'img[alt][data-message-author], [data-message-author] img[alt]',
 	timestamp: 'time[datetime], abbr[data-utime]',
 } as const;
 
@@ -200,11 +209,13 @@ function normalizedReply(value: MessengerContextCandidate['reply']): Conversatio
 	return reply;
 }
 
-function candidateContentSignature(candidate: MessengerContextCandidate): string {
+function stableMessageContentSignature(candidate: MessengerContextCandidate): string {
 	return JSON.stringify({
 		attachments: normalizedAttachments(candidate.attachments),
 		linkPreview: normalizedLinkPreview(candidate.linkPreview),
-		reactions: normalizedReactions(candidate.reactions),
+		omittedReason: candidate.omittedReason
+			?? (candidate.malformed ? 'malformed-message' : undefined)
+			?? (candidate.unsupported ? 'unsupported-message' : undefined),
 		reply: {
 			quotedSender: normalizedInline(candidate.reply?.quotedSender, maximumStringLengths.displayName),
 			text: normalizedMultiline(candidate.reply?.text, maximumStringLengths.reply),
@@ -216,19 +227,14 @@ function candidateContentSignature(candidate: MessengerContextCandidate): string
 	});
 }
 
-function semanticDedupeKey(candidate: MessengerContextCandidate): string | undefined {
-	const timestamp = normalizedInline(candidate.timestamp, maximumStringLengths.timestamp);
-	const sender = normalizedInline(candidate.senderDisplayName, maximumStringLengths.displayName)
-		?? candidate.senderRole;
-	const hasContent = [
-		normalizedMultiline(candidate.text, maximumStringLengths.text),
-		normalizedReply(candidate.reply),
-		normalizedLinkPreview(candidate.linkPreview),
-		normalizedAttachments(candidate.attachments),
-	].some(value => value !== undefined);
-	return timestamp && sender && hasContent
-		? `semantic:${candidateContentSignature(candidate)}`
-		: undefined;
+function candidateOmittedReason(
+	candidate: MessengerContextCandidate,
+	hasSupportedContent: boolean,
+): ConversationContextOmittedReason | undefined {
+	return candidate.omittedReason
+		?? (candidate.malformed ? 'malformed-message' : undefined)
+		?? (candidate.unsupported ? 'unsupported-message' : undefined)
+		?? (hasSupportedContent ? undefined : 'no-supported-content');
 }
 
 function normalizedCandidate(candidate: MessengerContextCandidate): ConversationContextItem {
@@ -282,12 +288,9 @@ function normalizedCandidate(candidate: MessengerContextCandidate): Conversation
 		item.attachments = attachments;
 	}
 
-	if (candidate.malformed) {
-		item.omittedReason = 'malformed-message';
-	} else if (candidate.unsupported) {
-		item.omittedReason = 'unsupported-message';
-	} else if (!text && !reply && !linkPreview && !attachments) {
-		item.omittedReason = 'no-supported-content';
+	const omittedReason = candidateOmittedReason(candidate, Boolean(text ?? reply ?? linkPreview ?? attachments));
+	if (omittedReason) {
+		item.omittedReason = omittedReason;
 	}
 
 	if (!item.omittedReason) {
@@ -300,31 +303,41 @@ function normalizedCandidate(candidate: MessengerContextCandidate): Conversation
 export function extractConversationContextCandidates(
 	candidates: readonly MessengerContextCandidate[],
 ): ConversationContextItem[] {
+	if (!Array.isArray(candidates)) {
+		return [];
+	}
+
 	const ordered = candidates
 		.filter(candidate => candidate && Number.isSafeInteger(candidate.domOrder) && candidate.domOrder >= 0)
 		.map((candidate, insertionOrder) => ({candidate, insertionOrder}))
 		.sort((left, right) => left.candidate.domOrder - right.candidate.domOrder || left.insertionOrder - right.insertionOrder)
-		.slice(-maximumLoadedConversationContextItems);
-	const stableCandidates = new Map<string, {resultIndex: number; signature: string}>();
+		.slice(-maximumMessengerDomExtractionItems);
+	const stableCandidates = new Map<string, {ambiguous: boolean; resultIndex: number; signature: string}>();
 	const result: ConversationContextItem[] = [];
 
 	for (const {candidate} of ordered) {
 		const stableId = normalizedMessageId(candidate.stableId);
-		const dedupeKey = stableId ? `id:${stableId}` : semanticDedupeKey(candidate);
-		if (!dedupeKey) {
+		if (!stableId) {
 			result.push(normalizedCandidate(candidate));
 			continue;
 		}
 
-		const signature = candidateContentSignature(candidate);
-		const previous = stableCandidates.get(dedupeKey);
+		const signature = stableMessageContentSignature(candidate);
+		const previous = stableCandidates.get(stableId);
 		if (!previous) {
-			stableCandidates.set(dedupeKey, {resultIndex: result.length, signature});
+			stableCandidates.set(stableId, {ambiguous: false, resultIndex: result.length, signature});
 			result.push(normalizedCandidate(candidate));
 			continue;
 		}
 
-		if (stableId && previous.signature !== signature && result[previous.resultIndex]) {
+		if (previous.ambiguous) {
+			continue;
+		}
+
+		if (previous.signature === signature) {
+			result[previous.resultIndex] = normalizedCandidate(candidate);
+		} else if (result[previous.resultIndex]) {
+			previous.ambiguous = true;
 			result[previous.resultIndex] = {
 				confidence: 'low',
 				messageId: stableId,
@@ -349,7 +362,7 @@ function textFromElements(elements: readonly Element[], excludedSelector?: strin
 			: false;
 		if (
 			!visibleElement(element)
-			|| Boolean(element.querySelector(messengerContextSelectors.text))
+			|| Boolean(element.querySelector(messengerContextSelectors.messageText))
 			|| isExcluded
 		) {
 			continue;
@@ -365,14 +378,16 @@ function textFromElements(elements: readonly Element[], excludedSelector?: strin
 }
 
 function stableIdFromElement(element: Element): string | undefined {
-	const selector = '[data-message-id], [data-messageid], [id]';
 	let stableId: string | undefined;
-	for (const candidate of [element, element.closest(selector), element.querySelector(selector)]) {
+	for (const candidate of [
+		element,
+		element.closest(messengerContextSelectors.messageIdentity),
+		element.querySelector(messengerContextSelectors.messageIdentity),
+	]) {
 		const identifier = candidate
 			? normalizedMessageId(
 				(candidate as HTMLElement).dataset.messageId
-				?? (candidate as HTMLElement).dataset.messageid
-				?? candidate.id,
+					?? (candidate as HTMLElement).dataset.messageid,
 			)
 			: undefined;
 		if (identifier) {
@@ -384,21 +399,27 @@ function stableIdFromElement(element: Element): string | undefined {
 	return stableId;
 }
 
-function senderFromElement(element: Element): Pick<MessengerContextCandidate, 'senderDisplayName' | 'senderRole'> {
-	const accessibleText = [
-		element.getAttribute('aria-label'),
-		...[...element.querySelectorAll('[aria-label]')].map(child => child.getAttribute('aria-label')),
-	].flatMap(value => value ? [value] : []);
-	if (accessibleText.some(value => /^you sent\b/i.test(value))) {
-		return {senderDisplayName: 'You', senderRole: 'outgoing'};
+type SenderEvidence = Pick<MessengerContextCandidate, 'senderDisplayName' | 'senderRole'> & {
+	confident: boolean;
+};
+
+function senderFromElement(element: Element): SenderEvidence {
+	const accessibleText = normalizedInline(element.getAttribute('aria-label'), 500);
+	if (/^you sent\b/i.test(accessibleText ?? '')) {
+		return {confident: true, senderDisplayName: 'You', senderRole: 'outgoing'};
 	}
 
-	const avatarName = [...element.querySelectorAll('img[alt]')]
+	const incomingSender = accessibleText?.match(/^(.+?) sent\b/i)?.[1];
+	if (incomingSender) {
+		return {confident: true, senderDisplayName: incomingSender, senderRole: 'incoming'};
+	}
+
+	const avatarName = [...element.querySelectorAll(messengerContextSelectors.senderAvatar)]
 		.map(image => normalizedInline(image.getAttribute('alt'), maximumStringLengths.displayName))
 		.find(value => value && !/^(image|photo|sticker|gif)$/i.test(value));
 	return avatarName
-		? {senderDisplayName: avatarName, senderRole: 'incoming'}
-		: {};
+		? {confident: true, senderDisplayName: avatarName, senderRole: 'incoming'}
+		: {confident: false};
 }
 
 function timestampFromElement(element: Element): string | undefined {
@@ -484,9 +505,28 @@ function attachmentsFromElement(element: Element): MessengerContextCandidate['at
 	return kinds.size > 0 ? [...kinds] : undefined;
 }
 
+function isObviousNonMessageUi(element: Element): boolean {
+	const label = normalizedInline(element.getAttribute('aria-label'), 500);
+	return Boolean(element.closest(messengerContextSelectors.nonMessageUi))
+		|| Boolean(label && /^(?:chats?|contacts?|menu|navigation|search|sidebar)\b/i.test(label));
+}
+
+function isVirtualizedPlaceholder(element: Element): boolean {
+	return Boolean(element.closest(messengerContextSelectors.placeholder));
+}
+
 function candidateFromElement(element: Element, domOrder: number): MessengerContextCandidate {
+	if (isObviousNonMessageUi(element)) {
+		return {domOrder, omittedReason: 'non-message-ui'};
+	}
+
+	if (isVirtualizedPlaceholder(element)) {
+		return {domOrder, omittedReason: 'virtualized-placeholder'};
+	}
+
 	const replyElement = element.querySelector(messengerContextSelectors.reply);
 	const linkPreview = linkPreviewFromElement(element);
+	const sender = senderFromElement(element);
 	const excludedText = [
 		messengerContextSelectors.reaction,
 		messengerContextSelectors.reply,
@@ -501,11 +541,12 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 		reactions: reactionFromElement(element),
 		stableId: stableIdFromElement(element),
 		text: textFromElements(
-			[...element.querySelectorAll(messengerContextSelectors.text)],
+			[...element.querySelectorAll(messengerContextSelectors.messageText)],
 			excludedText,
 		),
 		timestamp: timestampFromElement(element),
-		...senderFromElement(element),
+		senderDisplayName: sender.senderDisplayName,
+		senderRole: sender.senderRole,
 	};
 	if (replyElement) {
 		const quotedSender = senderFromElement(replyElement).senderDisplayName;
@@ -513,6 +554,17 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 			quotedSender,
 			text: textFromElements([replyElement]),
 		};
+	}
+
+	const hasSupportedContent = Boolean(
+		candidate.text
+		?? candidate.reply?.text
+		?? candidate.linkPreview
+		?? candidate.attachments?.length,
+	);
+	const hasMessageIdentity = Boolean(candidate.stableId ?? candidate.timestamp) || sender.confident;
+	if (hasSupportedContent && !hasMessageIdentity) {
+		candidate.omittedReason = 'incomplete-message';
 	}
 
 	return candidate;
@@ -527,7 +579,7 @@ export function extractLoadedMessengerConversationContext(root: ParentNode = doc
 
 		const rows = [...conversation.querySelectorAll(messengerContextSelectors.message)]
 			.filter(row => visibleElement(row) && !row.querySelector(messengerContextSelectors.message))
-			.slice(-maximumLoadedConversationContextItems);
+			.slice(-maximumMessengerDomExtractionItems);
 		return extractConversationContextCandidates(rows.map((row, domOrder) => {
 			try {
 				return candidateFromElement(row, domOrder);
