@@ -79,6 +79,7 @@ label {
 }
 
 input,
+select,
 textarea {
 	width: 100%;
 	padding: 10px 11px;
@@ -94,6 +95,7 @@ textarea {
 }
 
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
 	outline: 3px solid #aeb7ff;
 	outline-offset: 2px;
@@ -108,6 +110,15 @@ textarea:focus-visible {
 
 .field-row button {
 	margin-top: 0;
+}
+
+.media-fields {
+	grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.media-summary {
+	margin-top: 12px;
+	overflow-wrap: anywhere;
 }
 
 .button-row {
@@ -188,6 +199,7 @@ footer {
 	}
 
 	input,
+	select,
 	textarea,
 	pre {
 		border-color: #c8ccd6;

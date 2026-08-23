@@ -13,6 +13,13 @@ import {
 	OpenAiErrorCode,
 	openAiPromptCharacterLimit,
 } from './openai-client';
+import {
+	maximumMediaBytes,
+	mediaKinds,
+	MediaKind,
+	mediaSourceTypes,
+	MediaSourceType,
+} from './media-contract';
 
 export const aiAssistIpcChannels = {
 	panelCommand: 'ai-assist:panel-command',
@@ -28,6 +35,10 @@ export type AiAssistPanelState = {
 		secureStorageAvailable: boolean;
 	};
 	enabled: boolean;
+	media: {
+		candidates: MessengerMediaCandidate[];
+		resolution?: MessengerMediaResolution;
+	};
 	request: {
 		answer?: string;
 		error?: {
@@ -45,18 +56,35 @@ export type AiAssistPanelCommand =
 	| {type: 'delete-api-key'}
 	| {type: 'get-state'}
 	| {type: 'refresh-conversation'}
+	| {type: 'resolve-media'; kind: MediaKind; messageId: string}
 	| {type: 'save-api-key'; apiKey: string}
 	| {type: 'submit-prompt'; prompt: string}
 	| {type: 'test-api-key'};
 
 export type AiAssistMessengerCommand =
 	| {enabled: boolean; type: 'set-enabled'}
-	| {requestId?: string; type: 'report-conversation'};
+	| {requestId?: string; type: 'report-conversation'}
+	| {kind: MediaKind; messageId: string; requestId: string; type: 'resolve-media'};
+
+export type MessengerMediaCandidate = {
+	durationSeconds?: number;
+	kind: MediaKind;
+	messageId: string;
+};
+
+export type MessengerMediaResolution = MessengerMediaCandidate & {
+	byteLength?: number;
+	handleId?: string;
+	mimeType?: string;
+	sourceType?: MediaSourceType;
+	status: 'ready' | 'resolving' | 'unavailable' | 'unsupported';
+};
 
 export type AiAssistMessengerEvent =
 	| {
 		conversationId: string;
 		displayName?: string;
+		mediaCandidates?: MessengerMediaCandidate[];
 		requestId?: string;
 		status: 'available';
 		type: 'conversation-state';
@@ -66,6 +94,19 @@ export type AiAssistMessengerEvent =
 		requestId?: string;
 		status: 'unavailable';
 		type: 'conversation-state';
+	}
+	| {
+		byteLength?: number;
+		bytes?: ArrayBuffer;
+		durationSeconds?: number;
+		kind: MediaKind;
+		messageId: string;
+		mimeType?: string;
+		requestId: string;
+		sourceType?: MediaSourceType;
+		status: 'available' | 'unavailable' | 'unsupported';
+		type: 'media-resolution';
+		url?: string;
 	};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,6 +132,12 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 			&& typeof value.apiKey === 'string'
 			&& value.apiKey.length >= 10
 			&& value.apiKey.length <= 512;
+	}
+
+	if (value.type === 'resolve-media') {
+		return hasExactKeys(value, ['kind', 'messageId', 'type'])
+			&& mediaKinds.includes(value.kind as never)
+			&& isMessageId(value.messageId);
 	}
 
 	return value.type === 'submit-prompt'
@@ -155,6 +202,62 @@ function isRequestState(value: unknown): boolean {
 		&& (value.error === undefined || isRequestError(value.error));
 }
 
+function isMediaCandidate(value: unknown): value is MessengerMediaCandidate {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['kind', 'messageId'];
+	if (value.durationSeconds !== undefined) {
+		keys.push('durationSeconds');
+	}
+
+	return hasExactKeys(value, keys)
+		&& mediaKinds.includes(value.kind as never)
+		&& isMessageId(value.messageId)
+		&& isDuration(value.durationSeconds);
+}
+
+function isMediaState(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['candidates'];
+	if (value.resolution !== undefined) {
+		keys.push('resolution');
+	}
+
+	if (!hasExactKeys(value, keys)
+		|| !Array.isArray(value.candidates)
+		|| value.candidates.length > 100
+		|| !value.candidates.every(candidate => isMediaCandidate(candidate))) {
+		return false;
+	}
+
+	if (value.resolution === undefined || !isRecord(value.resolution)) {
+		return value.resolution === undefined;
+	}
+
+	const resolutionKeys = ['kind', 'messageId', 'status'];
+	for (const key of ['byteLength', 'durationSeconds', 'handleId', 'mimeType', 'sourceType']) {
+		if (value.resolution[key] !== undefined) {
+			resolutionKeys.push(key);
+		}
+	}
+
+	return hasExactKeys(value.resolution, resolutionKeys)
+		&& mediaKinds.includes(value.resolution.kind as never)
+		&& isMessageId(value.resolution.messageId)
+		&& ['ready', 'resolving', 'unavailable', 'unsupported'].includes(value.resolution.status as string)
+		&& isDuration(value.resolution.durationSeconds)
+		&& (value.resolution.byteLength === undefined
+			|| (Number.isSafeInteger(value.resolution.byteLength) && (value.resolution.byteLength as number) >= 0))
+		&& (value.resolution.handleId === undefined || isMediaHandleId(value.resolution.handleId))
+		&& (value.resolution.mimeType === undefined || isMimeType(value.resolution.mimeType))
+		&& (value.resolution.sourceType === undefined || mediaSourceTypes.includes(value.resolution.sourceType as never));
+}
+
 function isSessionState(value: unknown): boolean {
 	if (!isRecord(value)) {
 		return false;
@@ -183,10 +286,11 @@ function isSessionState(value: unknown): boolean {
 
 export function isAiAssistPanelState(value: unknown): value is AiAssistPanelState {
 	return isRecord(value)
-		&& hasExactKeys(value, ['conversation', 'credentials', 'enabled', 'request', 'session'])
+		&& hasExactKeys(value, ['conversation', 'credentials', 'enabled', 'media', 'request', 'session'])
 		&& isConversationState(value.conversation)
 		&& isCredentialsState(value.credentials)
 		&& typeof value.enabled === 'boolean'
+		&& isMediaState(value.media)
 		&& isRequestState(value.request)
 		&& isSessionState(value.session);
 }
@@ -206,13 +310,28 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 			&& (value.requestId === undefined || isConversationRequestId(value.requestId));
 	}
 
+	if (value.type === 'resolve-media') {
+		return hasExactKeys(value, ['kind', 'messageId', 'requestId', 'type'])
+			&& mediaKinds.includes(value.kind as never)
+			&& isMessageId(value.messageId)
+			&& isMediaRequestId(value.requestId);
+	}
+
 	return value.type === 'set-enabled'
 		&& hasExactKeys(value, ['enabled', 'type'])
 		&& typeof value.enabled === 'boolean';
 }
 
 export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMessengerEvent {
-	if (!isRecord(value) || value.type !== 'conversation-state') {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	if (value.type === 'media-resolution') {
+		return isMessengerMediaEvent(value);
+	}
+
+	if (value.type !== 'conversation-state') {
 		return false;
 	}
 
@@ -232,6 +351,10 @@ export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMesse
 		expectedKeys.push('displayName');
 	}
 
+	if (value.mediaCandidates !== undefined) {
+		expectedKeys.push('mediaCandidates');
+	}
+
 	if (value.requestId !== undefined) {
 		expectedKeys.push('requestId');
 	}
@@ -241,9 +364,85 @@ export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMesse
 		&& typeof value.conversationId === 'string'
 		&& /^messenger-thread:[\w.:-]{1,200}$/.test(value.conversationId)
 		&& (value.requestId === undefined || isConversationRequestId(value.requestId))
-		&& (value.displayName === undefined || (typeof value.displayName === 'string' && value.displayName.length <= 200));
+		&& (value.displayName === undefined || (typeof value.displayName === 'string' && value.displayName.length <= 200))
+		&& (value.mediaCandidates === undefined || (
+			Array.isArray(value.mediaCandidates)
+			&& value.mediaCandidates.length <= 100
+			&& value.mediaCandidates.every(candidate => isMediaCandidate(candidate))
+		));
 }
 
 function isConversationRequestId(value: unknown): value is string {
 	return typeof value === 'string' && /^conversation-report-\d{1,12}$/.test(value);
+}
+
+function isMediaRequestId(value: unknown): value is string {
+	return typeof value === 'string' && /^media-request-\d{1,12}$/.test(value);
+}
+
+function isMessageId(value: unknown): value is string {
+	return typeof value === 'string' && value.length <= 200 && /^[\w.:-]+$/.test(value);
+}
+
+function isMediaHandleId(value: unknown): value is string {
+	return typeof value === 'string' && /^[\da-f-]{36}$/.test(value);
+}
+
+function isMimeType(value: unknown): value is string {
+	return typeof value === 'string' && value.length <= 100 && /^(?:audio|video)\/[a-z\d.+-]+$/i.test(value);
+}
+
+function isDuration(value: unknown): boolean {
+	return value === undefined || (
+		typeof value === 'number'
+		&& Number.isFinite(value)
+		&& value >= 0
+		&& value <= 7 * 24 * 60 * 60
+	);
+}
+
+function isMessengerMediaEvent(value: Record<string, unknown>): boolean {
+	const keys = ['kind', 'messageId', 'requestId', 'status', 'type'];
+	for (const key of ['byteLength', 'bytes', 'durationSeconds', 'mimeType', 'sourceType', 'url']) {
+		if (value[key] !== undefined) {
+			keys.push(key);
+		}
+	}
+
+	if (!hasExactKeys(value, keys)
+		|| !mediaKinds.includes(value.kind as never)
+		|| !isMessageId(value.messageId)
+		|| !isMediaRequestId(value.requestId)
+		|| !['available', 'unavailable', 'unsupported'].includes(value.status as string)
+		|| !isDuration(value.durationSeconds)) {
+		return false;
+	}
+
+	if (value.status !== 'available') {
+		return (value.status === 'unsupported'
+			? value.sourceType === 'segmented'
+			: value.sourceType === undefined)
+			&& value.bytes === undefined
+			&& value.byteLength === undefined
+			&& value.mimeType === undefined
+			&& value.url === undefined;
+	}
+
+	if (!mediaSourceTypes.includes(value.sourceType as never) || value.sourceType === 'segmented') {
+		return false;
+	}
+
+	if (value.sourceType === 'https') {
+		return typeof value.url === 'string'
+			&& value.url.length <= 8192
+			&& value.bytes === undefined
+			&& value.byteLength === undefined;
+	}
+
+	return value.url === undefined
+		&& value.bytes instanceof ArrayBuffer
+		&& value.byteLength === value.bytes.byteLength
+		&& typeof value.byteLength === 'number'
+		&& value.byteLength <= maximumMediaBytes[value.kind as MediaKind]
+		&& isMimeType(value.mimeType);
 }

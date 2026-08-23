@@ -8,11 +8,13 @@ import {IToggleSounds, IToggleMuteNotifications} from './types';
 import {
 	aiAssistIpcChannels,
 	isAiAssistMessengerCommand,
+	MessengerMediaCandidate,
 } from './ai-assist-ipc';
 import {
 	ConversationIdentityCandidate,
 	deriveConversationIdentity,
 } from './conversation-identity';
+import {maximumMediaBytes, MediaKind} from './media-contract';
 
 // Sandboxed preloads receive Electron's limited process global but cannot load node:process.
 const {platform} = process; // eslint-disable-line n/prefer-global/process
@@ -26,6 +28,47 @@ let shouldUseDarkColors = false;
 let isAiAssistEnabled = false;
 let conversationObserver: MutationObserver | undefined;
 let conversationReportTimer: ReturnType<typeof setTimeout> | undefined;
+
+function normalizedMediaDuration(media: HTMLMediaElement): number | undefined {
+	return Number.isFinite(media.duration) && media.duration >= 0
+		? Math.min(media.duration, 7 * 24 * 60 * 60)
+		: undefined;
+}
+
+function stableMessageId(element: Element): string | undefined {
+	const identity = element.matches('[data-message-id], [data-messageid]')
+		? element
+		: element.closest('[data-message-id], [data-messageid]');
+	const messageId = identity?.getAttribute('data-message-id')
+		?? identity?.getAttribute('data-messageid');
+	return messageId && messageId.length <= 200 && /^[\w.:-]+$/.test(messageId)
+		? messageId
+		: undefined;
+}
+
+function loadedMediaCandidates(): MessengerMediaCandidate[] {
+	const candidates: MessengerMediaCandidate[] = [];
+	const seen = new Set<string>();
+	for (const media of document.querySelectorAll<HTMLMediaElement>('[role="main"] [role="grid"] audio, [role="main"] [role="grid"] video')) {
+		const messageId = stableMessageId(media);
+		const kind: MediaKind = media instanceof HTMLAudioElement ? 'audio' : 'video';
+		const key = `${messageId}:${kind}`;
+		if (!messageId || seen.has(key)) {
+			continue;
+		}
+
+		seen.add(key);
+		const candidate: MessengerMediaCandidate = {kind, messageId};
+		const durationSeconds = normalizedMediaDuration(media);
+		if (durationSeconds !== undefined) {
+			candidate.durationSeconds = durationSeconds;
+		}
+
+		candidates.push(candidate);
+	}
+
+	return candidates.slice(-100);
+}
 
 const selectedThreadSelectors = [
 	'a[aria-current="page"][href*="/messages/"]',
@@ -57,6 +100,7 @@ function reportConversationState(requestId?: string): void {
 	const state = deriveConversationIdentity(window.location.href, selectedConversationCandidates());
 	const event = {
 		...state,
+		...(state.status === 'available' ? {mediaCandidates: loadedMediaCandidates()} : {}),
 		type: 'conversation-state',
 	};
 	electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, requestId
@@ -98,6 +142,129 @@ function stopConversationObserver(): void {
 	}
 }
 
+function findMessageMedia(messageId: string, kind: MediaKind): HTMLMediaElement | undefined {
+	for (const identity of document.querySelectorAll('[data-message-id], [data-messageid]')) {
+		const {dataset} = identity as HTMLElement;
+		const candidateId = dataset.messageId ?? dataset.messageid;
+		if (candidateId === messageId) {
+			return identity.matches(kind) ? identity as HTMLMediaElement : identity.querySelector(kind) ?? undefined;
+		}
+	}
+
+	return undefined;
+}
+
+async function readBoundedBlobMedia(url: string, kind: MediaKind): Promise<{buffer: ArrayBuffer; mimeType: string}> {
+	const abortController = new AbortController();
+	const timeout = setTimeout(() => {
+		abortController.abort();
+	}, 30_000);
+	try {
+		const response = await fetch(url, {credentials: 'same-origin', signal: abortController.signal});
+		if (!response.ok || !response.body) {
+			throw new Error('unavailable');
+		}
+
+		const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
+		if (!mimeType.startsWith(`${kind}/`)) {
+			throw new TypeError('mime-mismatch');
+		}
+
+		const advertisedLength = Number(response.headers.get('content-length') ?? 0);
+		if (!Number.isSafeInteger(advertisedLength) || advertisedLength < 0 || advertisedLength > maximumMediaBytes[kind]) {
+			throw new RangeError('oversized');
+		}
+
+		const reader = response.body.getReader();
+		const chunks: Uint8Array[] = [];
+		let byteLength = 0;
+		try {
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				// eslint-disable-next-line no-await-in-loop
+				const {done, value} = await reader.read();
+				if (done) {
+					break;
+				}
+
+				byteLength += value.byteLength;
+				if (byteLength > maximumMediaBytes[kind]) {
+					throw new RangeError('oversized');
+				}
+
+				chunks.push(value);
+			}
+		} finally {
+			await reader.cancel().catch(() => undefined);
+		}
+
+		const bytes = new Uint8Array(byteLength);
+		let offset = 0;
+		for (const chunk of chunks) {
+			bytes.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+
+		return {buffer: bytes.buffer, mimeType};
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+async function resolveMessengerMedia(requestId: string, messageId: string, kind: MediaKind): Promise<void> {
+	const media = findMessageMedia(messageId, kind);
+	const durationSeconds = media ? normalizedMediaDuration(media) : undefined;
+	const base = {
+		...(durationSeconds === undefined ? {} : {durationSeconds}),
+		kind,
+		messageId,
+		requestId,
+		type: 'media-resolution',
+	} as const;
+	if (!media) {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {...base, status: 'unavailable'});
+		return;
+	}
+
+	const source = media.currentSrc || media.src;
+	if (/^https:\/\//i.test(source)) {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			...base,
+			sourceType: 'https',
+			status: 'available',
+			url: source,
+		});
+		return;
+	}
+
+	if (!source.startsWith('blob:')) {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			...base,
+			sourceType: 'segmented',
+			status: 'unsupported',
+		});
+		return;
+	}
+
+	try {
+		const {buffer, mimeType} = await readBoundedBlobMedia(source, kind);
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			...base,
+			byteLength: buffer.byteLength,
+			bytes: buffer,
+			mimeType,
+			sourceType: 'blob',
+			status: 'available',
+		});
+	} catch {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			...base,
+			sourceType: 'segmented',
+			status: 'unsupported',
+		});
+	}
+}
+
 electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unknown) => {
 	if (!isAiAssistMessengerCommand(value)) {
 		return;
@@ -110,6 +277,11 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 			scheduleConversationStateReport();
 		}
 
+		return;
+	}
+
+	if (value.type === 'resolve-media') {
+		void resolveMessengerMedia(value.requestId, value.messageId, value.kind);
 		return;
 	}
 

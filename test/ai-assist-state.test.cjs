@@ -51,6 +51,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		conversation: {captureGeneration: 2, displayName: 'Derek', status: 'ready'},
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
+		media: {candidates: []},
 		request: {answer: 'private'},
 		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
 	}), true);
@@ -58,6 +59,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		conversation: {captureGeneration: 2, status: 'ready'},
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
+		media: {candidates: []},
 		request: {apiKey: 'secret'},
 		session: {generation: 1, status: 'open'},
 	}), false);
@@ -66,6 +68,12 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: 'Hello'}), true);
 	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: ''}), false);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
+	assert.equal(isAiAssistMessengerCommand({
+		kind: 'video',
+		messageId: 'message-1',
+		requestId: 'media-request-1',
+		type: 'resolve-media',
+	}), true);
 	assert.equal(isAiAssistMessengerCommand({type: 'report-conversation'}), true);
 	assert.equal(isAiAssistMessengerCommand({
 		requestId: 'conversation-report-1',
@@ -77,6 +85,26 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		requestId: 'conversation-report-1',
 		status: 'available',
 		type: 'conversation-state',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		byteLength: 3,
+		bytes: new Uint8Array([1, 2, 3]).buffer,
+		kind: 'audio',
+		messageId: 'message-1',
+		mimeType: 'audio/ogg',
+		requestId: 'media-request-1',
+		sourceType: 'blob',
+		status: 'available',
+		type: 'media-resolution',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		kind: 'video',
+		messageId: 'message-1',
+		requestId: 'media-request-1',
+		sourceType: 'https',
+		status: 'available',
+		type: 'media-resolution',
+		url: 'https://video.xx.fbcdn.net/file?secret=token',
 	}), true);
 	assert.equal(isAiAssistMessengerEvent({
 		conversationId: 'messenger-thread:123',
@@ -251,6 +279,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 					renderState = callback;
 				},
 				async refreshConversation() {},
+				async resolveMedia() {},
 				async saveApiKey() {},
 				async submitPrompt() {},
 				async testApiKey() {},
@@ -266,6 +295,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 		conversation: {captureGeneration, status},
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
+		media: {candidates: []},
 		request,
 		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
 	});
