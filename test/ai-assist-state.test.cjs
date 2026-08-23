@@ -107,6 +107,14 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		url: 'https://video.xx.fbcdn.net/file?secret=token',
 	}), true);
 	assert.equal(isAiAssistMessengerEvent({
+		kind: 'audio',
+		messageId: 'message-1',
+		requestId: 'media-request-1',
+		sourceType: 'blob',
+		status: 'unavailable',
+		type: 'media-resolution',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
 		conversationId: 'messenger-thread:123',
 		status: 'available',
 		type: 'conversation-state',

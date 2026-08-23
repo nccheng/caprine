@@ -150,6 +150,8 @@ async function readBoundedBody(response: Response, maximumBytes: number): Promis
 
 export class MessengerMediaResolver {
 	private readonly handles = new Map<string, StoredMedia>();
+	private readonly pendingWrites = new Set<Promise<void>>();
+	private storageGeneration = 0;
 
 	constructor(
 		private readonly temporaryDirectory: string,
@@ -218,7 +220,7 @@ export class MessengerMediaResolver {
 				currentUrl = new URL(location, currentUrl).href;
 			}
 
-			if (!response?.ok) {
+			if (response?.status !== 200 || response.headers.has('content-range')) {
 				throw new MediaResolverError('network', 'Messenger media could not be fetched.');
 			}
 
@@ -227,6 +229,14 @@ export class MessengerMediaResolver {
 				kind,
 			);
 			const bytes = await readBoundedBody(response, maximumMediaBytes[kind]);
+			const advertisedLength = response.headers.get('content-length');
+			if (
+				bytes.byteLength === 0
+				|| (advertisedLength !== null && Number(advertisedLength) !== bytes.byteLength)
+			) {
+				throw new MediaResolverError('network', 'Messenger media response was incomplete.');
+			}
+
 			return await this.store(bytes, mimeType, kind, messageId, snapshot, 'https', durationSeconds);
 		} catch (error) {
 			const resolverError = error instanceof MediaResolverError
@@ -291,6 +301,19 @@ export class MessengerMediaResolver {
 		});
 	}
 
+	reportUnavailable(
+		sourceType: Exclude<MediaSourceType, 'segmented'>,
+		kind: MediaKind,
+		durationSeconds?: number,
+	): void {
+		this.report({
+			durationSeconds,
+			kind,
+			outcome: 'unavailable',
+			sourceType,
+		});
+	}
+
 	async withFile<T>(
 		handleId: string,
 		messageId: string,
@@ -311,6 +334,8 @@ export class MessengerMediaResolver {
 	}
 
 	async releaseAll(): Promise<void> {
+		this.storageGeneration += 1;
+		await Promise.allSettled(this.pendingWrites);
 		await Promise.all([...this.handles].map(async ([handleId]) => this.release(handleId)));
 	}
 
@@ -323,10 +348,26 @@ export class MessengerMediaResolver {
 		sourceType: ResolvedMedia['sourceType'],
 		durationSeconds?: number,
 	): Promise<ResolvedMedia> {
-		await mkdir(this.temporaryDirectory, {mode: 0o700, recursive: true});
+		const {storageGeneration} = this;
 		const handleId = randomUUID();
 		const filePath = path.join(this.temporaryDirectory, `${handleId}.${extensionForMimeType(mimeType)}`);
-		await writeFile(filePath, bytes, {flag: 'wx', mode: 0o600});
+		const writeOperation = (async (): Promise<void> => {
+			await mkdir(this.temporaryDirectory, {mode: 0o700, recursive: true});
+			await writeFile(filePath, bytes, {flag: 'wx', mode: 0o600});
+		})();
+		this.pendingWrites.add(writeOperation);
+		try {
+			await writeOperation;
+			if (storageGeneration !== this.storageGeneration) {
+				throw new MediaResolverError('aborted', 'Media resolution was cancelled.');
+			}
+		} catch (error) {
+			await rm(filePath, {force: true});
+			throw error;
+		} finally {
+			this.pendingWrites.delete(writeOperation);
+		}
+
 		const stored: StoredMedia = {
 			byteLength: bytes.byteLength,
 			...(durationSeconds === undefined ? {} : {durationSeconds}),

@@ -546,6 +546,10 @@ class AiAssistController {
 			}
 
 			if (value.status === 'unavailable') {
+				if (value.sourceType === 'blob' || value.sourceType === 'https') {
+					this.mediaResolver.reportUnavailable(value.sourceType, value.kind, value.durationSeconds);
+				}
+
 				this.mediaResolution = {
 					...(value.durationSeconds === undefined ? {} : {durationSeconds: value.durationSeconds}),
 					kind: value.kind,
@@ -572,7 +576,11 @@ class AiAssistController {
 					pending.snapshot,
 					value.durationSeconds,
 				);
-			if (!this.isRequestSnapshotCurrent(pending.snapshot)) {
+			if (
+				this.pendingMediaRequests.get(value.requestId) !== pending
+				|| pending.abortController.signal.aborted
+				|| !this.isRequestSnapshotCurrent(pending.snapshot)
+			) {
 				await this.mediaResolver.releaseAll();
 				return;
 			}

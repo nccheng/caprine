@@ -421,7 +421,7 @@ function isMessengerMediaEvent(value: Record<string, unknown>): boolean {
 	if (value.status !== 'available') {
 		return (value.status === 'unsupported'
 			? value.sourceType === 'segmented'
-			: value.sourceType === undefined)
+			: value.sourceType === undefined || value.sourceType === 'blob' || value.sourceType === 'https')
 			&& value.bytes === undefined
 			&& value.byteLength === undefined
 			&& value.mimeType === undefined

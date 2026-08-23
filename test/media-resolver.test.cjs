@@ -105,6 +105,24 @@ test('HTTPS media rejects external redirects, MIME mismatches, and oversized bod
 		error => error instanceof MediaResolverError && error.code === 'oversized',
 	);
 
+	for (const response of [
+		new Response(new Uint8Array([1, 2]), {
+			headers: {'content-type': 'video/mp4'},
+			status: 206,
+		}),
+		new Response(new Uint8Array([1, 2]), {
+			headers: {'content-length': '1000', 'content-type': 'video/mp4'},
+			status: 200,
+		}),
+	]) {
+		const partial = new MessengerMediaResolver(directory, async () => response);
+		// eslint-disable-next-line no-await-in-loop
+		await assert.rejects(
+			partial.resolveHttps('https://facebook.com/file', 'video', 'message-1', snapshot),
+			error => error instanceof MediaResolverError && error.code === 'network',
+		);
+	}
+
 	const timeout = new MessengerMediaResolver(directory, async (_url, init) => new Promise((_resolve, reject) => {
 		init.signal.addEventListener('abort', () => {
 			reject(new Error('aborted'));
@@ -150,5 +168,20 @@ test('blob handles are conversation-bound and cleanup removes cancel and restart
 
 	await writeFile(path.join(directory, 'orphan.mp4'), new Uint8Array([7]));
 	await resolver.cleanupRestartArtifacts();
+	assert.deepEqual(await readdir(directory), []);
+
+	const resolving = resolver.resolveBlob(
+		new Uint8Array([8, 9]).buffer,
+		'audio/ogg',
+		'audio',
+		'message-cancelled',
+		snapshot,
+	);
+	const cleanup = resolver.releaseAll();
+	await assert.rejects(
+		resolving,
+		error => error instanceof MediaResolverError && error.code === 'aborted',
+	);
+	await cleanup;
 	assert.deepEqual(await readdir(directory), []);
 });

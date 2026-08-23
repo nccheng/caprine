@@ -259,8 +259,8 @@ async function resolveMessengerMedia(requestId: string, messageId: string, kind:
 	} catch {
 		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
 			...base,
-			sourceType: 'segmented',
-			status: 'unsupported',
+			sourceType: 'blob',
+			status: 'unavailable',
 		});
 	}
 }
