@@ -19,6 +19,7 @@ const {
 	isAiAssistPanelCommand,
 	isAiAssistPanelState,
 } = require('../dist-js/ai-assist-ipc.js');
+const {isMessengerMediaResolverRequest} = require('../dist-js/media-resolver-ipc.js');
 
 test('AI session state transitions are bounded and generation-safe', () => {
 	const state = new AiAssistSessionStateMachine();
@@ -86,7 +87,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		status: 'available',
 		type: 'conversation-state',
 	}), true);
-	assert.equal(isAiAssistMessengerEvent({
+	const rawBlobEvent = {
 		byteLength: 3,
 		bytes: new Uint8Array([1, 2, 3]).buffer,
 		kind: 'audio',
@@ -96,15 +97,48 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		sourceType: 'blob',
 		status: 'available',
 		type: 'media-resolution',
+	};
+	assert.equal(isAiAssistMessengerEvent(rawBlobEvent), false);
+	assert.equal(isMessengerMediaResolverRequest({
+		byteLength: 3,
+		bytes: new Uint8Array([1, 2, 3]).buffer,
+		kind: 'audio',
+		messageId: 'message-1',
+		mimeType: 'audio/ogg',
+		requestId: 'media-request-1',
+		sourceType: 'blob',
 	}), true);
+	assert.equal(isMessengerMediaResolverRequest({
+		byteLength: 0,
+		bytes: new ArrayBuffer(0),
+		kind: 'audio',
+		messageId: 'message-1',
+		mimeType: 'audio/ogg',
+		requestId: 'media-request-1',
+		sourceType: 'blob',
+	}), false);
+	const handleEvent = {
+		byteLength: 3,
+		handleId: '12345678-1234-1234-1234-123456789abc',
+		kind: 'audio',
+		messageId: 'message-1',
+		mimeType: 'audio/ogg',
+		requestId: 'media-request-1',
+		sourceType: 'blob',
+		status: 'available',
+		type: 'media-resolution',
+	};
+	assert.equal(isAiAssistMessengerEvent(handleEvent), true);
 	assert.equal(isAiAssistMessengerEvent({
 		kind: 'video',
 		messageId: 'message-1',
+		byteLength: 3,
+		handleId: '12345678-1234-1234-1234-123456789abc',
+		mimeType: 'video/mp4',
 		requestId: 'media-request-1',
 		sourceType: 'https',
 		status: 'available',
 		type: 'media-resolution',
-		url: 'https://video.xx.fbcdn.net/file?secret=token',
 	}), true);
 	assert.equal(isAiAssistMessengerEvent({
 		kind: 'audio',
@@ -125,6 +159,33 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		status: 'unavailable',
 		type: 'conversation-state',
 	}), true);
+	const panelStateWithHandle = {
+		conversation: {captureGeneration: 2, status: 'ready'},
+		credentials: {configured: true, secureStorageAvailable: true},
+		enabled: true,
+		media: {
+			candidates: [],
+			resolution: {
+				byteLength: 3,
+				handleId: handleEvent.handleId,
+				kind: 'audio',
+				messageId: 'message-1',
+				mimeType: 'audio/ogg',
+				sourceType: 'blob',
+				status: 'ready',
+			},
+		},
+		request: {},
+		session: {generation: 1, status: 'open'},
+	};
+	assert.equal(isAiAssistPanelState(panelStateWithHandle), true);
+	assert.equal(isAiAssistPanelState({
+		...panelStateWithHandle,
+		media: {
+			...panelStateWithHandle.media,
+			resolution: {...panelStateWithHandle.media.resolution, bytes: new ArrayBuffer(3)},
+		},
+	}), false);
 });
 
 test('Messenger identity uses stable route IDs rather than display names', () => {

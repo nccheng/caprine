@@ -97,8 +97,8 @@ export type AiAssistMessengerEvent =
 	}
 	| {
 		byteLength?: number;
-		bytes?: ArrayBuffer;
 		durationSeconds?: number;
+		handleId?: string;
 		kind: MediaKind;
 		messageId: string;
 		mimeType?: string;
@@ -106,7 +106,6 @@ export type AiAssistMessengerEvent =
 		sourceType?: MediaSourceType;
 		status: 'available' | 'unavailable' | 'unsupported';
 		type: 'media-resolution';
-		url?: string;
 	};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -246,7 +245,7 @@ function isMediaState(value: unknown): boolean {
 		}
 	}
 
-	return hasExactKeys(value.resolution, resolutionKeys)
+	if (!(hasExactKeys(value.resolution, resolutionKeys)
 		&& mediaKinds.includes(value.resolution.kind as never)
 		&& isMessageId(value.resolution.messageId)
 		&& ['ready', 'resolving', 'unavailable', 'unsupported'].includes(value.resolution.status as string)
@@ -255,7 +254,20 @@ function isMediaState(value: unknown): boolean {
 			|| (Number.isSafeInteger(value.resolution.byteLength) && (value.resolution.byteLength as number) >= 0))
 		&& (value.resolution.handleId === undefined || isMediaHandleId(value.resolution.handleId))
 		&& (value.resolution.mimeType === undefined || isMimeType(value.resolution.mimeType))
-		&& (value.resolution.sourceType === undefined || mediaSourceTypes.includes(value.resolution.sourceType as never));
+		&& (value.resolution.sourceType === undefined || mediaSourceTypes.includes(value.resolution.sourceType as never)))) {
+		return false;
+	}
+
+	if (value.resolution.status === 'ready') {
+		return (value.resolution.byteLength as number) > 0
+			&& isMediaHandleId(value.resolution.handleId)
+			&& isMimeType(value.resolution.mimeType)
+			&& ['blob', 'https'].includes(value.resolution.sourceType as string);
+	}
+
+	return value.resolution.byteLength === undefined
+		&& value.resolution.handleId === undefined
+		&& value.resolution.mimeType === undefined;
 }
 
 function isSessionState(value: unknown): boolean {
@@ -403,7 +415,7 @@ function isDuration(value: unknown): boolean {
 
 function isMessengerMediaEvent(value: Record<string, unknown>): boolean {
 	const keys = ['kind', 'messageId', 'requestId', 'status', 'type'];
-	for (const key of ['byteLength', 'bytes', 'durationSeconds', 'mimeType', 'sourceType', 'url']) {
+	for (const key of ['byteLength', 'durationSeconds', 'handleId', 'mimeType', 'sourceType']) {
 		if (value[key] !== undefined) {
 			keys.push(key);
 		}
@@ -422,27 +434,18 @@ function isMessengerMediaEvent(value: Record<string, unknown>): boolean {
 		return (value.status === 'unsupported'
 			? value.sourceType === 'segmented'
 			: value.sourceType === undefined || value.sourceType === 'blob' || value.sourceType === 'https')
-			&& value.bytes === undefined
+			&& value.handleId === undefined
 			&& value.byteLength === undefined
-			&& value.mimeType === undefined
-			&& value.url === undefined;
+			&& value.mimeType === undefined;
 	}
 
 	if (!mediaSourceTypes.includes(value.sourceType as never) || value.sourceType === 'segmented') {
 		return false;
 	}
 
-	if (value.sourceType === 'https') {
-		return typeof value.url === 'string'
-			&& value.url.length <= 8192
-			&& value.bytes === undefined
-			&& value.byteLength === undefined;
-	}
-
-	return value.url === undefined
-		&& value.bytes instanceof ArrayBuffer
-		&& value.byteLength === value.bytes.byteLength
-		&& typeof value.byteLength === 'number'
-		&& value.byteLength <= maximumMediaBytes[value.kind as MediaKind]
+	return isMediaHandleId(value.handleId)
+		&& Number.isSafeInteger(value.byteLength)
+		&& (value.byteLength as number) > 0
+		&& (value.byteLength as number) <= maximumMediaBytes[value.kind as MediaKind]
 		&& isMimeType(value.mimeType);
 }

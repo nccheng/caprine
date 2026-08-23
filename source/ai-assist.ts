@@ -35,6 +35,10 @@ import {
 	MessengerMediaResolver,
 } from './media-resolver';
 import {
+	isMessengerMediaResolverRequest,
+	messengerMediaResolverChannel,
+} from './media-resolver-ipc';
+import {
 	OpenAiClient,
 	OpenAiErrorCode,
 	OpenAiRequestError,
@@ -65,6 +69,7 @@ class AiAssistController {
 	private readonly pendingConversationReports = new Map<string, (generation?: number) => void>();
 	private readonly pendingMediaRequests = new Map<string, {
 		abortController: AbortController;
+		durationSeconds?: number;
 		kind: MediaKind;
 		messageId: string;
 		resolve: () => void;
@@ -86,6 +91,7 @@ class AiAssistController {
 		);
 		this.mediaCleanupReady = this.mediaResolver.cleanupRestartArtifacts().catch(() => undefined);
 		ipcMain.handle(aiAssistIpcChannels.panelCommand, this.handlePanelCommand);
+		ipcMain.handle(messengerMediaResolverChannel, this.handleMessengerMediaResolverRequest);
 		ipcMain.on(aiAssistIpcChannels.messengerEvent, this.handleMessengerEvent);
 		this.bindMessengerLifecycle();
 	}
@@ -260,6 +266,59 @@ class AiAssistController {
 		this.resolveConversationReport(value.requestId);
 	};
 
+	private readonly handleMessengerMediaResolverRequest = async (
+		event: IpcMainInvokeEvent,
+		value: unknown,
+	): Promise<Extract<AiAssistMessengerEvent, {type: 'media-resolution'}>> => {
+		if (!this.isExpectedMessengerSender(event) || !isMessengerMediaResolverRequest(value)) {
+			throw new TypeError('Rejected invalid AI Assist media resolver IPC');
+		}
+
+		const pending = this.pendingMediaRequests.get(value.requestId);
+		if (
+			!pending
+			|| pending.kind !== value.kind
+			|| pending.messageId !== value.messageId
+			|| pending.abortController.signal.aborted
+			|| !this.isRequestSnapshotCurrent(pending.snapshot)
+		) {
+			throw new TypeError('Rejected stale AI Assist media resolver IPC');
+		}
+
+		const media = value.sourceType === 'https'
+			? await this.mediaResolver.resolveHttps(
+				value.url!,
+				value.kind,
+				value.messageId,
+				pending.snapshot,
+				pending.durationSeconds,
+				pending.abortController.signal,
+			)
+			: await this.mediaResolver.resolveBlob(
+				value.bytes!,
+				value.mimeType!,
+				value.kind,
+				value.messageId,
+				pending.snapshot,
+				pending.durationSeconds,
+			);
+		if (
+			this.pendingMediaRequests.get(value.requestId) !== pending
+			|| pending.abortController.signal.aborted
+			|| !this.isRequestSnapshotCurrent(pending.snapshot)
+		) {
+			await this.mediaResolver.releaseHandle(media.handleId);
+			throw new TypeError('Rejected stale AI Assist media handle');
+		}
+
+		return {
+			...media,
+			requestId: value.requestId,
+			status: 'available',
+			type: 'media-resolution',
+		};
+	};
+
 	private bindMessengerLifecycle(): void {
 		const {webContents} = this.messengerWindow;
 
@@ -382,7 +441,7 @@ class AiAssistController {
 			&& event.senderFrame.url === this.panelUrl;
 	}
 
-	private isExpectedMessengerSender(event: IpcMainEvent): boolean {
+	private isExpectedMessengerSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
 		return event.sender === this.messengerWindow.webContents
 			&& event.senderFrame === this.messengerWindow.webContents.mainFrame
 			&& isTrustedMessengerOrigin(event.senderFrame.origin);
@@ -496,12 +555,14 @@ class AiAssistController {
 			const timeout = setTimeout(() => {
 				abortController.abort();
 				this.pendingMediaRequests.delete(requestId);
+				void this.mediaResolver.releaseAll();
 				this.mediaResolution = {...candidate, status: 'unavailable'};
 				this.broadcastState();
 				resolvePromise();
 			}, 32_000);
 			this.pendingMediaRequests.set(requestId, {
 				abortController,
+				durationSeconds: candidate.durationSeconds,
 				kind,
 				messageId,
 				resolve() {
@@ -559,30 +620,19 @@ class AiAssistController {
 				return;
 			}
 
-			const media = value.sourceType === 'https'
-				? await this.mediaResolver.resolveHttps(
-					value.url!,
-					value.kind,
-					value.messageId,
-					pending.snapshot,
-					value.durationSeconds,
-					pending.abortController.signal,
-				)
-				: await this.mediaResolver.resolveBlob(
-					value.bytes!,
-					value.mimeType!,
-					value.kind,
-					value.messageId,
-					pending.snapshot,
-					value.durationSeconds,
-				);
+			const media = this.mediaResolver.describeHandle(
+				value.handleId!,
+				value.messageId,
+				pending.snapshot,
+			);
 			if (
-				this.pendingMediaRequests.get(value.requestId) !== pending
-				|| pending.abortController.signal.aborted
-				|| !this.isRequestSnapshotCurrent(pending.snapshot)
+				media.kind !== value.kind
+				|| media.sourceType !== value.sourceType
+				|| media.byteLength !== value.byteLength
+				|| media.mimeType !== value.mimeType
 			) {
-				await this.mediaResolver.releaseAll();
-				return;
+				await this.mediaResolver.releaseHandle(media.handleId);
+				throw new TypeError('Rejected mismatched AI Assist media handle');
 			}
 
 			this.mediaResolution = {...media, status: 'ready'};

@@ -1,0 +1,29 @@
+{
+	"dom": {
+		"tag": "div",
+		"attributes": {"role": "main"},
+		"children": [{
+			"tag": "div",
+			"attributes": {"role": "grid"},
+			"children": [{
+				"tag": "div",
+				"attributes": {"data-messageid": "video-message-202"},
+				"children": [{
+					"tag": "video",
+					"src": "https://video.xx.fbcdn.net/video-fixture.mp4"
+				}]
+			}]
+		}]
+	},
+	"expectedCandidate": {
+		"kind": "video",
+		"messageId": "video-message-202"
+	},
+	"expectedResolution": {
+		"kind": "video",
+		"messageId": "video-message-202",
+		"sourceType": "https",
+		"status": "available",
+		"url": "https://video.xx.fbcdn.net/video-fixture.mp4"
+	}
+}

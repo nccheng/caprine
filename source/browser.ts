@@ -7,14 +7,22 @@ import {sendConversationList} from './browser/conversation-list';
 import {IToggleSounds, IToggleMuteNotifications} from './types';
 import {
 	aiAssistIpcChannels,
+	isAiAssistMessengerEvent,
 	isAiAssistMessengerCommand,
-	MessengerMediaCandidate,
 } from './ai-assist-ipc';
 import {
 	ConversationIdentityCandidate,
 	deriveConversationIdentity,
 } from './conversation-identity';
 import {maximumMediaBytes, MediaKind} from './media-contract';
+import {
+	extractLoadedMessengerMediaCandidates,
+	resolveMessengerMediaDomCandidate,
+} from './messenger-media-dom';
+import {
+	messengerMediaResolverChannel,
+	MessengerMediaResolverRequest,
+} from './media-resolver-ipc';
 
 // Sandboxed preloads receive Electron's limited process global but cannot load node:process.
 const {platform} = process; // eslint-disable-line n/prefer-global/process
@@ -28,47 +36,6 @@ let shouldUseDarkColors = false;
 let isAiAssistEnabled = false;
 let conversationObserver: MutationObserver | undefined;
 let conversationReportTimer: ReturnType<typeof setTimeout> | undefined;
-
-function normalizedMediaDuration(media: HTMLMediaElement): number | undefined {
-	return Number.isFinite(media.duration) && media.duration >= 0
-		? Math.min(media.duration, 7 * 24 * 60 * 60)
-		: undefined;
-}
-
-function stableMessageId(element: Element): string | undefined {
-	const identity = element.matches('[data-message-id], [data-messageid]')
-		? element
-		: element.closest('[data-message-id], [data-messageid]');
-	const messageId = identity?.getAttribute('data-message-id')
-		?? identity?.getAttribute('data-messageid');
-	return messageId && messageId.length <= 200 && /^[\w.:-]+$/.test(messageId)
-		? messageId
-		: undefined;
-}
-
-function loadedMediaCandidates(): MessengerMediaCandidate[] {
-	const candidates: MessengerMediaCandidate[] = [];
-	const seen = new Set<string>();
-	for (const media of document.querySelectorAll<HTMLMediaElement>('[role="main"] [role="grid"] audio, [role="main"] [role="grid"] video')) {
-		const messageId = stableMessageId(media);
-		const kind: MediaKind = media instanceof HTMLAudioElement ? 'audio' : 'video';
-		const key = `${messageId}:${kind}`;
-		if (!messageId || seen.has(key)) {
-			continue;
-		}
-
-		seen.add(key);
-		const candidate: MessengerMediaCandidate = {kind, messageId};
-		const durationSeconds = normalizedMediaDuration(media);
-		if (durationSeconds !== undefined) {
-			candidate.durationSeconds = durationSeconds;
-		}
-
-		candidates.push(candidate);
-	}
-
-	return candidates.slice(-100);
-}
 
 const selectedThreadSelectors = [
 	'a[aria-current="page"][href*="/messages/"]',
@@ -100,7 +67,7 @@ function reportConversationState(requestId?: string): void {
 	const state = deriveConversationIdentity(window.location.href, selectedConversationCandidates());
 	const event = {
 		...state,
-		...(state.status === 'available' ? {mediaCandidates: loadedMediaCandidates()} : {}),
+		...(state.status === 'available' ? {mediaCandidates: extractLoadedMessengerMediaCandidates(document)} : {}),
 		type: 'conversation-state',
 	};
 	electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, requestId
@@ -140,18 +107,6 @@ function stopConversationObserver(): void {
 		clearTimeout(conversationReportTimer);
 		conversationReportTimer = undefined;
 	}
-}
-
-function findMessageMedia(messageId: string, kind: MediaKind): HTMLMediaElement | undefined {
-	for (const identity of document.querySelectorAll('[data-message-id], [data-messageid]')) {
-		const {dataset} = identity as HTMLElement;
-		const candidateId = dataset.messageId ?? dataset.messageid;
-		if (candidateId === messageId) {
-			return identity.matches(kind) ? identity as HTMLMediaElement : identity.querySelector(kind) ?? undefined;
-		}
-	}
-
-	return undefined;
 }
 
 async function readBoundedBlobMedia(url: string, kind: MediaKind): Promise<{buffer: ArrayBuffer; mimeType: string}> {
@@ -205,6 +160,10 @@ async function readBoundedBlobMedia(url: string, kind: MediaKind): Promise<{buff
 			offset += chunk.byteLength;
 		}
 
+		if (bytes.byteLength === 0) {
+			throw new Error('unavailable');
+		}
+
 		return {buffer: bytes.buffer, mimeType};
 	} finally {
 		clearTimeout(timeout);
@@ -212,32 +171,24 @@ async function readBoundedBlobMedia(url: string, kind: MediaKind): Promise<{buff
 }
 
 async function resolveMessengerMedia(requestId: string, messageId: string, kind: MediaKind): Promise<void> {
-	const media = findMessageMedia(messageId, kind);
-	const durationSeconds = media ? normalizedMediaDuration(media) : undefined;
-	const base = {
+	const candidate = resolveMessengerMediaDomCandidate(document, messageId, kind);
+	const {durationSeconds} = candidate;
+	const request = {
 		...(durationSeconds === undefined ? {} : {durationSeconds}),
 		kind,
 		messageId,
 		requestId,
+	};
+	const base = {
+		...request,
 		type: 'media-resolution',
 	} as const;
-	if (!media) {
+	if (candidate.status === 'unavailable') {
 		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {...base, status: 'unavailable'});
 		return;
 	}
 
-	const source = media.currentSrc || media.src;
-	if (/^https:\/\//i.test(source)) {
-		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
-			...base,
-			sourceType: 'https',
-			status: 'available',
-			url: source,
-		});
-		return;
-	}
-
-	if (!source.startsWith('blob:')) {
+	if (candidate.status === 'unsupported') {
 		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
 			...base,
 			sourceType: 'segmented',
@@ -247,19 +198,35 @@ async function resolveMessengerMedia(requestId: string, messageId: string, kind:
 	}
 
 	try {
-		const {buffer, mimeType} = await readBoundedBlobMedia(source, kind);
-		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
-			...base,
-			byteLength: buffer.byteLength,
-			bytes: buffer,
-			mimeType,
-			sourceType: 'blob',
-			status: 'available',
-		});
+		const resolverRequestBase = {kind, messageId, requestId};
+		let resolverRequest: MessengerMediaResolverRequest;
+		if (candidate.sourceType === 'https') {
+			resolverRequest = {
+				...resolverRequestBase,
+				sourceType: 'https',
+				url: candidate.url!,
+			};
+		} else {
+			const {buffer, mimeType} = await readBoundedBlobMedia(candidate.url!, kind);
+			resolverRequest = {
+				...resolverRequestBase,
+				byteLength: buffer.byteLength,
+				bytes: buffer,
+				mimeType,
+				sourceType: 'blob',
+			};
+		}
+
+		const resolution: unknown = await electronIpcRenderer.invoke(messengerMediaResolverChannel, resolverRequest);
+		if (!isAiAssistMessengerEvent(resolution) || resolution.type !== 'media-resolution') {
+			throw new TypeError('invalid-media-resolution');
+		}
+
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, resolution);
 	} catch {
 		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
 			...base,
-			sourceType: 'blob',
+			sourceType: candidate.sourceType,
 			status: 'unavailable',
 		});
 	}

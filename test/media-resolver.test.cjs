@@ -149,6 +149,16 @@ test('blob handles are conversation-bound and cleanup removes cancel and restart
 	);
 	await assert.rejects(
 		resolver.resolveBlob(
+			new ArrayBuffer(0),
+			'audio/ogg',
+			'audio',
+			'message-empty',
+			snapshot,
+		),
+		error => error instanceof MediaResolverError && error.code === 'network',
+	);
+	await assert.rejects(
+		resolver.resolveBlob(
 			new ArrayBuffer((25 * 1024 * 1024) + 1),
 			'audio/ogg',
 			'audio',

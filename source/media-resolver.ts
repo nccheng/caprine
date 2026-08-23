@@ -268,6 +268,10 @@ export class MessengerMediaResolver {
 	): Promise<ResolvedMedia> {
 		try {
 			const mimeType = validateMimeType(normalizedMimeType(mimeTypeValue), kind);
+			if (buffer.byteLength === 0) {
+				throw new MediaResolverError('network', 'Messenger media response was empty.');
+			}
+
 			if (buffer.byteLength > maximumMediaBytes[kind]) {
 				throw new MediaResolverError('oversized', 'Media exceeds the processing limit.');
 			}
@@ -331,6 +335,24 @@ export class MessengerMediaResolver {
 		} finally {
 			await this.release(handleId);
 		}
+	}
+
+	describeHandle(
+		handleId: string,
+		messageId: string,
+		snapshot: Readonly<ConversationSnapshot>,
+	): ResolvedMedia {
+		const stored = this.handles.get(handleId);
+		if (!stored || stored.messageId !== messageId || !sameSnapshot(stored.snapshot, snapshot)) {
+			throw new MediaResolverError('stale-handle', 'Media handle no longer belongs to this conversation.');
+		}
+
+		const {filePath: _filePath, snapshot: _snapshot, ...media} = stored;
+		return media;
+	}
+
+	async releaseHandle(handleId: string): Promise<void> {
+		await this.release(handleId);
 	}
 
 	async releaseAll(): Promise<void> {
