@@ -92,7 +92,11 @@ function removeComposerStatus(): void {
 	composerStatusText = undefined;
 }
 
-function showComposerStatus(hasInlinePrompt: boolean): void {
+function showComposerStatus(command: ReturnType<typeof parseAiComposerCommand>): void {
+	if (!command) {
+		return;
+	}
+
 	if (!composerStatusHost) {
 		const host = document.createElement('div');
 		host.id = 'caprine-ai-composer-status';
@@ -107,9 +111,13 @@ function showComposerStatus(hasInlinePrompt: boolean): void {
 		composerStatusText = status;
 	}
 
-	const message = hasInlinePrompt
-		? 'Caprine AI Assist is armed. This command will not be sent. Text after /ai is visible to Messenger while you type it.'
-		: 'Caprine AI Assist is armed. Enter opens a private prompt and Messenger will not send /ai.';
+	let message = 'Caprine AI Assist is armed. Enter opens a private prompt and Messenger will not send /ai.';
+	if (command.error === 'prompt-too-long') {
+		message = 'This /ai question is too long to move into Caprine. It will not be sent to Messenger; shorten it before trying again.';
+	} else if (command.prompt.length > 0) {
+		message = 'Caprine AI Assist is armed. This command will not be sent. Text after /ai is visible to Messenger while you type it.';
+	}
+
 	if (composerStatusText!.textContent !== message) {
 		composerStatusText!.textContent = message;
 	}
@@ -134,7 +142,7 @@ function updateComposerStatus(candidate?: HTMLElement): void {
 	}
 
 	armedAiComposer = composer;
-	showComposerStatus(command.prompt.length > 0);
+	showComposerStatus(command);
 }
 
 function setComposerText(composer: HTMLElement, value: string): void {
@@ -190,8 +198,17 @@ async function consumeComposerCommand(composer: HTMLElement): Promise<void> {
 	}
 
 	const command = parseAiComposerCommand(composerText(composer));
+	if (!command) {
+		return;
+	}
+
+	if (command.error === 'prompt-too-long') {
+		updateComposerStatus(composer);
+		return;
+	}
+
 	const conversationId = currentConversationId();
-	if (!command || !conversationId) {
+	if (!conversationId) {
 		return;
 	}
 

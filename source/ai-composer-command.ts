@@ -1,5 +1,6 @@
 export type AiComposerCommand = {
 	draftText: string;
+	error?: 'prompt-too-long';
 	prompt: string;
 };
 
@@ -30,19 +31,21 @@ function normalizedDraftText(value: string): string {
 }
 
 export function parseAiComposerCommand(value: string): AiComposerCommand | undefined {
-	const draftText = normalizedDraftText(value);
-	if (draftText === '/ai') {
-		return {draftText, prompt: ''};
+	const normalized = normalizedDraftText(value);
+	if (normalized === '/ai') {
+		return {draftText: value, prompt: ''};
 	}
 
-	if (!draftText.startsWith('/ai ')) {
+	if (!normalized.startsWith('/ai ')) {
 		return;
 	}
 
-	const prompt = draftText.slice(4);
-	return prompt.length <= maximumComposerPromptLength
-		? {draftText, prompt}
-		: undefined;
+	const prompt = normalized.slice(4);
+	return {
+		draftText: value,
+		...(prompt.length > maximumComposerPromptLength ? {error: 'prompt-too-long' as const} : {}),
+		prompt,
+	};
 }
 
 export function shouldInterceptAiComposerEnter(

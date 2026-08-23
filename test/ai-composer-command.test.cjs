@@ -14,12 +14,21 @@ test('only exact /ai commands arm and preserve the inline question', () => {
 		prompt: 'exact  question\nline two',
 	});
 	assert.deepEqual(parseAiComposerCommand('/ai\u00A0pasted question'), {
-		draftText: '/ai pasted question',
+		draftText: '/ai\u00A0pasted question',
 		prompt: 'pasted question',
 	});
 	assert.equal(parseAiComposerCommand('hello /ai'), undefined);
 	assert.equal(parseAiComposerCommand('/aide'), undefined);
 	assert.equal(parseAiComposerCommand(' /ai'), undefined);
+	const oversized = parseAiComposerCommand(`/ai ${'x'.repeat(20_001)}`);
+	assert.equal(oversized.error, 'prompt-too-long');
+	assert.equal(shouldInterceptAiComposerEnter({
+		isComposing: false,
+		key: 'Enter',
+		keyCode: 13,
+		shiftKey: false,
+	}, oversized), true);
+	assert.equal(shouldInterceptAiComposerSend(true, oversized), true);
 });
 
 test('Enter and send clicks intercept armed commands without breaking IME or Shift+Enter', () => {
@@ -54,7 +63,7 @@ test('Enter and send clicks intercept armed commands without breaking IME or Shi
 });
 
 test('two-step consume revalidates before clearing and restores on open failure', async () => {
-	const command = parseAiComposerCommand('/ai keep me');
+	const command = parseAiComposerCommand('/ai\u00A0keep me');
 	let draft = command.draftText;
 	let generation = 1;
 	const actions = accepted => ({
@@ -74,11 +83,11 @@ test('two-step consume revalidates before clearing and restores on open failure'
 	});
 
 	assert.equal(await consumeAiComposerCommand(command, actions(false)), 'restored');
-	assert.equal(draft, '/ai keep me');
+	assert.equal(draft, '/ai\u00A0keep me');
 
 	generation = 2;
 	assert.equal(await consumeAiComposerCommand(command, actions(true)), 'stale');
-	assert.equal(draft, '/ai keep me');
+	assert.equal(draft, '/ai\u00A0keep me');
 
 	generation = 1;
 	assert.equal(await consumeAiComposerCommand(command, actions(true)), 'accepted');
