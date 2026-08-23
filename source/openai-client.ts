@@ -125,6 +125,7 @@ export class OpenAiClient {
 		try {
 			const response = await this.fetchImplementation(openAiResponsesEndpoint, {
 				method: 'POST',
+				redirect: 'error',
 				headers: {
 					Authorization: `Bearer ${apiKey}`,
 					'Content-Type': 'application/json',

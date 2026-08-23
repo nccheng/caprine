@@ -345,11 +345,6 @@ class AiAssistController {
 		}
 
 		if (this.activeRequest) {
-			this.error = {
-				code: 'provider-unavailable',
-				message: 'A request is already active. Cancel it before starting another.',
-			};
-			this.broadcastState();
 			return;
 		}
 
@@ -380,9 +375,11 @@ class AiAssistController {
 			}
 
 			if (isConnectionTest) {
+				this.error = undefined;
 				this.notice = 'OpenAI API key works.';
 			} else {
 				this.answer = answer;
+				this.error = undefined;
 				this.notice = undefined;
 			}
 		} catch (error) {

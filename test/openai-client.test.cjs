@@ -38,12 +38,29 @@ test('OpenAI client sends a bounded non-stored Responses API request', async () 
 
 	assert.equal(await client.createResponse('sk-private', 'Hello'), 'Private answer');
 	assert.equal(request.url, 'https://api.openai.com/v1/responses');
+	assert.equal(request.options.redirect, 'error');
 	assert.equal(request.options.headers.Authorization, 'Bearer sk-private');
 	const body = JSON.parse(request.options.body);
 	assert.equal(body.input, 'Hello');
 	assert.equal(body.model, openAiResponseModel);
 	assert.equal(body.store, false);
 	assert.equal(body.max_output_tokens, 1024);
+});
+
+test('OpenAI client refuses redirects away from the official endpoint', async () => {
+	let redirectMode;
+	const client = new OpenAiClient({
+		async fetchImplementation(_url, options) {
+			redirectMode = options.redirect;
+			return new Response(null, {
+				headers: {Location: 'https://example.com/collect'},
+				status: 307,
+			});
+		},
+	});
+
+	await expectCode(client.createResponse('sk-private', 'Private prompt'), 'provider-unavailable');
+	assert.equal(redirectMode, 'error');
 });
 
 test('OpenAI client maps cancellation and timeout without exposing provider bodies', async () => {
