@@ -258,6 +258,22 @@ function isImeEnterKeyup(event) {
 		|| event.keyCode === 229;
 }
 
+function completeCapsLockComposition(composition, authoritativeComposer, event) {
+	const compositionComposer = composition.current();
+	if (
+		(event.key !== 'CapsLock' && event.code !== 'CapsLock')
+		|| event.isComposing
+		|| !compositionComposer
+		|| authoritativeComposer !== compositionComposer
+		|| compositionComposer.isConnected === false
+		|| compositionComposer.matchesComposer === false
+	) {
+		return;
+	}
+
+	return composition.finish();
+}
+
 test('browser keydown routing consumes an arm when the dispatched target cannot resolve', () => {
 	const state = new AiComposerCommandState();
 	const composer = {draftText: '/ai dispatched'};
@@ -612,6 +628,144 @@ test('Send preflight requires the handled marker to match the authoritative comp
 		});
 		assert.equal(composerB.draftText, scenario === 'missing' ? '/ai stale' : '/ai current');
 	}
+});
+
+test('Caps Lock keyup representations finish and rearm without intercepting the key event', async () => {
+	await Promise.all([
+		{code: 'CapsLock', isComposing: false, key: 'CapsLock'},
+		{code: 'CapsLock', isComposing: false, key: 'Process'},
+	].map(async keyup => {
+		const state = new AiComposerCommandState();
+		const composition = new AiComposerCompositionState();
+		const composer = {draftText: '/ai 你好', isConnected: true, matchesComposer: true};
+		const {calls, event} = protectedEnterEvent(keyup);
+		composition.start(composer);
+
+		assert.equal(completeCapsLockComposition(composition, composer, event), composer);
+		assert.equal(composition.isActive(), false);
+		assert.equal(calls.prevented, 0);
+		assert.equal(calls.stopped, 0);
+		assert.equal(composer.draftText, '/ai 你好');
+		assert.equal(state.current(), undefined);
+
+		await Promise.resolve();
+		const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
+		assert.equal(snapshot.composer, composer);
+		assert.equal(snapshot.command.prompt, '你好');
+	}));
+});
+
+test('Caps Lock completion allows one Send action and guards its paired click', async () => {
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composer = {draftText: '/ai 你好', isConnected: true, matchesComposer: true};
+	composition.start(composer);
+	assert.equal(completeCapsLockComposition(composition, composer, {
+		code: 'CapsLock',
+		isComposing: false,
+		key: 'CapsLock',
+	}), composer);
+
+	await Promise.resolve();
+	const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
+	let consumes = 0;
+	const pointerResult = dispatchBrowserSend(state, snapshot, {
+		capturePrompt: true,
+		eventType: 'pointerdown',
+		liveComposer: composer,
+		onConsume() {
+			consumes += 1;
+		},
+	});
+	assert.deepEqual(pointerResult, {
+		armed: 0,
+		consumed: 1,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 0,
+		outcome: 'protected-consumed',
+		prompt: '你好',
+	});
+
+	const guard = new AiComposerSendGestureGuard();
+	const sendControl = new EventTarget();
+	guard.arm(sendControl);
+	const clickTarget = new EventTarget();
+	const click = new RoutedEvent('click', [sendControl]);
+	let downstream = 0;
+	clickTarget.addEventListener('click', event => {
+		if (guard.protectsClick(sendControl)) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+		}
+	}, {capture: true});
+	clickTarget.addEventListener('click', () => {
+		downstream += 1;
+	}, {capture: true});
+	clickTarget.dispatchEvent(click);
+	assert.equal(consumes, 1);
+	assert.equal(click.defaultPrevented, true);
+	assert.equal(downstream, 0);
+});
+
+test('Caps Lock completion allows ordinary Enter and leaves the session unpoisoned', async () => {
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composer = {draftText: '/ai 你好', isConnected: true, matchesComposer: true};
+	composition.start(composer);
+	completeCapsLockComposition(composition, composer, {
+		code: 'CapsLock',
+		isComposing: false,
+		key: 'Process',
+	});
+	await Promise.resolve();
+	const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
+	assert.equal(dispatchBrowserEnter(state, snapshot, {
+		capturePrompt: true,
+		fallbackComposer: composer,
+	}).prompt, '你好');
+
+	composer.draftText = '/ai hello';
+	const laterSnapshot = state.arm(composer, composer.draftText, 'conversation-a');
+	assert.equal(dispatchBrowserEnter(state, laterSnapshot, {
+		capturePrompt: true,
+		fallbackComposer: composer,
+	}).prompt, 'hello');
+});
+
+test('Caps Lock completion ignores active or foreign composition and preserves normal Chinese text', async () => {
+	const composition = new AiComposerCompositionState();
+	const composerA = {draftText: '/ai partial', isConnected: true, matchesComposer: true};
+	const composerB = {draftText: '/ai other', isConnected: true, matchesComposer: true};
+	composition.start(composerA);
+	assert.equal(completeCapsLockComposition(composition, composerA, {
+		code: 'CapsLock',
+		isComposing: true,
+		key: 'CapsLock',
+	}), undefined);
+	assert.equal(composition.current(), composerA);
+	assert.equal(completeCapsLockComposition(composition, composerB, {
+		code: 'CapsLock',
+		isComposing: false,
+		key: 'CapsLock',
+	}), undefined);
+	assert.equal(composition.current(), composerA);
+
+	const normalState = new AiComposerCommandState();
+	const normalComposition = new AiComposerCompositionState();
+	const normalComposer = {draftText: '一般中文訊息', isConnected: true, matchesComposer: true};
+	normalComposition.start(normalComposer);
+	assert.equal(completeCapsLockComposition(normalComposition, normalComposer, {
+		code: 'CapsLock',
+		isComposing: false,
+		key: 'CapsLock',
+	}), normalComposer);
+	await Promise.resolve();
+	assert.equal(parseAiComposerCommand(normalComposer.draftText), undefined);
+	assert.equal(normalState.current(), undefined);
+	assert.equal(dispatchBrowserSend(normalState, undefined, {
+		liveComposer: normalComposer,
+	}).outcome, 'ignored');
 });
 
 test('non-composing input can finish the focused composition owner without trusting unrelated input', () => {

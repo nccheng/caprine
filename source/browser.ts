@@ -544,22 +544,11 @@ function isAiComposerImeEnterKeyup(event: KeyboardEvent): boolean {
 		|| event.keyCode === 229;
 }
 
-function handleAiComposerKeyup(event: KeyboardEvent): void {
-	if (!event.isTrusted || !isAiComposerImeEnterKeyup(event)) {
-		return;
-	}
+function isAiComposerCapsLockKeyup(event: KeyboardEvent): boolean {
+	return event.key === 'CapsLock' || event.code === 'CapsLock';
+}
 
-	const imeComposer = pendingAiComposerImeEnter ?? handledAiComposerImeEnter;
-	pendingAiComposerImeEnter = undefined;
-	handledAiComposerImeEnter = undefined;
-	if (!imeComposer) {
-		return;
-	}
-
-	if (aiComposerCompositionState.current() === imeComposer) {
-		aiComposerCompositionState.finish();
-	}
-
+function scheduleAiComposerRearm(): void {
 	queueMicrotask(() => {
 		if (!isAiAssistEnabled) {
 			return;
@@ -570,6 +559,44 @@ function handleAiComposerKeyup(event: KeyboardEvent): void {
 			armComposerCommand(composer);
 		}
 	});
+}
+
+function handleAiComposerKeyup(event: KeyboardEvent): void {
+	if (!isAiAssistEnabled || !event.isTrusted) {
+		return;
+	}
+
+	if (isAiComposerCapsLockKeyup(event)) {
+		const compositionComposer = aiComposerCompositionState.current();
+		if (
+			event.isComposing
+			|| !compositionComposer
+			|| activeMessengerComposer() !== compositionComposer
+			|| !compositionComposer.isConnected
+			|| !compositionComposer.matches(messengerComposerSelector)
+		) {
+			return;
+		}
+
+		aiComposerCompositionState.finish();
+		pendingAiComposerImeEnter = undefined;
+		handledAiComposerImeEnter = undefined;
+	} else if (isAiComposerImeEnterKeyup(event)) {
+		const imeComposer = pendingAiComposerImeEnter ?? handledAiComposerImeEnter;
+		pendingAiComposerImeEnter = undefined;
+		handledAiComposerImeEnter = undefined;
+		if (!imeComposer) {
+			return;
+		}
+
+		if (aiComposerCompositionState.current() === imeComposer) {
+			aiComposerCompositionState.finish();
+		}
+	} else {
+		return;
+	}
+
+	scheduleAiComposerRearm();
 }
 
 function handleAiComposerClick(event: MouseEvent): void {
