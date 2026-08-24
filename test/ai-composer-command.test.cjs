@@ -233,6 +233,31 @@ function dispatchBrowserSend(state, snapshot, overrides = {}) {
 	};
 }
 
+function preflightHandledImeSend(state, composition, markers, options) {
+	const {liveComposer, ownership = 'unique'} = options;
+	if (
+		ownership === 'unique'
+		&& liveComposer
+		&& markers.handled === liveComposer
+		&& composition.current() === liveComposer
+		&& parseAiComposerCommand(liveComposer.draftText)
+	) {
+		composition.finish();
+		markers.pending = undefined;
+		markers.handled = undefined;
+		state.arm(liveComposer, liveComposer.draftText, 'conversation-a');
+	}
+
+	return state.current();
+}
+
+function isImeEnterKeyup(event) {
+	return event.key === 'Enter'
+		|| event.code === 'Enter'
+		|| event.keyCode === 13
+		|| event.keyCode === 229;
+}
+
 test('browser keydown routing consumes an arm when the dispatched target cannot resolve', () => {
 	const state = new AiComposerCommandState();
 	const composer = {draftText: '/ai dispatched'};
@@ -451,11 +476,14 @@ test('paragraph suppression hands IME completion to keyup and leaves Send and la
 	pendingImeEnter = undefined;
 	assert.equal(composition.isActive(), true);
 
-	const keyupComposer = pendingImeEnter ?? handledImeEnter;
-	pendingImeEnter = undefined;
-	handledImeEnter = undefined;
-	if (composition.current() === keyupComposer) {
-		composition.finish();
+	const keyup = {code: 'Enter', key: 'Process', keyCode: 229};
+	if (isImeEnterKeyup(keyup)) {
+		const keyupComposer = pendingImeEnter ?? handledImeEnter;
+		pendingImeEnter = undefined;
+		handledImeEnter = undefined;
+		if (composition.current() === keyupComposer) {
+			composition.finish();
+		}
 	}
 
 	await Promise.resolve();
@@ -493,6 +521,97 @@ test('paragraph suppression hands IME completion to keyup and leaves Send and la
 		outcome: 'protected-consumed',
 		prompt: 'hello',
 	});
+});
+
+test('handled IME Send preflight consumes once for pointer and keyboard activation', () => {
+	for (const eventType of ['pointerdown', 'click']) {
+		const state = new AiComposerCommandState();
+		const composition = new AiComposerCompositionState();
+		const composer = {draftText: '/ai 你好'};
+		const oldSnapshot = state.arm(composer, composer.draftText, 'conversation-a');
+		const markers = {handled: composer, pending: composer};
+		composition.start(composer);
+
+		const snapshot = preflightHandledImeSend(state, composition, markers, {liveComposer: composer});
+		assert.notEqual(snapshot, oldSnapshot);
+		assert.equal(snapshot.composer, composer);
+		assert.equal(composition.isActive(), false);
+		assert.equal(markers.pending, undefined);
+		assert.equal(markers.handled, undefined);
+
+		let actualConsumes = 0;
+		const result = dispatchBrowserSend(state, snapshot, {
+			capturePrompt: true,
+			compositionActive: composition.isActive(),
+			eventType,
+			liveComposer: composer,
+			onConsume() {
+				actualConsumes += 1;
+			},
+		});
+		assert.deepEqual(result, {
+			armed: 0,
+			consumed: 1,
+			defaultPrevented: true,
+			downstream: 0,
+			invalidated: 0,
+			outcome: 'protected-consumed',
+			prompt: '你好',
+		});
+
+		if (eventType === 'pointerdown') {
+			const guard = new AiComposerSendGestureGuard();
+			const sendControl = new EventTarget();
+			guard.arm(sendControl);
+			const clickTarget = new EventTarget();
+			const click = new RoutedEvent('click', [sendControl]);
+			let downstream = 0;
+			clickTarget.addEventListener('click', event => {
+				if (guard.protectsClick(sendControl)) {
+					event.preventDefault();
+					event.stopImmediatePropagation();
+				}
+			}, {capture: true});
+			clickTarget.addEventListener('click', () => {
+				downstream += 1;
+			}, {capture: true});
+			clickTarget.dispatchEvent(click);
+			assert.equal(click.defaultPrevented, true);
+			assert.equal(downstream, 0);
+		}
+
+		assert.equal(actualConsumes, 1);
+	}
+});
+
+test('Send preflight requires the handled marker to match the authoritative composer', () => {
+	for (const scenario of ['missing', 'different-composer']) {
+		const state = new AiComposerCommandState();
+		const composition = new AiComposerCompositionState();
+		const composerA = {draftText: '/ai stale'};
+		const composerB = scenario === 'missing' ? composerA : {draftText: '/ai current'};
+		const snapshot = state.arm(composerB, composerB.draftText, 'conversation-a');
+		const markers = {
+			handled: scenario === 'missing' ? undefined : composerA,
+			pending: undefined,
+		};
+		composition.start(composerA);
+
+		assert.equal(preflightHandledImeSend(state, composition, markers, {liveComposer: composerB}), snapshot);
+		assert.equal(composition.isActive(), true);
+		assert.deepEqual(dispatchBrowserSend(state, snapshot, {
+			compositionActive: composition.isActive(),
+			liveComposer: composerB,
+		}), {
+			armed: 0,
+			consumed: 0,
+			defaultPrevented: true,
+			downstream: 0,
+			invalidated: 0,
+			outcome: 'protected-stale',
+		});
+		assert.equal(composerB.draftText, scenario === 'missing' ? '/ai stale' : '/ai current');
+	}
 });
 
 test('non-composing input can finish the focused composition owner without trusting unrelated input', () => {

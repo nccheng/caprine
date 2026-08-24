@@ -537,8 +537,15 @@ function handleAiComposerBeforeInput(event: InputEvent): void {
 	event.stopImmediatePropagation();
 }
 
+function isAiComposerImeEnterKeyup(event: KeyboardEvent): boolean {
+	return event.key === 'Enter'
+		|| event.code === 'Enter'
+		|| event.keyCode === 13
+		|| event.keyCode === 229;
+}
+
 function handleAiComposerKeyup(event: KeyboardEvent): void {
-	if (!event.isTrusted || event.key !== 'Enter') {
+	if (!event.isTrusted || !isAiComposerImeEnterKeyup(event)) {
 		return;
 	}
 
@@ -587,8 +594,22 @@ function handleAiComposerClick(event: MouseEvent): void {
 		}
 	}
 
-	const snapshot = aiComposerCommandState.current();
 	const sendOwnership = resolveMessengerSendOwnership(sendControl);
+	const {liveComposer, ownership} = sendOwnership;
+	if (
+		ownership === 'unique'
+		&& liveComposer
+		&& handledAiComposerImeEnter === liveComposer
+		&& aiComposerCompositionState.current() === liveComposer
+		&& parseAiComposerCommand(composerText(liveComposer))
+	) {
+		aiComposerCompositionState.finish();
+		pendingAiComposerImeEnter = undefined;
+		handledAiComposerImeEnter = undefined;
+		armComposerCommand(liveComposer);
+	}
+
+	const snapshot = aiComposerCommandState.current();
 	const outcome = routeAiComposerBrowserSend(event, {
 		armCurrent: armComposerCommand,
 		commandFromComposer: composer => parseAiComposerCommand(composerText(composer)),
