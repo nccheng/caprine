@@ -302,6 +302,13 @@ export function isNormalAiComposerEnter(event: Readonly<AiComposerEnterEvent>): 
 		&& event.keyCode !== 229;
 }
 
+export function isAiComposerCompositionConfirmation(
+	event: Readonly<AiComposerEnterEvent>,
+	compositionActive: boolean,
+): boolean {
+	return event.isComposing || event.keyCode === 229 || compositionActive;
+}
+
 export function isAiComposerSendControlDescription(value: string): boolean {
 	return /\b(send|enter)\b/i.test(value);
 }
@@ -359,10 +366,11 @@ export function routeAiComposerBrowserEnter<Node, Composer>(
 	event: Readonly<AiComposerEnterEvent> & AiComposerBrowserEvent<Node>,
 	options: Readonly<AiComposerBrowserRouteOptions<Node, Composer>>,
 ): AiComposerEventRouteOutcome {
-	if (options.compositionActive || !isNormalAiComposerEnter(event)) {
+	if (event.key !== 'Enter' || event.shiftKey) {
 		return 'ignored';
 	}
 
+	const isCompositionConfirmation = isAiComposerCompositionConfirmation(event, options.compositionActive);
 	const resolution = resolveAiComposerFromEventSignals({
 		activeElement: options.activeElement,
 		armedComposer: undefined,
@@ -372,7 +380,7 @@ export function routeAiComposerBrowserEnter<Node, Composer>(
 	const liveComposer = resolution.composer
 		?? (resolution.blockedArmedFallback ? undefined : options.fallbackComposer);
 	if (liveComposer === undefined) {
-		if (options.snapshot && !resolution.blockedArmedFallback) {
+		if (!isCompositionConfirmation && options.snapshot && !resolution.blockedArmedFallback) {
 			event.preventDefault();
 			event.stopImmediatePropagation();
 			options.invalidate();
@@ -391,6 +399,15 @@ export function routeAiComposerBrowserEnter<Node, Composer>(
 			options.invalidate();
 		}
 
+		return 'ignored';
+	}
+
+	if (isCompositionConfirmation) {
+		event.stopImmediatePropagation();
+		return 'protected-stale';
+	}
+
+	if (!isNormalAiComposerEnter(event)) {
 		return 'ignored';
 	}
 

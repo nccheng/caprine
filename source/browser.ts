@@ -16,10 +16,8 @@ import {
 	AiComposerCommandState,
 	AiComposerCompositionState,
 	AiComposerSendGestureGuard,
-	armAiComposerFromBrowserEvent,
 	consumeAiComposerCommand,
 	isAiComposerSendControlDescription,
-	isNormalAiComposerEnter,
 	parseAiComposerCommand,
 	resolveAiComposerFromEventSignals,
 	routeAiComposerBrowserEnter,
@@ -174,7 +172,13 @@ function snapshotState(snapshot: Readonly<AiComposerCommandSnapshot<HTMLElement>
 
 function revalidateArmedComposer(): void {
 	const composingComposer = aiComposerCompositionState.current();
-	if (composingComposer && (!composingComposer.isConnected || !composingComposer.matches(messengerComposerSelector))) {
+	const activeComposer = activeMessengerComposer();
+	if (composingComposer && (
+		!composingComposer.isConnected
+		|| !composingComposer.matches(messengerComposerSelector)
+		|| composerText(composingComposer) === ''
+		|| (activeComposer !== undefined && activeComposer !== composingComposer)
+	)) {
 		aiComposerCompositionState.finish();
 	}
 
@@ -186,7 +190,11 @@ function revalidateArmedComposer(): void {
 
 	const state = snapshotState(snapshot);
 	if (!isAiAssistEnabled || !aiComposerCommandState.matches(snapshot, state)) {
-		if (state.conversationId && state.conversationId !== snapshot.conversationId) {
+		const lostConversationAuthority = !isAiAssistEnabled
+			|| state.conversationId === undefined
+			|| state.conversationId !== snapshot.conversationId
+			|| !state.isConnected;
+		if (aiComposerCompositionState.current() === snapshot.composer && lostConversationAuthority) {
 			aiComposerCompositionState.finish();
 		}
 
@@ -358,14 +366,18 @@ function handleAiComposerInput(event: Event): void {
 		return;
 	}
 
-	const snapshot = aiComposerCommandState.current();
-	armAiComposerFromBrowserEvent(event, {
-		activeElement: document.activeElement ?? undefined,
-		armedComposer: snapshot?.composer,
-		armCurrent: armComposerCommand,
-		blocksArmedFallback: blocksArmedComposerFallback,
-		composerFromNode: composerFromTarget,
-	});
+	const resolution = composerFromEvent(event, undefined);
+	const composer = resolution.composer
+		?? (resolution.blockedArmedFallback ? undefined : uniqueCurrentMessengerComposer());
+	if (!composer) {
+		return;
+	}
+
+	if (event instanceof InputEvent && !event.isComposing) {
+		aiComposerCompositionState.finish();
+	}
+
+	armComposerCommand(composer);
 }
 
 function handleAiComposerFocusIn(event: FocusEvent): void {
@@ -419,7 +431,7 @@ function handleAiComposerCompositionEnd(event: CompositionEvent): void {
 }
 
 function handleAiComposerKeydown(event: KeyboardEvent): void {
-	if (!isAiAssistEnabled || !event.isTrusted || !isNormalAiComposerEnter(event)) {
+	if (!isAiAssistEnabled || !event.isTrusted || event.key !== 'Enter' || event.shiftKey) {
 		return;
 	}
 

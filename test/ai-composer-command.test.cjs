@@ -259,7 +259,7 @@ test('browser keydown routing falls back to activeElement', () => {
 	}).outcome, 'protected-consumed');
 });
 
-test('browser keydown routing leaves no-arm normal messages and IME or Shift Enter untouched', () => {
+test('browser keydown routing leaves normal messages and Shift Enter untouched but contains AI IME confirmation', () => {
 	const noArmState = new AiComposerCommandState();
 	const normalComposer = {draftText: 'normal message'};
 	const target = new EventTarget();
@@ -274,15 +274,32 @@ test('browser keydown routing leaves no-arm normal messages and IME or Shift Ent
 		outcome: 'ignored',
 	});
 
-	for (const event of [{isComposing: true}, {keyCode: 229}, {shiftKey: true}]) {
+	for (const event of [{isComposing: true}, {keyCode: 229}]) {
 		const state = new AiComposerCommandState();
 		const composer = {draftText: '/ai composing'};
 		const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
-		const result = dispatchBrowserEnter(state, snapshot, {event});
+		const result = dispatchBrowserEnter(state, snapshot, {event, fallbackComposer: composer});
 		assert.equal(result.defaultPrevented, false);
-		assert.equal(result.downstream, 1);
-		assert.equal(result.outcome, 'ignored');
+		assert.equal(result.downstream, 0);
+		assert.equal(result.consumed, 0);
+		assert.equal(result.invalidated, 0);
+		assert.equal(result.outcome, 'protected-stale');
+		assert.equal(composer.draftText, '/ai composing');
 	}
+
+	const shiftState = new AiComposerCommandState();
+	const shiftComposer = {draftText: '/ai multiline'};
+	const shiftSnapshot = shiftState.arm(shiftComposer, shiftComposer.draftText, 'conversation-a');
+	assert.deepEqual(dispatchBrowserEnter(shiftState, shiftSnapshot, {
+		event: {shiftKey: true},
+		fallbackComposer: shiftComposer,
+	}), {
+		consumed: 0,
+		defaultPrevented: false,
+		downstream: 1,
+		invalidated: 0,
+		outcome: 'ignored',
+	});
 
 	const compositionCommandState = new AiComposerCommandState();
 	const composingComposer = {draftText: '/ai composition guard'};
@@ -291,10 +308,25 @@ test('browser keydown routing leaves no-arm normal messages and IME or Shift Ent
 		composingComposer.draftText,
 		'conversation-a',
 	);
-	const compositionResult = dispatchBrowserEnter(compositionCommandState, composingSnapshot, {compositionActive: true});
+	const compositionResult = dispatchBrowserEnter(compositionCommandState, composingSnapshot, {
+		compositionActive: true,
+		fallbackComposer: composingComposer,
+	});
 	assert.equal(compositionResult.defaultPrevented, false);
-	assert.equal(compositionResult.downstream, 1);
-	assert.equal(compositionResult.outcome, 'ignored');
+	assert.equal(compositionResult.downstream, 0);
+	assert.equal(compositionResult.outcome, 'protected-stale');
+
+	const chineseState = new AiComposerCommandState();
+	const chineseComposer = {draftText: '一般中文訊息'};
+	const chineseResult = dispatchBrowserEnter(chineseState, undefined, {
+		compositionActive: true,
+		event: {isComposing: true},
+		fallbackComposer: chineseComposer,
+	});
+	assert.equal(chineseResult.defaultPrevented, false);
+	assert.equal(chineseResult.downstream, 1);
+	assert.equal(chineseResult.consumed, 0);
+	assert.equal(chineseResult.outcome, 'ignored');
 });
 
 test('composition end clears a retargeted session and rearms a replacement composer', () => {
@@ -307,10 +339,11 @@ test('composition end clears a retargeted session and rearms a replacement compo
 	const commitEnter = dispatchBrowserEnter(state, oldSnapshot, {
 		compositionActive: composition.isActive(),
 		event: {isComposing: true},
+		fallbackComposer: composerA,
 	});
 	assert.equal(commitEnter.defaultPrevented, false);
 	assert.equal(commitEnter.consumed, 0);
-	assert.equal(commitEnter.downstream, 1);
+	assert.equal(commitEnter.downstream, 0);
 
 	const composerB = {draftText: '/ai 測試'};
 	const composerBNode = new EventTarget();
@@ -340,7 +373,7 @@ test('composition end clears a retargeted session and rearms a replacement compo
 	});
 });
 
-test('keyCode 229 never consumes during composition but normal Enter works after finish', () => {
+test('committed non-composing input clears composition and the next Enter consumes once', () => {
 	const state = new AiComposerCommandState();
 	const composition = new AiComposerCompositionState();
 	const composer = {draftText: '/ai 測試'};
@@ -350,41 +383,106 @@ test('keyCode 229 never consumes during composition but normal Enter works after
 	const commitEnter = dispatchBrowserEnter(state, snapshot, {
 		compositionActive: composition.isActive(),
 		event: {keyCode: 229},
+		fallbackComposer: composer,
 	});
 	assert.equal(commitEnter.defaultPrevented, false);
 	assert.equal(commitEnter.consumed, 0);
+	assert.equal(commitEnter.downstream, 0);
+	assert.equal(composer.draftText, '/ai 測試');
+
+	// Mirrors the trusted, non-composing InputEvent fail-safe before rearming.
 	composition.finish();
-	assert.equal(dispatchBrowserEnter(state, snapshot, {fallbackComposer: composer}).outcome, 'protected-consumed');
-});
-
-test('removed composition owner cannot leave a replacement composer guarded', () => {
-	const state = new AiComposerCommandState();
-	const composition = new AiComposerCompositionState();
-	const composerA = {draftText: '/ai old', isConnected: true};
-	composition.start(composerA);
-
-	composerA.isConnected = false;
-	const composingComposer = composition.current();
-	if (composingComposer && !composingComposer.isConnected) {
-		composition.finish();
-	}
-
-	const composerB = {draftText: '/ai replacement'};
-	const composerBNode = new EventTarget();
-	const snapshot = state.arm(composerB, composerB.draftText, 'conversation-a');
+	const committedSnapshot = state.arm(composer, composer.draftText, 'conversation-a');
 	assert.equal(composition.isActive(), false);
-	assert.deepEqual(dispatchBrowserEnter(state, snapshot, {
+	assert.deepEqual(dispatchBrowserEnter(state, committedSnapshot, {
 		capturePrompt: true,
-		composerFromNode: node => node === composerBNode ? composerB : undefined,
-		routePath: [composerBNode],
+		fallbackComposer: composer,
 	}), {
 		consumed: 1,
 		defaultPrevented: true,
 		downstream: 0,
 		invalidated: 0,
 		outcome: 'protected-consumed',
-		prompt: 'replacement',
+		prompt: '測試',
 	});
+});
+
+test('lost conversation authority clears only the owning composition guard', () => {
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composer = {draftText: '/ai 你好', isConnected: true};
+	composition.start(composer);
+	state.arm(composer, composer.draftText, 'conversation-a');
+	const revalidate = conversationId => {
+		const snapshot = state.current();
+		const current = {
+			composer,
+			conversationId,
+			draftText: composer.draftText,
+			isConnected: composer.isConnected,
+		};
+		if (snapshot && !state.matches(snapshot, current)) {
+			const lostAuthority = conversationId === undefined
+				|| conversationId !== snapshot.conversationId
+				|| !current.isConnected;
+			if (composition.current() === snapshot.composer && lostAuthority) {
+				composition.finish();
+			}
+
+			state.invalidate();
+		}
+	};
+
+	composer.draftText = '/ai 你好啊';
+	revalidate('conversation-a');
+	assert.equal(state.current(), undefined);
+	assert.equal(composition.isActive(), true);
+
+	composer.draftText = '/ai hello';
+	state.arm(composer, composer.draftText, 'conversation-a');
+	revalidate(undefined);
+	assert.equal(state.current(), undefined);
+	assert.equal(composition.isActive(), false);
+	assert.equal(composer.draftText, '/ai hello');
+
+	const recommitted = state.arm(composer, composer.draftText, 'conversation-a');
+	assert.deepEqual(dispatchBrowserEnter(state, recommitted, {
+		capturePrompt: true,
+		fallbackComposer: composer,
+	}), {
+		consumed: 1,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 0,
+		outcome: 'protected-consumed',
+		prompt: 'hello',
+	});
+});
+
+test('removed or unexpectedly cleared composition owners cannot poison the next AI command', () => {
+	for (const failure of ['cleared', 'disconnected']) {
+		const state = new AiComposerCommandState();
+		const composition = new AiComposerCompositionState();
+		const composerA = {draftText: '/ai old', isConnected: true};
+		composition.start(composerA);
+		composerA[failure === 'cleared' ? 'draftText' : 'isConnected'] = failure === 'cleared' ? '' : false;
+
+		const owner = composition.current();
+		if (owner && (!owner.isConnected || owner.draftText === '')) {
+			composition.finish();
+		}
+
+		const composerB = {draftText: '/ai replacement'};
+		const snapshot = state.arm(composerB, composerB.draftText, 'conversation-a');
+		assert.equal(composition.isActive(), false);
+		const result = dispatchBrowserEnter(state, snapshot, {
+			capturePrompt: true,
+			fallbackComposer: composerB,
+		});
+		assert.equal(result.consumed, 1);
+		assert.equal(result.outcome, 'protected-consumed');
+		assert.equal(result.prompt, 'replacement');
+	}
 });
 
 test('paste-visible Enter freshly arms and consumes when no input snapshot exists yet', () => {
