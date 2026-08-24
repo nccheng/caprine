@@ -11,6 +11,23 @@ export type AiComposerEnterEvent = {
 	shiftKey: boolean;
 };
 
+export type AiComposerProtectedEvent = {
+	preventDefault: () => void;
+	stopImmediatePropagation: () => void;
+};
+
+export type AiComposerEventSignals<Node, Composer> = {
+	activeElement: Node | undefined;
+	armedComposer: Composer | undefined;
+	composedPath: readonly Node[];
+	target: Node | undefined;
+};
+
+export type AiComposerEventResolution<Composer> = Readonly<{
+	blockedArmedFallback: boolean;
+	composer: Composer | undefined;
+}>;
+
 export type AiComposerConsumeActions = {
 	clear: () => void;
 	isCurrent: () => boolean;
@@ -19,6 +36,17 @@ export type AiComposerConsumeActions = {
 };
 
 export type AiComposerConsumeOutcome = 'accepted' | 'restored' | 'stale';
+export type AiComposerEventRouteOutcome = 'ignored' | 'protected-consumed' | 'protected-stale';
+
+export type AiComposerEventRouteOptions<Composer> = {
+	blockedArmedFallback: boolean;
+	composer: Composer | undefined;
+	composingComposer: Composer | undefined;
+	consume: (snapshot: Readonly<AiComposerCommandSnapshot<Composer>>) => void;
+	invalidate: () => void;
+	isCurrent: (snapshot: Readonly<AiComposerCommandSnapshot<Composer>>) => boolean;
+	snapshot: Readonly<AiComposerCommandSnapshot<Composer>> | undefined;
+};
 
 export type AiComposerCommandSnapshot<Composer> = Readonly<{
 	command: Readonly<AiComposerCommand>;
@@ -109,15 +137,112 @@ export class AiComposerCommandState<Composer> {
 	}
 }
 
+export function resolveAiComposerFromEventSignals<Node, Composer>(
+	signals: Readonly<AiComposerEventSignals<Node, Composer>>,
+	composerFromNode: (node: Node | undefined) => Composer | undefined,
+	blocksArmedFallback: (node: Node | undefined) => boolean,
+): AiComposerEventResolution<Composer> {
+	const candidates = [
+		signals.target,
+		...signals.composedPath,
+		signals.activeElement,
+	];
+	for (const candidate of candidates) {
+		const composer = composerFromNode(candidate);
+		if (composer !== undefined) {
+			return {blockedArmedFallback: false, composer};
+		}
+	}
+
+	const blockedArmedFallback = candidates.some(candidate => blocksArmedFallback(candidate));
+	return {
+		blockedArmedFallback,
+		composer: blockedArmedFallback ? undefined : signals.armedComposer,
+	};
+}
+
+export function routeArmedAiComposerEnter<Composer>(
+	event: Readonly<AiComposerEnterEvent> & AiComposerProtectedEvent,
+	options: Readonly<AiComposerEventRouteOptions<Composer>>,
+): AiComposerEventRouteOutcome {
+	const {
+		blockedArmedFallback,
+		composer,
+		composingComposer,
+		consume,
+		invalidate,
+		isCurrent,
+		snapshot,
+	} = options;
+	if (!isNormalAiComposerEnter(event) || !snapshot || composingComposer === snapshot.composer) {
+		return 'ignored';
+	}
+
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	if (blockedArmedFallback || (composer !== undefined && composer !== snapshot.composer) || !isCurrent(snapshot)) {
+		invalidate();
+		return 'protected-stale';
+	}
+
+	consume(snapshot);
+	return 'protected-consumed';
+}
+
+export function routeArmedAiComposerSend<Composer>(
+	event: AiComposerProtectedEvent,
+	isSendControl: boolean,
+	options: Readonly<AiComposerEventRouteOptions<Composer>>,
+): AiComposerEventRouteOutcome {
+	const {
+		blockedArmedFallback,
+		composer,
+		composingComposer,
+		consume,
+		invalidate,
+		isCurrent,
+		snapshot,
+	} = options;
+	if (!isSendControl || !snapshot || composingComposer === snapshot.composer) {
+		return 'ignored';
+	}
+
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	if (blockedArmedFallback || (composer !== undefined && composer !== snapshot.composer) || !isCurrent(snapshot)) {
+		invalidate();
+		return 'protected-stale';
+	}
+
+	consume(snapshot);
+	return 'protected-consumed';
+}
+
+export function isNormalAiComposerEnter(event: Readonly<AiComposerEnterEvent>): boolean {
+	return event.key === 'Enter'
+		&& !event.shiftKey
+		&& !event.isComposing
+		&& event.keyCode !== 229;
+}
+
+export function isAiComposerSendControlDescription(value: string): boolean {
+	return /\b(send|enter)\b/i.test(value);
+}
+
+export function isAiComposerSendControlEvent<Node>(
+	target: Node | undefined,
+	composedPath: readonly Node[],
+	isSendControl: (node: Node | undefined) => boolean,
+): boolean {
+	return [target, ...composedPath].some(candidate => isSendControl(candidate));
+}
+
 export function shouldInterceptAiComposerEnter(
 	event: Readonly<AiComposerEnterEvent>,
 	command: Readonly<AiComposerCommand> | undefined,
 ): boolean {
 	return command !== undefined
-		&& event.key === 'Enter'
-		&& !event.shiftKey
-		&& !event.isComposing
-		&& event.keyCode !== 229;
+		&& isNormalAiComposerEnter(event);
 }
 
 export function shouldInterceptAiComposerSend(

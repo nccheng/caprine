@@ -15,7 +15,13 @@ import {
 	AiComposerCommandSnapshot,
 	AiComposerCommandState,
 	consumeAiComposerCommand,
+	isAiComposerSendControlDescription,
+	isAiComposerSendControlEvent,
+	isNormalAiComposerEnter,
 	parseAiComposerCommand,
+	resolveAiComposerFromEventSignals,
+	routeArmedAiComposerEnter,
+	routeArmedAiComposerSend,
 	shouldInterceptAiComposerEnter,
 	shouldInterceptAiComposerSend,
 } from './ai-composer-command';
@@ -72,6 +78,31 @@ function composerFromTarget(target: EventTarget | undefined): HTMLElement | unde
 	return target instanceof Element
 		? target.closest<HTMLElement>(messengerComposerSelector) ?? undefined
 		: undefined;
+}
+
+function isEditableTarget(target: EventTarget | undefined): boolean {
+	if (!(target instanceof Element)) {
+		return false;
+	}
+
+	return Boolean(target.closest('input, select, textarea, [contenteditable="true"]'));
+}
+
+function blocksArmedComposerFallback(target: EventTarget | undefined): boolean {
+	if (!(target instanceof Element)) {
+		return false;
+	}
+
+	return Boolean(target.closest('a[href], button, input, select, textarea, [contenteditable="true"], [role="button"]'));
+}
+
+function composerFromEvent(event: Event, armedComposer: HTMLElement | undefined) {
+	return resolveAiComposerFromEventSignals({
+		activeElement: document.activeElement ?? undefined,
+		armedComposer,
+		composedPath: event.composedPath(),
+		target: event.target ?? undefined,
+	}, composerFromTarget, blocksArmedComposerFallback);
 }
 
 function activeMessengerComposer(): HTMLElement | undefined {
@@ -201,7 +232,7 @@ function isMessengerSendControl(target: EventTarget | undefined, composer: HTMLE
 		control.dataset.testid,
 		control.getAttribute('title'),
 	].filter(Boolean).join(' ');
-	if (!/\b(send|press enter)\b/i.test(description)) {
+	if (!isAiComposerSendControlDescription(description)) {
 		return false;
 	}
 
@@ -217,6 +248,14 @@ function isMessengerSendControl(target: EventTarget | undefined, composer: HTMLE
 	}
 
 	return false;
+}
+
+function isMessengerSendControlEvent(event: Event, composer: HTMLElement): boolean {
+	return isAiComposerSendControlEvent(
+		event.target ?? undefined,
+		event.composedPath(),
+		candidate => isMessengerSendControl(candidate, composer),
+	);
 }
 
 async function consumeComposerCommand(snapshot: Readonly<AiComposerCommandSnapshot<HTMLElement>>): Promise<void> {
@@ -285,7 +324,7 @@ function handleAiComposerFocusIn(event: FocusEvent): void {
 
 	const focusedComposer = composerFromTarget(event.target ?? undefined);
 	const armedComposer = aiComposerCommandState.current()?.composer;
-	if (focusedComposer && armedComposer && focusedComposer !== armedComposer) {
+	if (armedComposer && focusedComposer !== armedComposer && isEditableTarget(event.target ?? undefined)) {
 		invalidateComposerCommand();
 	}
 }
@@ -303,29 +342,39 @@ function handleAiComposerCompositionEnd(event: CompositionEvent): void {
 }
 
 function handleAiComposerKeydown(event: KeyboardEvent): void {
-	if (!isAiAssistEnabled || !event.isTrusted) {
+	if (!isAiAssistEnabled || !event.isTrusted || !isNormalAiComposerEnter(event)) {
 		return;
 	}
 
-	const composer = composerFromTarget(event.target ?? undefined);
+	const snapshot = aiComposerCommandState.current();
+	const resolution = composerFromEvent(event, snapshot?.composer);
+	const {composer} = resolution;
+	const outcome = routeArmedAiComposerEnter(
+		event,
+		{
+			blockedArmedFallback: resolution.blockedArmedFallback,
+			composer,
+			composingComposer: composingAiComposer,
+			consume(candidate) {
+				void consumeComposerCommand(candidate);
+			},
+			invalidate: invalidateComposerCommand,
+			isCurrent: candidate => isAiAssistEnabled
+				&& aiComposerCommandState.matches(candidate, snapshotState(candidate)),
+			snapshot,
+		},
+	);
+	if (outcome !== 'ignored') {
+		return;
+	}
+
 	const command = composer ? parseAiComposerCommand(composerText(composer)) : undefined;
-	if (
-		!composer
-		|| composer === composingAiComposer
-		|| !shouldInterceptAiComposerEnter(event, command)
-	) {
+	if (!shouldInterceptAiComposerEnter(event, command)) {
 		return;
 	}
 
 	event.preventDefault();
 	event.stopImmediatePropagation();
-	const snapshot = aiComposerCommandState.current();
-	if (!snapshot || !aiComposerCommandState.matches(snapshot, snapshotState(snapshot)) || snapshot.composer !== composer) {
-		invalidateComposerCommand();
-		return;
-	}
-
-	void consumeComposerCommand(snapshot);
 }
 
 function handleAiComposerClick(event: MouseEvent): void {
@@ -333,25 +382,40 @@ function handleAiComposerClick(event: MouseEvent): void {
 		return;
 	}
 
-	const composer = activeMessengerComposer();
-	const command = composer ? parseAiComposerCommand(composerText(composer)) : undefined;
-	if (
-		!composer
-		|| composer === composingAiComposer
-		|| !shouldInterceptAiComposerSend(isMessengerSendControl(event.target ?? undefined, composer), command)
-	) {
+	const snapshot = aiComposerCommandState.current();
+	const resolution = composerFromEvent(event, snapshot?.composer);
+	const composer = resolution.composer ?? activeMessengerComposer();
+	const protectedComposer = snapshot?.composer ?? composer;
+	const isSendControl = protectedComposer
+		? isMessengerSendControlEvent(event, protectedComposer)
+		: false;
+	const outcome = routeArmedAiComposerSend(
+		event,
+		isSendControl,
+		{
+			blockedArmedFallback: resolution.blockedArmedFallback && !isSendControl,
+			composer,
+			composingComposer: composingAiComposer,
+			consume(candidate) {
+				void consumeComposerCommand(candidate);
+			},
+			invalidate: invalidateComposerCommand,
+			isCurrent: candidate => isAiAssistEnabled
+				&& aiComposerCommandState.matches(candidate, snapshotState(candidate)),
+			snapshot,
+		},
+	);
+	if (outcome !== 'ignored' || !composer) {
+		return;
+	}
+
+	const command = parseAiComposerCommand(composerText(composer));
+	if (!shouldInterceptAiComposerSend(isSendControl, command)) {
 		return;
 	}
 
 	event.preventDefault();
 	event.stopImmediatePropagation();
-	const snapshot = aiComposerCommandState.current();
-	if (!snapshot || !aiComposerCommandState.matches(snapshot, snapshotState(snapshot)) || snapshot.composer !== composer) {
-		invalidateComposerCommand();
-		return;
-	}
-
-	void consumeComposerCommand(snapshot);
 }
 
 function selectedConversationCandidates(): ConversationIdentityCandidate[] {
