@@ -20,6 +20,20 @@ export type AiComposerConsumeActions = {
 
 export type AiComposerConsumeOutcome = 'accepted' | 'restored' | 'stale';
 
+export type AiComposerCommandSnapshot<Composer> = Readonly<{
+	command: Readonly<AiComposerCommand>;
+	composer: Composer;
+	conversationId: string;
+	generation: number;
+}>;
+
+export type AiComposerCommandSnapshotState<Composer> = Readonly<{
+	composer: Composer;
+	conversationId: string | undefined;
+	draftText: string;
+	isConnected: boolean;
+}>;
+
 const maximumComposerPromptLength = 20_000;
 
 function normalizedDraftText(value: string): string {
@@ -46,6 +60,53 @@ export function parseAiComposerCommand(value: string): AiComposerCommand | undef
 		...(prompt.length > maximumComposerPromptLength ? {error: 'prompt-too-long' as const} : {}),
 		prompt,
 	};
+}
+
+export class AiComposerCommandState<Composer> {
+	private armed: AiComposerCommandSnapshot<Composer> | undefined;
+	private generation = 0;
+
+	arm(
+		composer: Composer,
+		draftText: string,
+		conversationId: string | undefined,
+	): AiComposerCommandSnapshot<Composer> | undefined {
+		const command = parseAiComposerCommand(draftText);
+		if (!command || !conversationId) {
+			this.invalidate();
+			return;
+		}
+
+		this.generation += 1;
+		this.armed = {
+			command,
+			composer,
+			conversationId,
+			generation: this.generation,
+		};
+		return this.armed;
+	}
+
+	current(): AiComposerCommandSnapshot<Composer> | undefined {
+		return this.armed;
+	}
+
+	invalidate(): void {
+		this.armed = undefined;
+		this.generation += 1;
+	}
+
+	matches(
+		snapshot: Readonly<AiComposerCommandSnapshot<Composer>>,
+		state: Readonly<AiComposerCommandSnapshotState<Composer>>,
+	): boolean {
+		return this.armed === snapshot
+			&& snapshot.generation === this.generation
+			&& state.isConnected
+			&& state.composer === snapshot.composer
+			&& state.draftText === snapshot.command.draftText
+			&& state.conversationId === snapshot.conversationId;
+	}
 }
 
 export function shouldInterceptAiComposerEnter(
