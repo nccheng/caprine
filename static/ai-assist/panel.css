@@ -60,6 +60,11 @@ h2 {
 	font-size: 15px;
 }
 
+h3 {
+	margin: 0 0 6px;
+	font-size: 14px;
+}
+
 section p {
 	margin: 0;
 	color: #b9bec9;
@@ -119,6 +124,19 @@ textarea:focus-visible {
 .media-summary {
 	margin-top: 12px;
 	overflow-wrap: anywhere;
+}
+
+.message-anchor {
+	margin-top: 12px;
+	padding: 12px;
+	border: 1px solid #5962be;
+	border-radius: 10px;
+	background: rgb(76 84 170 / 14%);
+}
+
+.message-anchor pre {
+	min-height: 0;
+	margin-top: 8px;
 }
 
 .button-row {

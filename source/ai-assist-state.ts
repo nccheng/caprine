@@ -1,3 +1,5 @@
+import {ConversationContextItem} from './messenger-context';
+
 export const aiSessionInvalidationReasons = [
 	'ai-disabled',
 	'conversation-unavailable',
@@ -30,6 +32,40 @@ export type ConversationSnapshot = {
 	messengerWebContentsId: number;
 	sessionId: string;
 };
+
+export type MessageAnchorData = {
+	item: ConversationContextItem;
+	loadedCount: number;
+	loadedIndex: number;
+};
+
+export type MessageAnchorSnapshot = MessageAnchorData & {
+	snapshot: Readonly<ConversationSnapshot>;
+};
+
+function freezePlainValue(value: unknown): void {
+	if (!value || typeof value !== 'object' || Object.isFrozen(value)) {
+		return;
+	}
+
+	for (const child of Object.values(value)) {
+		freezePlainValue(child);
+	}
+
+	Object.freeze(value);
+}
+
+export function captureMessageAnchorSnapshot(
+	anchor: Readonly<MessageAnchorData>,
+	snapshot: Readonly<ConversationSnapshot>,
+): Readonly<MessageAnchorSnapshot> {
+	const captured = structuredClone({
+		...anchor,
+		snapshot,
+	});
+	freezePlainValue(captured);
+	return captured;
+}
 
 function isSameConversationSnapshot(
 	left: Readonly<ConversationSnapshot> | undefined,

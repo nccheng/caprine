@@ -2,6 +2,7 @@ import {
 	aiSessionInvalidationReasons,
 	AiSessionState,
 	ConversationBindingState,
+	MessageAnchorData,
 } from './ai-assist-state';
 import {
 	conversationIdentityFailureReasons,
@@ -23,6 +24,7 @@ import {
 
 export const aiAssistIpcChannels = {
 	composerCommand: 'ai-assist:composer-command',
+	messageAnchor: 'ai-assist:message-anchor',
 	panelCommand: 'ai-assist:panel-command',
 	panelStateChanged: 'ai-assist:panel-state-changed',
 	messengerCommand: 'ai-assist:messenger-command',
@@ -30,6 +32,7 @@ export const aiAssistIpcChannels = {
 } as const;
 
 export type AiAssistPanelState = {
+	anchor?: MessageAnchorData & {sequence: number};
 	conversation: ConversationBindingState;
 	credentials: {
 		configured: boolean;
@@ -62,6 +65,10 @@ export type AiComposerCommandRequest = {
 
 export type AiComposerCommandResult = {
 	accepted: boolean;
+};
+
+export type AiMessageAnchorRequest = MessageAnchorData & {
+	conversationId: string;
 };
 
 export type AiAssistPanelCommand =
@@ -131,6 +138,125 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 	return actualKeys.length === keys.length && keys.every(key => actualKeys.includes(key));
 }
 
+function isBoundedString(value: unknown, maximumLength: number): value is string {
+	return typeof value === 'string' && value.length > 0 && value.length <= maximumLength;
+}
+
+function isBoundedHttpUrl(value: unknown): boolean {
+	if (!isBoundedString(value, 2048)) {
+		return false;
+	}
+
+	try {
+		const url = new URL(value);
+		return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password;
+	} catch {
+		return false;
+	}
+}
+
+function isAnchorSender(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['role'];
+	if (value.displayName !== undefined) {
+		keys.push('displayName');
+	}
+
+	return hasExactKeys(value, keys)
+		&& ['incoming', 'outgoing'].includes(value.role as string)
+		&& (value.displayName === undefined || isBoundedString(value.displayName, 200));
+}
+
+function isAnchorItem(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const allowedOptionalKeys = ['attachments', 'linkPreview', 'messageId', 'reactions', 'reply', 'text', 'timestamp'];
+	const keys = ['confidence', 'sender'];
+	for (const key of allowedOptionalKeys) {
+		if (value[key] !== undefined) {
+			keys.push(key);
+		}
+	}
+
+	if (
+		!hasExactKeys(value, keys)
+		|| value.confidence !== 'high'
+		|| !isAnchorSender(value.sender)
+		|| !isMessageId(value.messageId)
+		|| (value.text !== undefined && !isBoundedString(value.text, 20_000))
+		|| (value.timestamp !== undefined && !isBoundedString(value.timestamp, 200))
+	) {
+		return false;
+	}
+
+	if (value.attachments !== undefined && (
+		!Array.isArray(value.attachments)
+		|| value.attachments.length === 0
+		|| value.attachments.length > 3
+		|| !value.attachments.every(attachment => isRecord(attachment)
+			&& hasExactKeys(attachment, ['kind'])
+			&& ['audio', 'image', 'video'].includes(attachment.kind as string))
+	)) {
+		return false;
+	}
+
+	if (value.reply !== undefined && (
+		!isRecord(value.reply)
+		|| !isBoundedString(value.reply.text, 4000)
+		|| !hasExactKeys(value.reply, value.reply.quotedSender === undefined ? ['text'] : ['quotedSender', 'text'])
+		|| (value.reply.quotedSender !== undefined && !isBoundedString(value.reply.quotedSender, 200))
+	)) {
+		return false;
+	}
+
+	if (value.reactions !== undefined && (
+		!Array.isArray(value.reactions)
+		|| value.reactions.length === 0
+		|| value.reactions.length > 20
+		|| !value.reactions.every(reaction => isRecord(reaction)
+			&& hasExactKeys(reaction, ['count', 'emoji'])
+			&& Number.isSafeInteger(reaction.count)
+			&& (reaction.count as number) > 0
+			&& (reaction.count as number) <= 99_999
+			&& isBoundedString(reaction.emoji, 32))
+	)) {
+		return false;
+	}
+
+	if (value.linkPreview !== undefined) {
+		if (!isRecord(value.linkPreview)) {
+			return false;
+		}
+
+		const linkKeys = ['domain', 'url'];
+		for (const key of ['description', 'title']) {
+			if (value.linkPreview[key] !== undefined) {
+				linkKeys.push(key);
+			}
+		}
+
+		if (
+			!hasExactKeys(value.linkPreview, linkKeys)
+			|| !isBoundedString(value.linkPreview.domain, 253)
+			|| !isBoundedHttpUrl(value.linkPreview.url)
+			|| (value.linkPreview.description !== undefined && !isBoundedString(value.linkPreview.description, 1000))
+			|| (value.linkPreview.title !== undefined && !isBoundedString(value.linkPreview.title, 500))
+		) {
+			return false;
+		}
+	}
+
+	return value.text !== undefined
+		|| value.reply !== undefined
+		|| value.linkPreview !== undefined
+		|| value.attachments !== undefined;
+}
+
 export function isAiComposerCommandRequest(value: unknown): value is AiComposerCommandRequest {
 	return isRecord(value)
 		&& hasExactKeys(value, ['conversationId', 'prompt'])
@@ -144,6 +270,20 @@ export function isAiComposerCommandResult(value: unknown): value is AiComposerCo
 	return isRecord(value)
 		&& hasExactKeys(value, ['accepted'])
 		&& typeof value.accepted === 'boolean';
+}
+
+export function isAiMessageAnchorRequest(value: unknown): value is AiMessageAnchorRequest {
+	return isRecord(value)
+		&& hasExactKeys(value, ['conversationId', 'item', 'loadedCount', 'loadedIndex'])
+		&& typeof value.conversationId === 'string'
+		&& /^messenger-thread:[\w.:-]{1,200}$/.test(value.conversationId)
+		&& Number.isSafeInteger(value.loadedCount)
+		&& (value.loadedCount as number) > 0
+		&& (value.loadedCount as number) <= 500
+		&& Number.isSafeInteger(value.loadedIndex)
+		&& (value.loadedIndex as number) >= 0
+		&& (value.loadedIndex as number) < (value.loadedCount as number)
+		&& isAnchorItem(value.item);
 }
 
 export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCommand {
@@ -340,12 +480,28 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 	}
 
 	const keys = ['conversation', 'credentials', 'enabled', 'media', 'request', 'session'];
+	if (value.anchor !== undefined) {
+		keys.push('anchor');
+	}
+
 	if (value.invocation !== undefined) {
 		keys.push('invocation');
 	}
 
 	return hasExactKeys(value, keys)
 		&& isConversationState(value.conversation)
+		&& (value.anchor === undefined || (
+			isRecord(value.anchor)
+			&& Number.isSafeInteger(value.anchor.sequence)
+			&& (value.anchor.sequence as number) > 0
+			&& isAiMessageAnchorRequest({
+				conversationId: 'messenger-thread:validated',
+				item: value.anchor.item,
+				loadedCount: value.anchor.loadedCount,
+				loadedIndex: value.anchor.loadedIndex,
+			})
+			&& hasExactKeys(value.anchor, ['item', 'loadedCount', 'loadedIndex', 'sequence'])
+		))
 		&& isCredentialsState(value.credentials)
 		&& typeof value.enabled === 'boolean'
 		&& (value.invocation === undefined || isInvocationState(value.invocation))

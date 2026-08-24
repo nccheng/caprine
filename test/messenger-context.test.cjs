@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+	captureMessengerMessageAnchor,
 	extractConversationContextCandidates,
 	extractLoadedMessengerConversationContext,
 	maximumMessengerDomExtractionItems,
@@ -84,6 +85,54 @@ test('context fixtures preserve chronological incoming and outgoing multiline te
 			timestamp: '2026-08-23T13:00:02-07:00',
 		},
 	]);
+});
+
+test('message anchors capture one immutable-order logical message with visible sender semantics', () => {
+	const candidates = [
+		{
+			domOrder: 4,
+			senderDisplayName: 'Alex',
+			senderRole: 'incoming',
+			stableId: 'message-incoming',
+			text: 'Can you review this?',
+		},
+		{
+			attachments: ['image'],
+			domOrder: 8,
+			senderDisplayName: 'You',
+			senderRole: 'outgoing',
+			stableId: 'message-outgoing',
+		},
+	];
+
+	assert.deepEqual(captureMessengerMessageAnchor(candidates, 4), {
+		item: {
+			confidence: 'high',
+			messageId: 'message-incoming',
+			sender: {displayName: 'Alex', role: 'incoming'},
+			text: 'Can you review this?',
+		},
+		loadedCount: 2,
+		loadedIndex: 0,
+	});
+	assert.deepEqual(captureMessengerMessageAnchor(candidates, 8)?.item.attachments, [{kind: 'image'}]);
+});
+
+test('message anchors fail closed for ambiguous unsupported and identity-free rows', () => {
+	assert.equal(captureMessengerMessageAnchor([
+		{
+			domOrder: 0, senderRole: 'incoming', stableId: 'duplicate', text: 'First',
+		},
+		{
+			domOrder: 1, senderRole: 'incoming', stableId: 'duplicate', text: 'Changed',
+		},
+	], 0), undefined);
+	assert.equal(captureMessengerMessageAnchor([
+		{domOrder: 0, senderRole: 'incoming', text: 'No stable identity'},
+	], 0), undefined);
+	assert.equal(captureMessengerMessageAnchor([
+		{domOrder: 0, stableId: 'unknown-sender', text: 'No visible sender'},
+	], 0), undefined);
 });
 
 test('replies reactions link previews and attachment placeholders stay on their message', () => {
