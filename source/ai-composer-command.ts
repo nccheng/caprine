@@ -48,6 +48,26 @@ export type AiComposerEventRouteOptions<Composer> = {
 	snapshot: Readonly<AiComposerCommandSnapshot<Composer>> | undefined;
 };
 
+export type AiComposerBrowserEvent<Node> = AiComposerProtectedEvent & {
+	composedPath: () => readonly Node[];
+	target: Node | null; // eslint-disable-line @typescript-eslint/ban-types
+};
+
+export type AiComposerBrowserRouteOptions<Node, Composer> = Omit<
+AiComposerEventRouteOptions<Composer>,
+'blockedArmedFallback' | 'composer'
+> & {
+	activeElement: Node | undefined;
+	blocksArmedFallback: (node: Node | undefined) => boolean;
+	commandFromComposer: (composer: Composer) => Readonly<AiComposerCommand> | undefined;
+	composerFromNode: (node: Node | undefined) => Composer | undefined;
+};
+
+export type AiComposerBrowserSendRouteOptions<Node, Composer> = AiComposerBrowserRouteOptions<Node, Composer> & {
+	fallbackComposer: Composer | undefined;
+	isSendControl: (node: Node | undefined, composer: Composer) => boolean;
+};
+
 export type AiComposerCommandSnapshot<Composer> = Readonly<{
 	command: Readonly<AiComposerCommand>;
 	composer: Composer;
@@ -235,6 +255,83 @@ export function isAiComposerSendControlEvent<Node>(
 	isSendControl: (node: Node | undefined) => boolean,
 ): boolean {
 	return [target, ...composedPath].some(candidate => isSendControl(candidate));
+}
+
+export function routeAiComposerBrowserEnter<Node, Composer>(
+	event: Readonly<AiComposerEnterEvent> & AiComposerBrowserEvent<Node>,
+	options: Readonly<AiComposerBrowserRouteOptions<Node, Composer>>,
+): AiComposerEventRouteOutcome {
+	const resolution = resolveAiComposerFromEventSignals({
+		activeElement: options.activeElement,
+		armedComposer: options.snapshot?.composer,
+		composedPath: event.composedPath(),
+		target: event.target ?? undefined,
+	}, options.composerFromNode, options.blocksArmedFallback);
+	const outcome = routeArmedAiComposerEnter(event, {
+		...options,
+		blockedArmedFallback: resolution.blockedArmedFallback,
+		composer: resolution.composer,
+	});
+	if (outcome !== 'ignored') {
+		return outcome;
+	}
+
+	if (options.snapshot && options.composingComposer === options.snapshot.composer) {
+		return 'ignored';
+	}
+
+	const command = resolution.composer === undefined
+		? undefined
+		: options.commandFromComposer(resolution.composer);
+	if (!shouldInterceptAiComposerEnter(event, command)) {
+		return 'ignored';
+	}
+
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	return 'protected-stale';
+}
+
+export function routeAiComposerBrowserSend<Node, Composer>(
+	event: AiComposerBrowserEvent<Node>,
+	options: Readonly<AiComposerBrowserSendRouteOptions<Node, Composer>>,
+): AiComposerEventRouteOutcome {
+	const resolution = resolveAiComposerFromEventSignals({
+		activeElement: options.activeElement,
+		armedComposer: options.snapshot?.composer,
+		composedPath: event.composedPath(),
+		target: event.target ?? undefined,
+	}, options.composerFromNode, options.blocksArmedFallback);
+	const composer = resolution.composer ?? options.fallbackComposer;
+	const protectedComposer = options.snapshot?.composer ?? composer;
+	const isSendControl = protectedComposer === undefined
+		? false
+		: isAiComposerSendControlEvent(
+			event.target ?? undefined,
+			event.composedPath(),
+			candidate => options.isSendControl(candidate, protectedComposer),
+		);
+	const outcome = routeArmedAiComposerSend(event, isSendControl, {
+		...options,
+		blockedArmedFallback: resolution.blockedArmedFallback && !isSendControl,
+		composer,
+	});
+	if (outcome !== 'ignored' || composer === undefined) {
+		return outcome;
+	}
+
+	if (options.snapshot && options.composingComposer === options.snapshot.composer) {
+		return 'ignored';
+	}
+
+	const command = options.commandFromComposer(composer);
+	if (!shouldInterceptAiComposerSend(isSendControl, command)) {
+		return 'ignored';
+	}
+
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	return 'protected-stale';
 }
 
 export function shouldInterceptAiComposerEnter(
