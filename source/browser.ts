@@ -106,14 +106,19 @@ function composerFromEvent(event: Event, armedComposer: HTMLElement | undefined)
 	}, composerFromTarget, blocksArmedComposerFallback);
 }
 
-function currentMessengerComposer(): HTMLElement | undefined {
-	const composers = [...document.querySelectorAll<HTMLElement>(messengerComposerSelector)];
-	return composers[composers.length - 1];
+function visibleMessengerComposers(): HTMLElement[] {
+	return [...document.querySelectorAll<HTMLElement>(messengerComposerSelector)]
+		.filter(composer => composer.isConnected && composer.getClientRects().length > 0);
+}
+
+function uniqueCurrentMessengerComposer(): HTMLElement | undefined {
+	const composers = visibleMessengerComposers();
+	return composers.length === 1 ? composers[0] : undefined;
 }
 
 function activeMessengerComposer(): HTMLElement | undefined {
 	return composerFromTarget(document.activeElement ?? undefined)
-		?? currentMessengerComposer();
+		?? uniqueCurrentMessengerComposer();
 }
 
 function removeComposerStatus(): void {
@@ -274,6 +279,32 @@ function messengerSendControlFromEvent(event: Event): HTMLElement | undefined {
 	return undefined;
 }
 
+function resolveMessengerSendOwnership(control: HTMLElement | undefined): {
+	liveComposer: HTMLElement | undefined;
+	ownership: 'ambiguous' | 'unique' | 'unresolved';
+	protectEvent: boolean;
+} {
+	if (!control) {
+		return {liveComposer: undefined, ownership: 'unresolved', protectEvent: false};
+	}
+
+	const visibleComposers = visibleMessengerComposers();
+	const focusedComposer = composerFromTarget(document.activeElement ?? undefined);
+	const matchingComposers = visibleComposers.filter(composer => isMessengerSendControl(control, composer));
+	const liveComposer = matchingComposers.length === 1
+		? matchingComposers[0]
+		: (focusedComposer && isMessengerSendControl(control, focusedComposer)
+			? focusedComposer
+			: undefined);
+
+	return {
+		liveComposer,
+		ownership: liveComposer ? 'unique' : (matchingComposers.length > 1 ? 'ambiguous' : 'unresolved'),
+		protectEvent: !liveComposer && matchingComposers.length > 1
+			&& matchingComposers.some(composer => parseAiComposerCommand(composerText(composer)) !== undefined),
+	};
+}
+
 async function consumeComposerCommand(snapshot: Readonly<AiComposerCommandSnapshot<HTMLElement>>): Promise<void> {
 	if (composerCommandInFlight) {
 		return;
@@ -403,7 +434,7 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 		consume(candidate) {
 			void consumeComposerCommand(candidate);
 		},
-		fallbackComposer: currentMessengerComposer(),
+		fallbackComposer: uniqueCurrentMessengerComposer(),
 		invalidate: invalidateComposerCommand,
 		isCurrent: candidate => isAiAssistEnabled
 			&& aiComposerCommandState.matches(candidate, snapshotState(candidate)),
@@ -434,21 +465,18 @@ function handleAiComposerClick(event: MouseEvent): void {
 	}
 
 	const snapshot = aiComposerCommandState.current();
+	const sendOwnership = resolveMessengerSendOwnership(sendControl);
 	const outcome = routeAiComposerBrowserSend(event, {
-		activeElement: document.activeElement ?? undefined,
 		armCurrent: armComposerCommand,
-		blocksArmedFallback: blocksArmedComposerFallback,
 		commandFromComposer: composer => parseAiComposerCommand(composerText(composer)),
-		composerFromNode: composerFromTarget,
 		compositionActive: aiComposerCompositionState.isActive(),
 		consume(candidate) {
 			void consumeComposerCommand(candidate);
 		},
-		fallbackComposer: currentMessengerComposer(),
 		invalidate: invalidateComposerCommand,
 		isCurrent: candidate => isAiAssistEnabled
 			&& aiComposerCommandState.matches(candidate, snapshotState(candidate)),
-		isSendControl: isMessengerSendControl,
+		...sendOwnership,
 		snapshot,
 	});
 	if (event.type === 'pointerdown' && outcome !== 'ignored' && sendControl) {

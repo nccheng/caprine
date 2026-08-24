@@ -169,24 +169,33 @@ function dispatchBrowserSend(state, snapshot, overrides = {}) {
 	let prompt;
 	let outcome;
 	target.addEventListener(eventType, candidate => {
+		const routeOptions = browserRouteOptions(state, snapshot, {
+			...overrides,
+			onArm(composer) {
+				armed += 1;
+				overrides.onArm?.(composer);
+			},
+			onConsume(candidateSnapshot) {
+				consumed += 1;
+				prompt = candidateSnapshot.command.prompt;
+				overrides.onConsume?.(candidateSnapshot);
+			},
+			onInvalidate() {
+				invalidated += 1;
+				overrides.onInvalidate?.();
+			},
+		});
 		outcome = routeAiComposerBrowserSend(candidate, {
-			...browserRouteOptions(state, snapshot, {
-				...overrides,
-				onArm(composer) {
-					armed += 1;
-					overrides.onArm?.(composer);
-				},
-				onConsume(candidateSnapshot) {
-					consumed += 1;
-					prompt = candidateSnapshot.command.prompt;
-					overrides.onConsume?.(candidateSnapshot);
-				},
-				onInvalidate() {
-					invalidated += 1;
-					overrides.onInvalidate?.();
-				},
-			}),
-			isSendControl: overrides.isSendControl ?? (() => false),
+			armCurrent: routeOptions.armCurrent,
+			commandFromComposer: routeOptions.commandFromComposer,
+			compositionActive: routeOptions.compositionActive,
+			consume: routeOptions.consume,
+			invalidate: routeOptions.invalidate,
+			isCurrent: routeOptions.isCurrent,
+			liveComposer: overrides.liveComposer,
+			ownership: overrides.ownership ?? (overrides.liveComposer ? 'unique' : 'unresolved'),
+			protectEvent: overrides.protectEvent ?? false,
+			snapshot,
 		});
 	}, {capture: true});
 	target.addEventListener(eventType, () => {
@@ -209,7 +218,7 @@ test('browser keydown routing consumes an arm when the dispatched target cannot 
 	const composer = {draftText: '/ai dispatched'};
 	const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
 
-	assert.deepEqual(dispatchBrowserEnter(state, snapshot), {
+	assert.deepEqual(dispatchBrowserEnter(state, snapshot, {fallbackComposer: composer}), {
 		consumed: 1,
 		defaultPrevented: true,
 		downstream: 0,
@@ -345,7 +354,7 @@ test('keyCode 229 never consumes during composition but normal Enter works after
 	assert.equal(commitEnter.defaultPrevented, false);
 	assert.equal(commitEnter.consumed, 0);
 	composition.finish();
-	assert.equal(dispatchBrowserEnter(state, snapshot).outcome, 'protected-consumed');
+	assert.equal(dispatchBrowserEnter(state, snapshot, {fallbackComposer: composer}).outcome, 'protected-consumed');
 });
 
 test('removed composition owner cannot leave a replacement composer guarded', () => {
@@ -455,37 +464,23 @@ test('browser keydown routing protects a stale arm without consuming it', () => 
 	});
 });
 
-test('browser send routing dispatches pointer and click through composedPath safely', () => {
+test('browser send routing dispatches pointer and click for the authoritative composer', () => {
 	for (const eventType of ['pointerdown', 'click']) {
 		const state = new AiComposerCommandState();
 		const composer = {draftText: '/ai send path'};
 		const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
-		const target = new EventTarget();
-		const sendControl = new EventTarget();
-		const event = new RoutedEvent(eventType, [sendControl]);
-		let consumed = 0;
-		let downstream = 0;
-		let outcome;
-		target.addEventListener(eventType, candidate => {
-			outcome = routeAiComposerBrowserSend(candidate, {
-				...browserRouteOptions(state, snapshot, {
-					onConsume() {
-						consumed += 1;
-					},
-				}),
-				fallbackComposer: undefined,
-				isSendControl: candidateNode => candidateNode === sendControl,
-			});
-		}, {capture: true});
-		target.addEventListener(eventType, () => {
-			downstream += 1;
-		}, {capture: true});
-		target.dispatchEvent(event);
 
-		assert.equal(outcome, 'protected-consumed');
-		assert.equal(consumed, 1);
-		assert.equal(event.defaultPrevented, true);
-		assert.equal(downstream, 0);
+		assert.deepEqual(dispatchBrowserSend(state, snapshot, {
+			eventType,
+			liveComposer: composer,
+		}), {
+			armed: 0,
+			consumed: 1,
+			defaultPrevented: true,
+			downstream: 0,
+			invalidated: 0,
+			outcome: 'protected-consumed',
+		});
 	}
 });
 
@@ -495,15 +490,12 @@ test('armed send controls stay protected without mutation during active composit
 		const composition = new AiComposerCompositionState();
 		const composer = {draftText: '/ai composing'};
 		const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
-		const sendControl = new EventTarget();
 		composition.start(composer);
 
 		assert.deepEqual(dispatchBrowserSend(state, snapshot, {
 			compositionActive: composition.isActive(),
 			eventType,
-			fallbackComposer: composer,
-			isSendControl: (node, candidate) => node === sendControl && candidate === composer,
-			routePath: [sendControl],
+			liveComposer: composer,
 		}), {
 			armed: 0,
 			consumed: 0,
@@ -521,13 +513,10 @@ test('armed send controls stay protected without mutation during active composit
 test('visible no-snapshot send stays protected and unarmed during active composition', () => {
 	const state = new AiComposerCommandState();
 	const composer = {draftText: '/ai composing'};
-	const sendControl = new EventTarget();
 
 	assert.deepEqual(dispatchBrowserSend(state, undefined, {
 		compositionActive: true,
-		fallbackComposer: composer,
-		isSendControl: (node, candidate) => node === sendControl && candidate === composer,
-		routePath: [sendControl],
+		liveComposer: composer,
 	}), {
 		armed: 0,
 		consumed: 0,
@@ -546,14 +535,11 @@ test('stale composer send fresh-arms and consumes the live composer in one actio
 		const composerA = {draftText: '/ai stale'};
 		const composerB = {draftText: '/ai current question'};
 		const snapshotA = state.arm(composerA, composerA.draftText, 'conversation-a');
-		const sendControlB = new EventTarget();
 
 		assert.deepEqual(dispatchBrowserSend(state, snapshotA, {
 			capturePrompt: true,
 			eventType,
-			fallbackComposer: composerB,
-			isSendControl: (node, candidate) => node === sendControlB && candidate === composerB,
-			routePath: [sendControlB],
+			liveComposer: composerB,
 		}), {
 			armed: 1,
 			consumed: 1,
@@ -567,28 +553,23 @@ test('stale composer send fresh-arms and consumes the live composer in one actio
 	}
 });
 
-test('current composer wins when a stale active composer also matches the send control', () => {
+test('unique focused composer wins when multiple structural candidates match the send control', () => {
 	for (const eventType of ['pointerdown', 'click']) {
 		const state = new AiComposerCommandState();
 		const composerA = {draftText: '/ai stale A'};
 		const composerB = {draftText: '/ai current B'};
 		const snapshotA = state.arm(composerA, composerA.draftText, 'conversation-a');
-		const activeNodeA = new EventTarget();
-		const sendControlB = new EventTarget();
+		composerA.draftText = 'normal A';
 		let consumedSnapshot;
 
 		const result = dispatchBrowserSend(state, snapshotA, {
-			activeElement: activeNodeA,
 			capturePrompt: true,
-			composerFromNode: node => node === activeNodeA ? composerA : undefined,
 			conversationId: 'conversation-b',
 			eventType,
-			fallbackComposer: composerB,
-			isSendControl: node => node === sendControlB,
+			liveComposer: composerB,
 			onConsume(candidate) {
 				consumedSnapshot = candidate;
 			},
-			routePath: [sendControlB],
 		});
 
 		assert.equal(result.outcome, 'protected-consumed');
@@ -600,22 +581,16 @@ test('current composer wins when a stale active composer also matches the send c
 	}
 });
 
-test('ambiguous send ownership does not let stale AI text intercept a normal current draft', () => {
+test('normal authoritative composer passes through and invalidates another stale AI snapshot', () => {
 	for (const eventType of ['pointerdown', 'click']) {
 		const state = new AiComposerCommandState();
 		const composerA = {draftText: '/ai stale A'};
 		const composerB = {draftText: 'normal B'};
 		const snapshotA = state.arm(composerA, composerA.draftText, 'conversation-a');
-		const activeNodeA = new EventTarget();
-		const sendControlB = new EventTarget();
 
 		assert.deepEqual(dispatchBrowserSend(state, snapshotA, {
-			activeElement: activeNodeA,
-			composerFromNode: node => node === activeNodeA ? composerA : undefined,
 			eventType,
-			fallbackComposer: composerB,
-			isSendControl: node => node === sendControlB,
-			routePath: [sendControlB],
+			liveComposer: composerB,
 		}), {
 			armed: 0,
 			consumed: 0,
@@ -625,6 +600,28 @@ test('ambiguous send ownership does not let stale AI text intercept a normal cur
 			outcome: 'ignored',
 		});
 	}
+});
+
+test('ambiguous visible ownership protects AI text without arming or consuming', () => {
+	const state = new AiComposerCommandState();
+	const composerA = {draftText: '/ai visible'};
+	const composerB = {draftText: 'normal'};
+	const snapshot = state.arm(composerA, composerA.draftText, 'conversation-a');
+
+	assert.deepEqual(dispatchBrowserSend(state, snapshot, {
+		ownership: 'ambiguous',
+		protectEvent: true,
+	}), {
+		armed: 0,
+		consumed: 0,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 1,
+		outcome: 'protected-stale',
+	});
+	assert.equal(state.current(), undefined);
+	assert.equal(composerA.draftText, '/ai visible');
+	assert.equal(composerB.draftText, 'normal');
 });
 
 test('stale composer Enter fresh-arms and consumes the live composer in one action', () => {
@@ -649,17 +646,14 @@ test('stale composer Enter fresh-arms and consumes the live composer in one acti
 	assert.equal(state.current().composer, composerB);
 });
 
-test('current fallback outranks armed fallback but armed-only stale authority cannot fresh-arm', () => {
+test('authoritative live composer outranks the snapshot but stale same-composer authority cannot rearm', () => {
 	const liveState = new AiComposerCommandState();
 	const composerA = {draftText: '/ai stale'};
 	const composerB = {draftText: '/ai current'};
 	const snapshotA = liveState.arm(composerA, composerA.draftText, 'conversation-a');
-	const sendControl = new EventTarget();
 	assert.equal(dispatchBrowserSend(liveState, snapshotA, {
 		capturePrompt: true,
-		fallbackComposer: composerB,
-		isSendControl: (node, candidate) => node === sendControl && candidate === composerB,
-		routePath: [sendControl],
+		liveComposer: composerB,
 	}).prompt, 'current');
 	assert.equal(liveState.current().composer, composerB);
 
@@ -670,13 +664,45 @@ test('current fallback outranks armed fallback but armed-only stale authority ca
 		armedOnlyComposer.draftText,
 		'conversation-a',
 	);
-	const armedOnlyControl = new EventTarget();
 	assert.deepEqual(dispatchBrowserSend(armedOnlyState, armedOnlySnapshot, {
 		isCurrent: () => false,
-		isSendControl: (node, candidate) => node === armedOnlyControl && candidate === armedOnlyComposer,
-		routePath: [armedOnlyControl],
+		liveComposer: armedOnlyComposer,
 	}), {
 		armed: 0,
+		consumed: 0,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 1,
+		outcome: 'protected-stale',
+	});
+});
+
+test('same composer reused by another conversation cannot consume stale authority', () => {
+	const composer = {draftText: '/ai changed conversation'};
+	const sendState = new AiComposerCommandState();
+	const sendSnapshot = sendState.arm(composer, composer.draftText, 'conversation-a');
+	assert.deepEqual(dispatchBrowserSend(sendState, sendSnapshot, {
+		conversationId: 'conversation-b',
+		isCurrent: () => false,
+		liveComposer: composer,
+	}), {
+		armed: 0,
+		consumed: 0,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 1,
+		outcome: 'protected-stale',
+	});
+
+	const enterState = new AiComposerCommandState();
+	const enterSnapshot = enterState.arm(composer, composer.draftText, 'conversation-a');
+	const composerNode = new EventTarget();
+	assert.deepEqual(dispatchBrowserEnter(enterState, enterSnapshot, {
+		composerFromNode: node => node === composerNode ? composer : undefined,
+		conversationId: 'conversation-b',
+		isCurrent: () => false,
+		routePath: [composerNode],
+	}), {
 		consumed: 0,
 		defaultPrevented: true,
 		downstream: 0,
@@ -690,13 +716,10 @@ test('stale recovery without a stable conversation protects but cannot consume l
 	const composerB = {draftText: '/ai current'};
 	const sendState = new AiComposerCommandState();
 	const sendSnapshotA = sendState.arm(composerA, composerA.draftText, 'conversation-a');
-	const sendControlB = new EventTarget();
 
 	assert.deepEqual(dispatchBrowserSend(sendState, sendSnapshotA, {
 		conversationId: undefined,
-		fallbackComposer: composerB,
-		isSendControl: (node, candidate) => node === sendControlB && candidate === composerB,
-		routePath: [sendControlB],
+		liveComposer: composerB,
 	}), {
 		armed: 1,
 		consumed: 0,
@@ -744,11 +767,8 @@ test('normal live messages remain untouched even when another composer has stale
 	const sendState = new AiComposerCommandState();
 	const sendComposerA = {draftText: '/ai stale'};
 	const sendSnapshotA = sendState.arm(sendComposerA, sendComposerA.draftText, 'conversation-a');
-	const sendControlB = new EventTarget();
 	assert.deepEqual(dispatchBrowserSend(sendState, sendSnapshotA, {
-		fallbackComposer: composerB,
-		isSendControl: (node, candidate) => node === sendControlB && candidate === composerB,
-		routePath: [sendControlB],
+		liveComposer: composerB,
 	}), {
 		armed: 0,
 		consumed: 0,
@@ -768,8 +788,7 @@ test('protected pointerdown guards its paired click after the command clears', (
 	let actualConsumes = 0;
 	const pointerResult = dispatchBrowserSend(state, snapshot, {
 		eventType: 'pointerdown',
-		fallbackComposer: composer,
-		isSendControl: (node, candidate) => node === sendControl && candidate === composer,
+		liveComposer: composer,
 		onConsume() {
 			actualConsumes += 1;
 			composer.draftText = '';
@@ -814,8 +833,6 @@ test('unrelated editable event signals reject the armed composer fallback', () =
 	assert.deepEqual(resolution, {
 		blockedArmedFallback: true,
 		composer: undefined,
-		source: 'none',
-		usedArmedFallback: false,
 	});
 });
 
