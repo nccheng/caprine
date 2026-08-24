@@ -6,6 +6,10 @@ const saveKeyButton = document.querySelector('#save-key-button');
 const testKeyButton = document.querySelector('#test-key-button');
 const deleteKeyButton = document.querySelector('#delete-key-button');
 const refreshConversationButton = document.querySelector('#refresh-conversation-button');
+const messageAnchor = document.querySelector('#message-anchor');
+const messageAnchorPosition = document.querySelector('#message-anchor-position');
+const messageAnchorSender = document.querySelector('#message-anchor-sender');
+const messageAnchorContent = document.querySelector('#message-anchor-content');
 const mediaCandidates = document.querySelector('#media-candidates');
 const mediaForm = document.querySelector('#media-form');
 const mediaMessageId = document.querySelector('#media-message-id');
@@ -64,6 +68,38 @@ function mediaStatusForState(state) {
 	return `${resolution.kind} bytes are unavailable${duration}.`;
 }
 
+function renderMessageAnchor(anchor) {
+	messageAnchor.hidden = !anchor;
+	if (!anchor) {
+		messageAnchorContent.textContent = '';
+		return;
+	}
+
+	const {item} = anchor;
+	messageAnchorPosition.textContent = `Loaded message ${anchor.loadedIndex + 1} of ${anchor.loadedCount}`;
+	messageAnchorSender.textContent = item.sender.role === 'outgoing'
+		? 'Sent by you'
+		: `Received${item.sender.displayName ? ` from ${item.sender.displayName}` : ''}`;
+	const parts = [];
+	if (item.text) {
+		parts.push(item.text);
+	}
+
+	if (item.reply) {
+		parts.push(`Reply to${item.reply.quotedSender ? ` ${item.reply.quotedSender}` : ''}: ${item.reply.text}`);
+	}
+
+	if (item.linkPreview) {
+		parts.push(`Link: ${item.linkPreview.title ?? item.linkPreview.domain}`);
+	}
+
+	if (item.attachments) {
+		parts.push(`Attachments: ${item.attachments.map(attachment => attachment.kind).join(', ')}`);
+	}
+
+	messageAnchorContent.textContent = parts.join('\n\n');
+}
+
 function render(state) {
 	const isRequesting = state.session.status === 'requesting';
 	const isConversationReady = state.conversation.status === 'ready';
@@ -74,6 +110,7 @@ function render(state) {
 	}
 
 	renderedCaptureGeneration = state.conversation.captureGeneration;
+	renderMessageAnchor(state.anchor);
 	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
 		promptInput.value = state.invocation.prompt;
 		promptCaptureGeneration = state.conversation.captureGeneration;

@@ -13,12 +13,14 @@ import {
 	aiAssistIpcChannels,
 	AiComposerCommandRequest,
 	AiComposerCommandResult,
+	AiMessageAnchorRequest,
 	AiAssistMessengerCommand,
 	AiAssistMessengerEvent,
 	AiAssistPanelState,
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
 	isAiComposerCommandRequest,
+	isAiMessageAnchorRequest,
 	MessengerMediaCandidate,
 	MessengerMediaResolution,
 } from './ai-assist-ipc';
@@ -30,6 +32,8 @@ import {
 	ConversationLifecycle,
 	ConversationReportGate,
 	ConversationSnapshot,
+	captureMessageAnchorSnapshot,
+	MessageAnchorSnapshot,
 } from './ai-assist-state';
 import {isTrustedMessengerOrigin} from './ipc-validation';
 import {MediaKind} from './media-contract';
@@ -50,6 +54,12 @@ import {
 const panelPartition = 'ai-assist';
 
 class AiAssistController {
+	private anchor?: {
+		sequence: number;
+		snapshot: Readonly<MessageAnchorSnapshot>;
+	};
+
+	private anchorSequence = 0;
 	private activeRequest?: {
 		abortController: AbortController;
 		id: number;
@@ -97,6 +107,7 @@ class AiAssistController {
 		);
 		this.mediaCleanupReady = this.mediaResolver.cleanupRestartArtifacts().catch(() => undefined);
 		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
+		ipcMain.handle(aiAssistIpcChannels.messageAnchor, this.handleMessageAnchor);
 		ipcMain.handle(aiAssistIpcChannels.panelCommand, this.handlePanelCommand);
 		ipcMain.handle(messengerMediaResolverChannel, this.handleMessengerMediaResolverRequest);
 		ipcMain.on(aiAssistIpcChannels.messengerEvent, this.handleMessengerEvent);
@@ -119,6 +130,14 @@ class AiAssistController {
 		}
 
 		return {
+			...(this.anchor && this.isRequestSnapshotCurrent(this.anchor.snapshot.snapshot) ? {
+				anchor: {
+					item: this.anchor.snapshot.item,
+					loadedCount: this.anchor.snapshot.loadedCount,
+					loadedIndex: this.anchor.snapshot.loadedIndex,
+					sequence: this.anchor.sequence,
+				},
+			} : {}),
 			conversation: this.conversationBinding.panelState,
 			credentials: {
 				configured: this.hasApiKey,
@@ -170,6 +189,17 @@ class AiAssistController {
 		}
 
 		return {accepted: await this.acceptComposerCommand(value)};
+	};
+
+	private readonly handleMessageAnchor = async (
+		event: IpcMainInvokeEvent,
+		value: unknown,
+	): Promise<AiComposerCommandResult> => {
+		if (!this.isExpectedMessengerSender(event) || !isAiMessageAnchorRequest(value)) {
+			throw new TypeError('Rejected invalid AI Assist message anchor IPC');
+		}
+
+		return {accepted: await this.acceptMessageAnchor(value)};
 	};
 
 	private readonly handlePanelCommand = async (
@@ -397,9 +427,49 @@ class AiAssistController {
 			prompt: value.prompt,
 			sequence: ++this.invocationSequence,
 		};
+		this.anchor = undefined;
 		this.notice = value.prompt
 			? 'The /ai question moved here without being sent to Messenger.'
 			: 'Enter your question here for the strongest private-input path.';
+		this.panelWindow.show();
+		this.panelWindow.focus();
+		this.broadcastState();
+		return true;
+	}
+
+	private async acceptMessageAnchor(value: Readonly<AiMessageAnchorRequest>): Promise<boolean> {
+		if (!config.get('aiAssistEnabled')) {
+			return false;
+		}
+
+		this.showPanelWindow();
+		if (!await this.panelReady || !this.panelWindow || this.panelWindow.isDestroyed()) {
+			return false;
+		}
+
+		await this.refreshConversation();
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (
+			!snapshot
+			|| snapshot.conversationId !== value.conversationId
+			|| !this.isRequestSnapshotCurrent(snapshot)
+		) {
+			return false;
+		}
+
+		this.anchor = {
+			sequence: ++this.anchorSequence,
+			snapshot: captureMessageAnchorSnapshot({
+				item: value.item,
+				loadedCount: value.loadedCount,
+				loadedIndex: value.loadedIndex,
+			}, snapshot),
+		};
+		this.invocation = {
+			prompt: '',
+			sequence: ++this.invocationSequence,
+		};
+		this.notice = 'Ask AI is anchored to this message. Nothing has left Messenger.';
 		this.panelWindow.show();
 		this.panelWindow.focus();
 		this.broadcastState();
@@ -884,6 +954,7 @@ class AiAssistController {
 	private clearConversationBoundRequestState(): void {
 		this.cancelActiveRequest();
 		this.answer.clear();
+		this.anchor = undefined;
 		this.error = undefined;
 		this.invocation = undefined;
 		this.notice = undefined;

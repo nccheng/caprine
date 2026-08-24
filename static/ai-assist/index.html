@@ -36,7 +36,13 @@
 			</section>
 			<section aria-labelledby="context-heading">
 				<h2 id="context-heading">Context review</h2>
-				<p>This temporary validation flow sends only the prompt you enter below. No Messenger content is captured or shared.</p>
+				<p>A selected message anchor stays local for review. This temporary flow sends only the prompt you enter below.</p>
+				<article id="message-anchor" class="message-anchor" aria-labelledby="message-anchor-heading" hidden>
+					<h3 id="message-anchor-heading">Ask AI anchor</h3>
+					<p id="message-anchor-position"></p>
+					<p id="message-anchor-sender"></p>
+					<pre id="message-anchor-content" tabindex="0"></pre>
+				</article>
 				<button id="refresh-conversation-button" class="secondary" type="button">Refresh conversation</button>
 				<p id="media-candidates" class="media-summary">No loaded voice or video messages detected.</p>
 				<form id="media-form">

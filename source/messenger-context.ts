@@ -45,6 +45,12 @@ export type ConversationContextItem = {
 	timestamp?: string;
 };
 
+export type MessengerMessageAnchor = {
+	item: ConversationContextItem;
+	loadedCount: number;
+	loadedIndex: number;
+};
+
 export type MessengerContextCandidate = {
 	attachments?: Array<'audio' | 'image' | 'video'>;
 	domOrder: number;
@@ -350,6 +356,46 @@ export function extractConversationContextCandidates(
 	return result;
 }
 
+export function captureMessengerMessageAnchor(
+	candidates: readonly MessengerContextCandidate[],
+	targetDomOrder: number,
+): MessengerMessageAnchor | undefined {
+	if (!Array.isArray(candidates) || !Number.isSafeInteger(targetDomOrder) || targetDomOrder < 0) {
+		return;
+	}
+
+	const targetCandidates = candidates.filter(candidate => candidate?.domOrder === targetDomOrder);
+	if (targetCandidates.length !== 1) {
+		return;
+	}
+
+	const targetMessageId = normalizedMessageId(targetCandidates[0].stableId);
+	if (!targetMessageId || !targetCandidates[0].senderRole) {
+		return;
+	}
+
+	const items = extractConversationContextCandidates(candidates);
+	const loadedIndex = items.findIndex(item => item.messageId === targetMessageId);
+	if (loadedIndex < 0 || items.some((item, index) => index !== loadedIndex && item.messageId === targetMessageId)) {
+		return;
+	}
+
+	const item = items[loadedIndex];
+	if (
+		item.confidence !== 'high'
+		|| item.omittedReason !== undefined
+		|| item.sender.role === 'unknown'
+	) {
+		return;
+	}
+
+	return {
+		item,
+		loadedCount: items.length,
+		loadedIndex,
+	};
+}
+
 function visibleElement(element: Element): boolean {
 	return !element.closest('[aria-hidden="true"], [hidden]');
 }
@@ -590,4 +636,37 @@ export function extractLoadedMessengerConversationContext(root: ParentNode = doc
 	} catch {
 		return [];
 	}
+}
+
+export function captureLoadedMessengerMessageAnchor(
+	target: Element,
+	root: ParentNode = document,
+): MessengerMessageAnchor | undefined {
+	let anchor: MessengerMessageAnchor | undefined;
+	try {
+		const conversation = root.querySelector(messengerContextSelectors.conversation);
+		const targetRow = target.closest(messengerContextSelectors.message);
+		if (!conversation || !targetRow || !conversation.contains(targetRow)) {
+			return;
+		}
+
+		const rows = [...conversation.querySelectorAll(messengerContextSelectors.message)]
+			.filter(row => visibleElement(row) && !row.querySelector(messengerContextSelectors.message))
+			.slice(-maximumMessengerDomExtractionItems);
+		const targetDomOrder = rows.indexOf(targetRow);
+		if (targetDomOrder < 0) {
+			return;
+		}
+
+		const candidates = rows.map((row, domOrder) => {
+			try {
+				return candidateFromElement(row, domOrder);
+			} catch {
+				return {domOrder, malformed: true};
+			}
+		});
+		anchor = captureMessengerMessageAnchor(candidates, targetDomOrder);
+	} catch {}
+
+	return anchor;
 }

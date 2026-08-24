@@ -31,6 +31,14 @@ import {
 } from './conversation-identity';
 import {maximumMediaBytes, MediaKind} from './media-contract';
 import {
+	captureLoadedMessengerMessageAnchor,
+	MessengerMessageAnchor,
+} from './messenger-context';
+import {
+	isMessageAnchorRectangleVisible,
+	isMessageAnchorShortcut,
+} from './message-anchor-interaction';
+import {
 	extractLoadedMessengerMediaCandidates,
 	resolveMessengerMediaDomCandidate,
 } from './messenger-media-dom';
@@ -59,6 +67,13 @@ let handledAiComposerImeEnter: HTMLElement | undefined;
 let composerCommandInFlight = false;
 let composerStatusHost: HTMLElement | undefined;
 let composerStatusText: HTMLElement | undefined;
+let messageAnchorHost: HTMLElement | undefined;
+let messageAnchorButton: HTMLButtonElement | undefined;
+let messageAnchorTarget: {
+	anchor: MessengerMessageAnchor;
+	conversationId: string;
+	row: HTMLElement;
+} | undefined;
 
 const selectedThreadSelectors = [
 	'a[aria-current="page"][href*="/messages/"]',
@@ -75,6 +90,157 @@ function composerText(composer: HTMLElement): string {
 function currentConversationId(): string | undefined {
 	const identity = deriveConversationIdentity(window.location.href, selectedConversationCandidates());
 	return identity.status === 'available' ? identity.conversationId : undefined;
+}
+
+function removeMessageAnchorOverlay(): void {
+	messageAnchorHost?.remove();
+	messageAnchorHost = undefined;
+	messageAnchorButton = undefined;
+	messageAnchorTarget = undefined;
+}
+
+function positionMessageAnchorOverlay(): void {
+	if (!messageAnchorHost || !messageAnchorTarget?.row.isConnected) {
+		removeMessageAnchorOverlay();
+		return;
+	}
+
+	const rectangle = messageAnchorTarget.row.getBoundingClientRect();
+	if (!isMessageAnchorRectangleVisible(rectangle, window.innerWidth, window.innerHeight)) {
+		removeMessageAnchorOverlay();
+		return;
+	}
+
+	const buttonWidth = 76;
+	const left = rectangle.right + buttonWidth + 16 <= window.innerWidth
+		? rectangle.right + 8
+		: Math.max(8, rectangle.left - buttonWidth - 8);
+	const top = Math.max(8, Math.min(rectangle.top + 4, window.innerHeight - 44));
+	messageAnchorHost.style.left = `${left}px`;
+	messageAnchorHost.style.top = `${top}px`;
+}
+
+function messageAnchorForTarget(target: EventTarget | undefined): typeof messageAnchorTarget {
+	if (!isAiAssistEnabled || !(target instanceof Element)) {
+		return;
+	}
+
+	const conversationId = currentConversationId();
+	const row = target.closest<HTMLElement>('[role="main"] [role="grid"] [role="row"]');
+	const anchor = row ? captureLoadedMessengerMessageAnchor(row) : undefined;
+	if (!conversationId || !row || !anchor) {
+		return;
+	}
+
+	return {anchor, conversationId, row};
+}
+
+async function activateMessageAnchor(): Promise<void> {
+	const target = messageAnchorTarget;
+	if (!target || !isAiAssistEnabled || currentConversationId() !== target.conversationId) {
+		removeMessageAnchorOverlay();
+		return;
+	}
+
+	const currentAnchor = captureLoadedMessengerMessageAnchor(target.row);
+	if (
+		!currentAnchor
+		|| currentAnchor.item.messageId !== target.anchor.item.messageId
+		|| currentAnchor.loadedIndex !== target.anchor.loadedIndex
+		|| currentAnchor.loadedCount !== target.anchor.loadedCount
+	) {
+		removeMessageAnchorOverlay();
+		return;
+	}
+
+	const result: unknown = await electronIpcRenderer.invoke(aiAssistIpcChannels.messageAnchor, {
+		conversationId: target.conversationId,
+		...currentAnchor,
+	});
+	if (!isAiComposerCommandResult(result) || !result.accepted) {
+		removeMessageAnchorOverlay();
+	}
+}
+
+function showMessageAnchorOverlay(target: EventTarget | undefined): boolean {
+	const resolved = messageAnchorForTarget(target);
+	if (!resolved) {
+		return false;
+	}
+
+	messageAnchorTarget = resolved;
+	if (!messageAnchorHost) {
+		const host = document.createElement('div');
+		host.id = 'caprine-ai-message-anchor';
+		host.style.cssText = 'position:fixed;z-index:2147483647';
+		const shadow = host.attachShadow({mode: 'closed'});
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.textContent = 'Ask AI';
+		button.setAttribute('aria-label', 'Ask AI about this Messenger message');
+		button.title = 'Ask AI about this message (Option+A when focused)';
+		button.style.cssText = 'margin:0;padding:7px 10px;border:0;border-radius:9px;background:#6e78ff;color:#fff;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 4px 14px #0005;cursor:pointer';
+		button.addEventListener('click', event => {
+			event.preventDefault();
+			event.stopPropagation();
+			void activateMessageAnchor();
+		});
+		shadow.append(button);
+		document.documentElement.append(host);
+		messageAnchorHost = host;
+		messageAnchorButton = button;
+	}
+
+	positionMessageAnchorOverlay();
+	return true;
+}
+
+function revalidateMessageAnchorOverlay(): void {
+	if (!messageAnchorTarget) {
+		return;
+	}
+
+	const resolved = messageAnchorForTarget(messageAnchorTarget.row);
+	if (
+		!resolved
+		|| resolved.conversationId !== messageAnchorTarget.conversationId
+		|| resolved.anchor.item.messageId !== messageAnchorTarget.anchor.item.messageId
+	) {
+		removeMessageAnchorOverlay();
+		return;
+	}
+
+	messageAnchorTarget = resolved;
+	positionMessageAnchorOverlay();
+}
+
+function handleMessageAnchorPointerOver(event: PointerEvent): void {
+	if (event.isTrusted && event.target !== messageAnchorHost && !showMessageAnchorOverlay(event.target ?? undefined)) {
+		removeMessageAnchorOverlay();
+	}
+}
+
+function handleMessageAnchorFocusIn(event: FocusEvent): void {
+	if (event.isTrusted && event.target !== messageAnchorHost && !showMessageAnchorOverlay(event.target ?? undefined)) {
+		removeMessageAnchorOverlay();
+	}
+}
+
+function handleMessageAnchorKeydown(event: KeyboardEvent): void {
+	if (
+		!event.isTrusted
+		|| !isMessageAnchorShortcut(event)
+		|| isEditableTarget(event.target ?? undefined)
+	) {
+		return;
+	}
+
+	if (showMessageAnchorOverlay(document.activeElement ?? undefined)) {
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		messageAnchorButton?.focus();
+		void activateMessageAnchor();
+	}
 }
 
 function composerFromTarget(target: EventTarget | undefined): HTMLElement | undefined {
@@ -706,6 +872,7 @@ function startConversationObserver(): void {
 	conversationObserver = new MutationObserver(() => {
 		scheduleConversationStateReport();
 		revalidateArmedComposer();
+		revalidateMessageAnchorOverlay();
 	});
 	conversationObserver.observe(document.documentElement, {
 		attributeFilter: ['aria-current', 'aria-selected', 'href'],
@@ -718,11 +885,16 @@ function startConversationObserver(): void {
 	window.addEventListener('compositionend', handleAiComposerCompositionEnd, true);
 	window.addEventListener('compositionstart', handleAiComposerCompositionStart, true);
 	window.addEventListener('focusin', handleAiComposerFocusIn, true);
+	window.addEventListener('focusin', handleMessageAnchorFocusIn, true);
 	window.addEventListener('input', handleAiComposerInput, true);
 	window.addEventListener('keydown', handleAiComposerKeydown, true);
+	window.addEventListener('keydown', handleMessageAnchorKeydown, true);
 	window.addEventListener('keyup', handleAiComposerKeyup, true);
 	window.addEventListener('pagehide', invalidateComposerCommand, true);
 	window.addEventListener('pointerdown', handleAiComposerClick, true);
+	window.addEventListener('pointerover', handleMessageAnchorPointerOver, true);
+	window.addEventListener('resize', revalidateMessageAnchorOverlay, true);
+	window.addEventListener('scroll', revalidateMessageAnchorOverlay, true);
 	revalidateArmedComposer();
 }
 
@@ -734,11 +906,17 @@ function stopConversationObserver(): void {
 	window.removeEventListener('compositionend', handleAiComposerCompositionEnd, true);
 	window.removeEventListener('compositionstart', handleAiComposerCompositionStart, true);
 	window.removeEventListener('focusin', handleAiComposerFocusIn, true);
+	window.removeEventListener('focusin', handleMessageAnchorFocusIn, true);
 	window.removeEventListener('input', handleAiComposerInput, true);
 	window.removeEventListener('keydown', handleAiComposerKeydown, true);
+	window.removeEventListener('keydown', handleMessageAnchorKeydown, true);
 	window.removeEventListener('keyup', handleAiComposerKeyup, true);
 	window.removeEventListener('pagehide', invalidateComposerCommand, true);
 	window.removeEventListener('pointerdown', handleAiComposerClick, true);
+	window.removeEventListener('pointerover', handleMessageAnchorPointerOver, true);
+	window.removeEventListener('resize', revalidateMessageAnchorOverlay, true);
+	window.removeEventListener('scroll', revalidateMessageAnchorOverlay, true);
+	removeMessageAnchorOverlay();
 	invalidateComposerCommand();
 	composerCommandInFlight = false;
 	aiComposerCompositionState.finish();
@@ -908,6 +1086,7 @@ const notifyConversationRouteChanged = (): void => {
 	pendingAiComposerImeEnter = undefined;
 	aiComposerSendGestureGuard.clear();
 	invalidateComposerCommand();
+	removeMessageAnchorOverlay();
 	scheduleConversationStateReport();
 };
 

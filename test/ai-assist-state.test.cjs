@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const {
 	AiAssistSessionStateMachine,
 	AiConversationBinding,
+	captureMessageAnchorSnapshot,
 	ConversationBoundAnswer,
 	ConversationLifecycle,
 	ConversationReportGate,
@@ -16,6 +17,7 @@ const {
 const {
 	isAiComposerCommandRequest,
 	isAiComposerCommandResult,
+	isAiMessageAnchorRequest,
 	isAiAssistMessengerCommand,
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
@@ -80,6 +82,29 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), false);
 	assert.equal(isAiComposerCommandResult({accepted: true}), true);
 	assert.equal(isAiComposerCommandResult({accepted: true, prompt: 'leak'}), false);
+	const anchorRequest = {
+		conversationId: 'messenger-thread:123',
+		item: {
+			attachments: [{kind: 'image'}],
+			confidence: 'high',
+			messageId: 'message-1',
+			sender: {displayName: 'Alex', role: 'incoming'},
+			text: 'Visible message',
+		},
+		loadedCount: 3,
+		loadedIndex: 1,
+	};
+	assert.equal(isAiMessageAnchorRequest(anchorRequest), true);
+	assert.equal(isAiMessageAnchorRequest({...anchorRequest, loadedIndex: 3}), false);
+	assert.equal(isAiMessageAnchorRequest({...anchorRequest, item: {...anchorRequest.item, rawHtml: '<b>no</b>'}}), false);
+	assert.equal(isAiMessageAnchorRequest({...anchorRequest, item: {...anchorRequest.item, sender: {role: 'unknown'}}}), false);
+	assert.equal(isAiMessageAnchorRequest({
+		...anchorRequest,
+		item: {
+			...anchorRequest.item,
+			linkPreview: {domain: 'example.com', url: 'ftp://example.com/file'},
+		},
+	}), false);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
 	assert.equal(isAiAssistMessengerCommand({
 		kind: 'video',
@@ -197,11 +222,47 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), true);
 	assert.equal(isAiAssistPanelState({
 		...panelStateWithHandle,
+		anchor: {
+			item: anchorRequest.item,
+			loadedCount: anchorRequest.loadedCount,
+			loadedIndex: anchorRequest.loadedIndex,
+			sequence: 1,
+		},
+	}), true);
+	assert.equal(isAiAssistPanelState({
+		...panelStateWithHandle,
 		media: {
 			...panelStateWithHandle.media,
 			resolution: {...panelStateWithHandle.media.resolution, bytes: new ArrayBuffer(3)},
 		},
 	}), false);
+});
+
+test('captured message anchors detach and deeply freeze renderer data with the current snapshot', () => {
+	const rendererAnchor = {
+		item: {
+			confidence: 'high',
+			messageId: 'message-1',
+			sender: {displayName: 'Alex', role: 'incoming'},
+			text: 'Original',
+		},
+		loadedCount: 2,
+		loadedIndex: 0,
+	};
+	const snapshot = {
+		captureGeneration: 4,
+		conversationId: 'messenger-thread:123',
+		messengerWebContentsId: 9,
+		sessionId: 'ai-session-1',
+	};
+	const captured = captureMessageAnchorSnapshot(rendererAnchor, snapshot);
+	rendererAnchor.item.text = 'Mutated';
+
+	assert.equal(captured.item.text, 'Original');
+	assert.deepEqual(captured.snapshot, snapshot);
+	assert.equal(Object.isFrozen(captured), true);
+	assert.equal(Object.isFrozen(captured.item), true);
+	assert.equal(Object.isFrozen(captured.item.sender), true);
 });
 
 test('Messenger identity uses stable route IDs rather than display names', () => {
