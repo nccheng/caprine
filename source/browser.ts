@@ -17,6 +17,8 @@ import {
 	AiComposerCompositionState,
 	AiComposerSendGestureGuard,
 	consumeAiComposerCommand,
+	isAiComposerCompositionConfirmation,
+	isAiComposerImeParagraphInputType,
 	isAiComposerSendControlDescription,
 	parseAiComposerCommand,
 	resolveAiComposerFromEventSignals,
@@ -52,6 +54,7 @@ let conversationReportTimer: ReturnType<typeof setTimeout> | undefined;
 const aiComposerCommandState = new AiComposerCommandState<HTMLElement>();
 const aiComposerCompositionState = new AiComposerCompositionState<HTMLElement>();
 const aiComposerSendGestureGuard = new AiComposerSendGestureGuard<HTMLElement>();
+let pendingAiComposerImeEnter: HTMLElement | undefined;
 let composerCommandInFlight = false;
 let composerStatusHost: HTMLElement | undefined;
 let composerStatusText: HTMLElement | undefined;
@@ -179,6 +182,10 @@ function revalidateArmedComposer(): void {
 		|| composerText(composingComposer) === ''
 		|| (activeComposer !== undefined && activeComposer !== composingComposer)
 	)) {
+		if (pendingAiComposerImeEnter === composingComposer) {
+			pendingAiComposerImeEnter = undefined;
+		}
+
 		aiComposerCompositionState.finish();
 	}
 
@@ -195,6 +202,10 @@ function revalidateArmedComposer(): void {
 			|| state.conversationId !== snapshot.conversationId
 			|| !state.isConnected;
 		if (aiComposerCompositionState.current() === snapshot.composer && lostConversationAuthority) {
+			if (pendingAiComposerImeEnter === snapshot.composer) {
+				pendingAiComposerImeEnter = undefined;
+			}
+
 			aiComposerCompositionState.finish();
 		}
 
@@ -373,7 +384,7 @@ function handleAiComposerInput(event: Event): void {
 		return;
 	}
 
-	if (event instanceof InputEvent && !event.isComposing) {
+	if ('isComposing' in event && event.isComposing === false) {
 		aiComposerCompositionState.finish();
 	}
 
@@ -413,8 +424,7 @@ function handleAiComposerCompositionEnd(event: CompositionEvent): void {
 		return;
 	}
 
-	const snapshot = aiComposerCommandState.current();
-	const resolvedComposer = composerFromEvent(event, snapshot?.composer).composer;
+	const resolvedComposer = composerFromEvent(event, undefined).composer;
 	queueMicrotask(() => {
 		if (!isAiAssistEnabled) {
 			return;
@@ -435,6 +445,17 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 		return;
 	}
 
+	const compositionActive = aiComposerCompositionState.isActive();
+	pendingAiComposerImeEnter = undefined;
+	if (isAiComposerCompositionConfirmation(event, compositionActive)) {
+		const resolution = composerFromEvent(event, undefined);
+		const composer = resolution.composer
+			?? (resolution.blockedArmedFallback ? undefined : uniqueCurrentMessengerComposer());
+		if (composer && parseAiComposerCommand(composerText(composer))) {
+			pendingAiComposerImeEnter = composer;
+		}
+	}
+
 	const snapshot = aiComposerCommandState.current();
 	routeAiComposerBrowserEnter(event, {
 		activeElement: document.activeElement ?? undefined,
@@ -442,7 +463,7 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 		blocksArmedFallback: blocksArmedComposerFallback,
 		commandFromComposer: composer => parseAiComposerCommand(composerText(composer)),
 		composerFromNode: composerFromTarget,
-		compositionActive: aiComposerCompositionState.isActive(),
+		compositionActive,
 		consume(candidate) {
 			void consumeComposerCommand(candidate);
 		},
@@ -452,6 +473,35 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 			&& aiComposerCommandState.matches(candidate, snapshotState(candidate)),
 		snapshot,
 	});
+}
+
+function handleAiComposerBeforeInput(event: InputEvent): void {
+	const pendingComposer = pendingAiComposerImeEnter;
+	if (
+		!isAiAssistEnabled
+		|| !event.isTrusted
+		|| !pendingComposer
+		|| !isAiComposerImeParagraphInputType(event.inputType)
+	) {
+		return;
+	}
+
+	const resolution = composerFromEvent(event, undefined);
+	const composer = resolution.composer
+		?? (resolution.blockedArmedFallback ? undefined : uniqueCurrentMessengerComposer());
+	if (composer !== pendingComposer || !parseAiComposerCommand(composerText(composer))) {
+		return;
+	}
+
+	pendingAiComposerImeEnter = undefined;
+	event.preventDefault();
+	event.stopImmediatePropagation();
+}
+
+function handleAiComposerKeyup(event: KeyboardEvent): void {
+	if (event.isTrusted && event.key === 'Enter') {
+		pendingAiComposerImeEnter = undefined;
+	}
 }
 
 function handleAiComposerClick(event: MouseEvent): void {
@@ -555,11 +605,13 @@ function startConversationObserver(): void {
 		subtree: true,
 	});
 	window.addEventListener('click', handleAiComposerClick, true);
+	window.addEventListener('beforeinput', handleAiComposerBeforeInput, true);
 	window.addEventListener('compositionend', handleAiComposerCompositionEnd, true);
 	window.addEventListener('compositionstart', handleAiComposerCompositionStart, true);
 	window.addEventListener('focusin', handleAiComposerFocusIn, true);
 	window.addEventListener('input', handleAiComposerInput, true);
 	window.addEventListener('keydown', handleAiComposerKeydown, true);
+	window.addEventListener('keyup', handleAiComposerKeyup, true);
 	window.addEventListener('pagehide', invalidateComposerCommand, true);
 	window.addEventListener('pointerdown', handleAiComposerClick, true);
 	revalidateArmedComposer();
@@ -569,16 +621,19 @@ function stopConversationObserver(): void {
 	conversationObserver?.disconnect();
 	conversationObserver = undefined;
 	window.removeEventListener('click', handleAiComposerClick, true);
+	window.removeEventListener('beforeinput', handleAiComposerBeforeInput, true);
 	window.removeEventListener('compositionend', handleAiComposerCompositionEnd, true);
 	window.removeEventListener('compositionstart', handleAiComposerCompositionStart, true);
 	window.removeEventListener('focusin', handleAiComposerFocusIn, true);
 	window.removeEventListener('input', handleAiComposerInput, true);
 	window.removeEventListener('keydown', handleAiComposerKeydown, true);
+	window.removeEventListener('keyup', handleAiComposerKeyup, true);
 	window.removeEventListener('pagehide', invalidateComposerCommand, true);
 	window.removeEventListener('pointerdown', handleAiComposerClick, true);
 	invalidateComposerCommand();
 	composerCommandInFlight = false;
 	aiComposerCompositionState.finish();
+	pendingAiComposerImeEnter = undefined;
 	aiComposerSendGestureGuard.clear();
 	if (conversationReportTimer) {
 		clearTimeout(conversationReportTimer);
@@ -740,6 +795,7 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 
 const notifyConversationRouteChanged = (): void => {
 	aiComposerCompositionState.finish();
+	pendingAiComposerImeEnter = undefined;
 	aiComposerSendGestureGuard.clear();
 	invalidateComposerCommand();
 	scheduleConversationStateReport();

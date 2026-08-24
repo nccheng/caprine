@@ -309,6 +309,10 @@ export function isAiComposerCompositionConfirmation(
 	return event.isComposing || event.keyCode === 229 || compositionActive;
 }
 
+export function isAiComposerImeParagraphInputType(inputType: string): boolean {
+	return inputType === 'insertParagraph' || inputType === 'insertLineBreak';
+}
+
 export function isAiComposerSendControlDescription(value: string): boolean {
 	return /\b(send|enter)\b/i.test(value);
 }

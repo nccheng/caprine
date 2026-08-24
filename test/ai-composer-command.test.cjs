@@ -6,6 +6,7 @@ const {
 	AiComposerSendGestureGuard,
 	armAiComposerFromBrowserEvent,
 	consumeAiComposerCommand,
+	isAiComposerImeParagraphInputType,
 	isAiComposerSendControlDescription,
 	isNormalAiComposerEnter,
 	parseAiComposerCommand,
@@ -92,6 +93,24 @@ class RoutedEvent extends Event {
 	composedPath() {
 		return [this.target, ...this.routePath].filter(Boolean);
 	}
+}
+
+function dispatchImeBeforeInput(inputType, protectedCommand = true) {
+	const target = new EventTarget();
+	const event = new Event('beforeinput', {bubbles: true, cancelable: true});
+	Object.defineProperty(event, 'inputType', {value: inputType});
+	let downstream = 0;
+	target.addEventListener('beforeinput', candidate => {
+		if (protectedCommand && isAiComposerImeParagraphInputType(candidate.inputType)) {
+			candidate.preventDefault();
+			candidate.stopImmediatePropagation();
+		}
+	}, {capture: true});
+	target.addEventListener('beforeinput', () => {
+		downstream += 1;
+	}, {capture: true});
+	target.dispatchEvent(event);
+	return {defaultPrevented: event.defaultPrevented, downstream};
 }
 
 function browserRouteOptions(state, snapshot, overrides = {}) {
@@ -329,6 +348,24 @@ test('browser keydown routing leaves normal messages and Shift Enter untouched b
 	assert.equal(chineseResult.outcome, 'ignored');
 });
 
+test('IME paragraph input is suppressed without blocking composition text or normal Chinese messages', () => {
+	for (const inputType of ['insertParagraph', 'insertLineBreak']) {
+		assert.deepEqual(dispatchImeBeforeInput(inputType), {
+			defaultPrevented: true,
+			downstream: 0,
+		});
+	}
+
+	assert.deepEqual(dispatchImeBeforeInput('insertCompositionText'), {
+		defaultPrevented: false,
+		downstream: 1,
+	});
+	assert.deepEqual(dispatchImeBeforeInput('insertParagraph', false), {
+		defaultPrevented: false,
+		downstream: 1,
+	});
+});
+
 test('composition end clears a retargeted session and rearms a replacement composer', () => {
 	const state = new AiComposerCommandState();
 	const composition = new AiComposerCompositionState();
@@ -371,6 +408,17 @@ test('composition end clears a retargeted session and rearms a replacement compo
 		outcome: 'protected-consumed',
 		prompt: '測試',
 	});
+
+	const sendState = new AiComposerCommandState();
+	const sendSnapshot = sendState.arm(composerB, composerB.draftText, 'conversation-a');
+	const sendResult = dispatchBrowserSend(sendState, sendSnapshot, {
+		capturePrompt: true,
+		liveComposer: composerB,
+	});
+	assert.equal(sendResult.consumed, 1);
+	assert.equal(sendResult.downstream, 0);
+	assert.equal(sendResult.outcome, 'protected-consumed');
+	assert.equal(sendResult.prompt, '測試');
 });
 
 test('committed non-composing input clears composition and the next Enter consumes once', () => {
@@ -411,6 +459,7 @@ test('lost conversation authority clears only the owning composition guard', () 
 	const state = new AiComposerCommandState();
 	const composition = new AiComposerCompositionState();
 	const composer = {draftText: '/ai 你好', isConnected: true};
+	let pendingImeEnter = composer;
 	composition.start(composer);
 	state.arm(composer, composer.draftText, 'conversation-a');
 	const revalidate = conversationId => {
@@ -427,6 +476,7 @@ test('lost conversation authority clears only the owning composition guard', () 
 				|| !current.isConnected;
 			if (composition.current() === snapshot.composer && lostAuthority) {
 				composition.finish();
+				pendingImeEnter = undefined;
 			}
 
 			state.invalidate();
@@ -437,12 +487,14 @@ test('lost conversation authority clears only the owning composition guard', () 
 	revalidate('conversation-a');
 	assert.equal(state.current(), undefined);
 	assert.equal(composition.isActive(), true);
+	assert.equal(pendingImeEnter, composer);
 
 	composer.draftText = '/ai hello';
 	state.arm(composer, composer.draftText, 'conversation-a');
 	revalidate(undefined);
 	assert.equal(state.current(), undefined);
 	assert.equal(composition.isActive(), false);
+	assert.equal(pendingImeEnter, undefined);
 	assert.equal(composer.draftText, '/ai hello');
 
 	const recommitted = state.arm(composer, composer.draftText, 'conversation-a');
