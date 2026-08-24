@@ -15,6 +15,7 @@ import {
 	AiComposerCommandSnapshot,
 	AiComposerCommandState,
 	AiComposerCompositionState,
+	AiComposerSendGestureGuard,
 	armAiComposerFromBrowserEvent,
 	consumeAiComposerCommand,
 	isAiComposerSendControlDescription,
@@ -52,6 +53,7 @@ let conversationObserver: MutationObserver | undefined;
 let conversationReportTimer: ReturnType<typeof setTimeout> | undefined;
 const aiComposerCommandState = new AiComposerCommandState<HTMLElement>();
 const aiComposerCompositionState = new AiComposerCompositionState<HTMLElement>();
+const aiComposerSendGestureGuard = new AiComposerSendGestureGuard<HTMLElement>();
 let composerCommandInFlight = false;
 let composerStatusHost: HTMLElement | undefined;
 let composerStatusText: HTMLElement | undefined;
@@ -104,22 +106,14 @@ function composerFromEvent(event: Event, armedComposer: HTMLElement | undefined)
 	}, composerFromTarget, blocksArmedComposerFallback);
 }
 
-function activeMessengerComposer(): HTMLElement | undefined {
-	const focused = composerFromTarget(document.activeElement ?? undefined);
-	if (focused) {
-		return focused;
-	}
-
+function currentMessengerComposer(): HTMLElement | undefined {
 	const composers = [...document.querySelectorAll<HTMLElement>(messengerComposerSelector)];
-	const currentComposer = composers[composers.length - 1];
-	if (currentComposer) {
-		return currentComposer;
-	}
+	return composers[composers.length - 1];
+}
 
-	const armedComposer = aiComposerCommandState.current()?.composer;
-	return armedComposer?.isConnected && armedComposer.matches(messengerComposerSelector)
-		? armedComposer
-		: undefined;
+function activeMessengerComposer(): HTMLElement | undefined {
+	return composerFromTarget(document.activeElement ?? undefined)
+		?? currentMessengerComposer();
 }
 
 function removeComposerStatus(): void {
@@ -267,6 +261,19 @@ function isMessengerSendControl(target: EventTarget | undefined, composer: HTMLE
 	return false;
 }
 
+function messengerSendControlFromEvent(event: Event): HTMLElement | undefined {
+	for (const candidate of [event.target, ...event.composedPath()]) {
+		if (candidate instanceof Element) {
+			const control = candidate.closest<HTMLElement>('button, [role="button"]');
+			if (control) {
+				return control;
+			}
+		}
+	}
+
+	return undefined;
+}
+
 async function consumeComposerCommand(snapshot: Readonly<AiComposerCommandSnapshot<HTMLElement>>): Promise<void> {
 	if (composerCommandInFlight) {
 		return;
@@ -396,6 +403,7 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 		consume(candidate) {
 			void consumeComposerCommand(candidate);
 		},
+		fallbackComposer: currentMessengerComposer(),
 		invalidate: invalidateComposerCommand,
 		isCurrent: candidate => isAiAssistEnabled
 			&& aiComposerCommandState.matches(candidate, snapshotState(candidate)),
@@ -408,8 +416,25 @@ function handleAiComposerClick(event: MouseEvent): void {
 		return;
 	}
 
+	const sendControl = messengerSendControlFromEvent(event);
+	if (event.type === 'pointerdown') {
+		aiComposerSendGestureGuard.clear();
+	} else if (event.type === 'click') {
+		const protectsPointerClick = event.detail > 0
+			&& aiComposerSendGestureGuard.protectsClick(sendControl);
+		if (event.detail === 0) {
+			aiComposerSendGestureGuard.clear();
+		}
+
+		if (protectsPointerClick) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			return;
+		}
+	}
+
 	const snapshot = aiComposerCommandState.current();
-	routeAiComposerBrowserSend(event, {
+	const outcome = routeAiComposerBrowserSend(event, {
 		activeElement: document.activeElement ?? undefined,
 		armCurrent: armComposerCommand,
 		blocksArmedFallback: blocksArmedComposerFallback,
@@ -419,13 +444,16 @@ function handleAiComposerClick(event: MouseEvent): void {
 		consume(candidate) {
 			void consumeComposerCommand(candidate);
 		},
-		fallbackComposer: activeMessengerComposer(),
+		fallbackComposer: currentMessengerComposer(),
 		invalidate: invalidateComposerCommand,
 		isCurrent: candidate => isAiAssistEnabled
 			&& aiComposerCommandState.matches(candidate, snapshotState(candidate)),
 		isSendControl: isMessengerSendControl,
 		snapshot,
 	});
+	if (event.type === 'pointerdown' && outcome !== 'ignored' && sendControl) {
+		aiComposerSendGestureGuard.arm(sendControl);
+	}
 }
 
 function selectedConversationCandidates(): ConversationIdentityCandidate[] {
@@ -511,6 +539,7 @@ function stopConversationObserver(): void {
 	invalidateComposerCommand();
 	composerCommandInFlight = false;
 	aiComposerCompositionState.finish();
+	aiComposerSendGestureGuard.clear();
 	if (conversationReportTimer) {
 		clearTimeout(conversationReportTimer);
 		conversationReportTimer = undefined;
@@ -671,6 +700,7 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 
 const notifyConversationRouteChanged = (): void => {
 	aiComposerCompositionState.finish();
+	aiComposerSendGestureGuard.clear();
 	invalidateComposerCommand();
 	scheduleConversationStateReport();
 };

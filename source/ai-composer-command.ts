@@ -26,6 +26,8 @@ export type AiComposerEventSignals<Node, Composer> = {
 export type AiComposerEventResolution<Composer> = Readonly<{
 	blockedArmedFallback: boolean;
 	composer: Composer | undefined;
+	source: 'active-element' | 'armed-fallback' | 'composed-path' | 'none' | 'target';
+	usedArmedFallback: boolean;
 }>;
 
 export type AiComposerConsumeActions = {
@@ -62,10 +64,10 @@ AiComposerEventRouteOptions<Composer>,
 	blocksArmedFallback: (node: Node | undefined) => boolean;
 	commandFromComposer: (composer: Composer) => Readonly<AiComposerCommand> | undefined;
 	composerFromNode: (node: Node | undefined) => Composer | undefined;
+	fallbackComposer: Composer | undefined;
 };
 
 export type AiComposerBrowserSendRouteOptions<Node, Composer> = AiComposerBrowserRouteOptions<Node, Composer> & {
-	fallbackComposer: Composer | undefined;
 	isSendControl: (node: Node | undefined, composer: Composer) => boolean;
 };
 
@@ -188,27 +190,53 @@ export class AiComposerCompositionState<Composer> {
 	}
 }
 
+export class AiComposerSendGestureGuard<Control> {
+	private protectedControl: Control | undefined;
+
+	arm(control: Control): void {
+		this.protectedControl = control;
+	}
+
+	clear(): void {
+		this.protectedControl = undefined;
+	}
+
+	protectsClick(control: Control | undefined): boolean {
+		const protects = control !== undefined && control === this.protectedControl;
+		this.clear();
+		return protects;
+	}
+}
+
 export function resolveAiComposerFromEventSignals<Node, Composer>(
 	signals: Readonly<AiComposerEventSignals<Node, Composer>>,
 	composerFromNode: (node: Node | undefined) => Composer | undefined,
 	blocksArmedFallback: (node: Node | undefined) => boolean,
 ): AiComposerEventResolution<Composer> {
-	const candidates = [
-		signals.target,
-		...signals.composedPath,
-		signals.activeElement,
+	const candidates: Array<readonly [AiComposerEventResolution<Composer>['source'], Node | undefined]> = [
+		['target', signals.target],
+		...signals.composedPath.map(candidate => ['composed-path' as const, candidate] as const),
+		['active-element', signals.activeElement],
 	];
-	for (const candidate of candidates) {
+	for (const [source, candidate] of candidates) {
 		const composer = composerFromNode(candidate);
 		if (composer !== undefined) {
-			return {blockedArmedFallback: false, composer};
+			return {
+				blockedArmedFallback: false,
+				composer,
+				source,
+				usedArmedFallback: false,
+			};
 		}
 	}
 
-	const blockedArmedFallback = candidates.some(candidate => blocksArmedFallback(candidate));
+	const blockedArmedFallback = candidates.some(([, candidate]) => blocksArmedFallback(candidate));
+	const composer = blockedArmedFallback ? undefined : signals.armedComposer;
 	return {
 		blockedArmedFallback,
-		composer: blockedArmedFallback ? undefined : signals.armedComposer,
+		composer,
+		source: composer === undefined ? 'none' : 'armed-fallback',
+		usedArmedFallback: composer !== undefined,
 	};
 }
 
@@ -254,12 +282,16 @@ export function routeArmedAiComposerSend<Composer>(
 		isCurrent,
 		snapshot,
 	} = options;
-	if (!isSendControl || !snapshot || compositionActive) {
+	if (!isSendControl || !snapshot) {
 		return 'ignored';
 	}
 
 	event.preventDefault();
 	event.stopImmediatePropagation();
+	if (compositionActive) {
+		return 'protected-stale';
+	}
+
 	if (blockedArmedFallback || (composer !== undefined && composer !== snapshot.composer) || !isCurrent(snapshot)) {
 		invalidate();
 		return 'protected-stale';
@@ -303,6 +335,30 @@ export function armAiComposerFromBrowserEvent<Node, Composer>(
 		: options.armCurrent(resolution.composer);
 }
 
+function freshArmAndConsumeAiComposer<Node, Composer>(
+	event: AiComposerProtectedEvent,
+	outcome: AiComposerEventRouteOutcome,
+	composer: Composer,
+	options: Readonly<AiComposerBrowserRouteOptions<Node, Composer>>,
+): AiComposerEventRouteOutcome {
+	if (outcome === 'ignored') {
+		event.preventDefault();
+		event.stopImmediatePropagation();
+	}
+
+	const snapshot = options.armCurrent(composer);
+	if (!snapshot || !options.isCurrent(snapshot)) {
+		if (snapshot !== undefined || outcome === 'ignored') {
+			options.invalidate();
+		}
+
+		return 'protected-stale';
+	}
+
+	options.consume(snapshot);
+	return 'protected-consumed';
+}
+
 export function routeAiComposerBrowserEnter<Node, Composer>(
 	event: Readonly<AiComposerEnterEvent> & AiComposerBrowserEvent<Node>,
 	options: Readonly<AiComposerBrowserRouteOptions<Node, Composer>>,
@@ -313,38 +369,47 @@ export function routeAiComposerBrowserEnter<Node, Composer>(
 		composedPath: event.composedPath(),
 		target: event.target ?? undefined,
 	}, options.composerFromNode, options.blocksArmedFallback);
-	const outcome = routeArmedAiComposerEnter(event, {
-		...options,
-		blockedArmedFallback: resolution.blockedArmedFallback,
-		composer: resolution.composer,
-	});
-	if (outcome !== 'ignored') {
-		return outcome;
-	}
-
 	if (options.compositionActive) {
 		return 'ignored';
 	}
 
-	if (resolution.composer === undefined) {
-		return 'ignored';
-	}
-
-	const command = options.commandFromComposer(resolution.composer);
-	if (!shouldInterceptAiComposerEnter(event, command)) {
-		return 'ignored';
-	}
-
-	event.preventDefault();
-	event.stopImmediatePropagation();
-	const snapshot = options.armCurrent(resolution.composer);
-	if (!snapshot || !options.isCurrent(snapshot)) {
+	const independentlyResolvedComposer = resolution.usedArmedFallback
+		? undefined
+		: resolution.composer;
+	const liveComposer = independentlyResolvedComposer
+		?? (resolution.blockedArmedFallback ? undefined : options.fallbackComposer);
+	const routeComposer = liveComposer ?? resolution.composer;
+	const liveCommand = liveComposer === undefined
+		? undefined
+		: options.commandFromComposer(liveComposer);
+	if (
+		options.snapshot
+		&& liveComposer
+		&& liveCommand === undefined
+		&& (liveComposer !== options.snapshot.composer || !options.isCurrent(options.snapshot))
+	) {
 		options.invalidate();
-		return 'protected-stale';
+		return 'ignored';
 	}
 
-	options.consume(snapshot);
-	return 'protected-consumed';
+	const outcome = routeArmedAiComposerEnter(event, {
+		...options,
+		blockedArmedFallback: resolution.blockedArmedFallback,
+		composer: routeComposer,
+	});
+	if (outcome === 'protected-consumed') {
+		return outcome;
+	}
+
+	if (liveComposer === undefined) {
+		return outcome;
+	}
+
+	if (!shouldInterceptAiComposerEnter(event, liveCommand)) {
+		return outcome;
+	}
+
+	return freshArmAndConsumeAiComposer(event, outcome, liveComposer, options);
 }
 
 export function routeAiComposerBrowserSend<Node, Composer>(
@@ -357,43 +422,78 @@ export function routeAiComposerBrowserSend<Node, Composer>(
 		composedPath: event.composedPath(),
 		target: event.target ?? undefined,
 	}, options.composerFromNode, options.blocksArmedFallback);
-	const composer = resolution.composer ?? options.fallbackComposer;
-	const protectedComposer = options.snapshot?.composer ?? composer;
-	const isSendControl = protectedComposer === undefined
-		? false
-		: isAiComposerSendControlEvent(
-			event.target ?? undefined,
-			event.composedPath(),
-			candidate => options.isSendControl(candidate, protectedComposer),
-		);
-	const outcome = routeArmedAiComposerSend(event, isSendControl, {
+	const independentlyResolvedComposer = resolution.usedArmedFallback
+		? undefined
+		: resolution.composer;
+	const liveComposers: Composer[] = [];
+	if (
+		independentlyResolvedComposer !== undefined
+		&& resolution.source !== 'active-element'
+	) {
+		liveComposers.push(independentlyResolvedComposer);
+	}
+
+	if (options.fallbackComposer !== undefined) {
+		liveComposers.push(options.fallbackComposer);
+	}
+
+	if (
+		independentlyResolvedComposer !== undefined
+		&& resolution.source === 'active-element'
+	) {
+		liveComposers.push(independentlyResolvedComposer);
+	}
+
+	const composerCandidates: Composer[] = [
+		...new Set(liveComposers),
+		...(resolution.usedArmedFallback && resolution.composer !== undefined ? [resolution.composer] : []),
+		...(options.snapshot ? [options.snapshot.composer] : []),
+	];
+	const composer = composerCandidates.find(candidate => isAiComposerSendControlEvent(
+		event.target ?? undefined,
+		event.composedPath(),
+		node => options.isSendControl(node, candidate),
+	));
+	if (composer === undefined) {
+		return 'ignored';
+	}
+
+	const independentlyResolved = liveComposers.includes(composer);
+	const command = options.commandFromComposer(composer);
+	if (command === undefined) {
+		if (
+			options.snapshot
+			&& (composer !== options.snapshot.composer || !options.isCurrent(options.snapshot))
+		) {
+			options.invalidate();
+		}
+
+		return 'ignored';
+	}
+
+	const outcome = routeArmedAiComposerSend<Composer>(event, true, {
 		...options,
-		blockedArmedFallback: resolution.blockedArmedFallback && !isSendControl,
+		blockedArmedFallback: false,
 		composer,
 	});
-	if (outcome !== 'ignored' || composer === undefined) {
+	if (outcome === 'protected-consumed') {
 		return outcome;
 	}
 
 	if (options.compositionActive) {
-		return 'ignored';
-	}
+		if (outcome === 'ignored') {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+		}
 
-	const command = options.commandFromComposer(composer);
-	if (!shouldInterceptAiComposerSend(isSendControl, command)) {
-		return 'ignored';
-	}
-
-	event.preventDefault();
-	event.stopImmediatePropagation();
-	const snapshot = options.armCurrent(composer);
-	if (!snapshot || !options.isCurrent(snapshot)) {
-		options.invalidate();
 		return 'protected-stale';
 	}
 
-	options.consume(snapshot);
-	return 'protected-consumed';
+	if (!independentlyResolved) {
+		return outcome;
+	}
+
+	return freshArmAndConsumeAiComposer(event, outcome, composer, options);
 }
 
 export function shouldInterceptAiComposerEnter(
