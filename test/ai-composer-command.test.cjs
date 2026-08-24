@@ -6,6 +6,7 @@ const {
 	AiComposerSendGestureGuard,
 	armAiComposerFromBrowserEvent,
 	consumeAiComposerCommand,
+	isAiComposerCompositionConfirmation,
 	isAiComposerImeParagraphInputType,
 	isAiComposerSendControlDescription,
 	isNormalAiComposerEnter,
@@ -331,9 +332,10 @@ test('browser keydown routing leaves normal messages and Shift Enter untouched b
 		compositionActive: true,
 		fallbackComposer: composingComposer,
 	});
-	assert.equal(compositionResult.defaultPrevented, false);
+	assert.equal(compositionResult.defaultPrevented, true);
 	assert.equal(compositionResult.downstream, 0);
-	assert.equal(compositionResult.outcome, 'protected-stale');
+	assert.equal(compositionResult.consumed, 1);
+	assert.equal(compositionResult.outcome, 'protected-consumed');
 
 	const chineseState = new AiComposerCommandState();
 	const chineseComposer = {draftText: '一般中文訊息'};
@@ -360,10 +362,183 @@ test('IME paragraph input is suppressed without blocking composition text or nor
 		defaultPrevented: false,
 		downstream: 1,
 	});
+	assert.deepEqual(dispatchImeBeforeInput('insertFromComposition'), {
+		defaultPrevented: false,
+		downstream: 1,
+	});
 	assert.deepEqual(dispatchImeBeforeInput('insertParagraph', false), {
 		defaultPrevented: false,
 		downstream: 1,
 	});
+});
+
+test('stale composition state recovers in the same normal Enter while genuine IME Enter stays protected', () => {
+	assert.equal(isAiComposerCompositionConfirmation(enterEvent), false);
+	assert.equal(isAiComposerCompositionConfirmation({...enterEvent, isComposing: true}), true);
+	assert.equal(isAiComposerCompositionConfirmation({...enterEvent, keyCode: 229}), true);
+
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composer = {draftText: '/ai 你好'};
+	composition.start(composer);
+	let pendingImeEnter;
+	if (
+		!isAiComposerCompositionConfirmation(enterEvent)
+		&& parseAiComposerCommand(composer.draftText)
+		&& composition.isActive()
+	) {
+		composition.finish();
+		pendingImeEnter = undefined;
+	}
+
+	const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
+	assert.equal(composition.isActive(), false);
+	assert.deepEqual(dispatchBrowserEnter(state, snapshot, {
+		capturePrompt: true,
+		compositionActive: composition.isActive(),
+		fallbackComposer: composer,
+	}), {
+		consumed: 1,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 0,
+		outcome: 'protected-consumed',
+		prompt: '你好',
+	});
+	assert.equal(pendingImeEnter, undefined);
+
+	for (const event of [{...enterEvent, isComposing: true}, {...enterEvent, keyCode: 229}]) {
+		const protectedState = new AiComposerCommandState();
+		const protectedComposition = new AiComposerCompositionState();
+		const protectedComposer = {draftText: '/ai 你好'};
+		const protectedSnapshot = protectedState.arm(
+			protectedComposer,
+			protectedComposer.draftText,
+			'conversation-a',
+		);
+		protectedComposition.start(protectedComposer);
+		const protectedPending = isAiComposerCompositionConfirmation(event)
+			? protectedComposer
+			: undefined;
+		const result = dispatchBrowserEnter(protectedState, protectedSnapshot, {
+			compositionActive: protectedComposition.isActive(),
+			event,
+			fallbackComposer: protectedComposer,
+		});
+		assert.equal(result.defaultPrevented, false);
+		assert.equal(result.downstream, 0);
+		assert.equal(result.consumed, 0);
+		assert.equal(result.outcome, 'protected-stale');
+		assert.equal(protectedComposition.isActive(), true);
+		assert.equal(protectedPending, protectedComposer);
+		assert.equal(protectedComposer.draftText, '/ai 你好');
+	}
+});
+
+test('paragraph suppression hands IME completion to keyup and leaves Send and later commands usable', async () => {
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composer = {draftText: '/ai 你好'};
+	composition.start(composer);
+	let pendingImeEnter = composer;
+	let handledImeEnter;
+
+	assert.deepEqual(dispatchImeBeforeInput('insertParagraph'), {
+		defaultPrevented: true,
+		downstream: 0,
+	});
+	handledImeEnter = pendingImeEnter;
+	pendingImeEnter = undefined;
+	assert.equal(composition.isActive(), true);
+
+	const keyupComposer = pendingImeEnter ?? handledImeEnter;
+	pendingImeEnter = undefined;
+	handledImeEnter = undefined;
+	if (composition.current() === keyupComposer) {
+		composition.finish();
+	}
+
+	await Promise.resolve();
+	const committedSnapshot = state.arm(composer, composer.draftText, 'conversation-a');
+	assert.equal(pendingImeEnter, undefined);
+	assert.equal(handledImeEnter, undefined);
+	assert.equal(composition.isActive(), false);
+	assert.equal(composer.draftText, '/ai 你好');
+	assert.equal(state.current(), committedSnapshot);
+
+	assert.deepEqual(dispatchBrowserSend(state, committedSnapshot, {
+		capturePrompt: true,
+		compositionActive: composition.isActive(),
+		liveComposer: composer,
+	}), {
+		armed: 0,
+		consumed: 1,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 0,
+		outcome: 'protected-consumed',
+		prompt: '你好',
+	});
+
+	composer.draftText = '/ai hello';
+	const laterSnapshot = state.arm(composer, composer.draftText, 'conversation-a');
+	assert.deepEqual(dispatchBrowserEnter(state, laterSnapshot, {
+		capturePrompt: true,
+		fallbackComposer: composer,
+	}), {
+		consumed: 1,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 0,
+		outcome: 'protected-consumed',
+		prompt: 'hello',
+	});
+});
+
+test('non-composing input can finish the focused composition owner without trusting unrelated input', () => {
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composer = {draftText: '/ai 你好'};
+	composition.start(composer);
+
+	const unresolvedInput = resolveAiComposerFromEventSignals({
+		activeElement: undefined,
+		armedComposer: undefined,
+		composedPath: [],
+		target: new EventTarget(),
+	}, () => undefined, () => false);
+	const authoritativeComposer = composer;
+	if (
+		composition.current()
+		&& !unresolvedInput.blockedArmedFallback
+		&& authoritativeComposer === composition.current()
+	) {
+		composition.finish();
+	}
+
+	const snapshot = state.arm(authoritativeComposer, authoritativeComposer.draftText, 'conversation-a');
+	assert.equal(composition.isActive(), false);
+	assert.equal(dispatchBrowserEnter(state, snapshot, {
+		fallbackComposer: authoritativeComposer,
+	}).outcome, 'protected-consumed');
+
+	const unrelatedComposition = new AiComposerCompositionState();
+	unrelatedComposition.start(composer);
+	const unrelatedInput = resolveAiComposerFromEventSignals({
+		activeElement: undefined,
+		armedComposer: undefined,
+		composedPath: [],
+		target: new EventTarget(),
+	}, () => undefined, () => true);
+	if (
+		unrelatedComposition.current()
+		&& !unrelatedInput.blockedArmedFallback
+		&& authoritativeComposer === unrelatedComposition.current()
+	) {
+		unrelatedComposition.finish();
+	}
+
+	assert.equal(unrelatedComposition.isActive(), true);
 });
 
 test('composition end clears a retargeted session and rearms a replacement composer', () => {

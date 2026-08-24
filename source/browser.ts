@@ -55,6 +55,7 @@ const aiComposerCommandState = new AiComposerCommandState<HTMLElement>();
 const aiComposerCompositionState = new AiComposerCompositionState<HTMLElement>();
 const aiComposerSendGestureGuard = new AiComposerSendGestureGuard<HTMLElement>();
 let pendingAiComposerImeEnter: HTMLElement | undefined;
+let handledAiComposerImeEnter: HTMLElement | undefined;
 let composerCommandInFlight = false;
 let composerStatusHost: HTMLElement | undefined;
 let composerStatusText: HTMLElement | undefined;
@@ -186,6 +187,10 @@ function revalidateArmedComposer(): void {
 			pendingAiComposerImeEnter = undefined;
 		}
 
+		if (handledAiComposerImeEnter === composingComposer) {
+			handledAiComposerImeEnter = undefined;
+		}
+
 		aiComposerCompositionState.finish();
 	}
 
@@ -204,6 +209,10 @@ function revalidateArmedComposer(): void {
 		if (aiComposerCompositionState.current() === snapshot.composer && lostConversationAuthority) {
 			if (pendingAiComposerImeEnter === snapshot.composer) {
 				pendingAiComposerImeEnter = undefined;
+			}
+
+			if (handledAiComposerImeEnter === snapshot.composer) {
+				handledAiComposerImeEnter = undefined;
 			}
 
 			aiComposerCompositionState.finish();
@@ -378,14 +387,28 @@ function handleAiComposerInput(event: Event): void {
 	}
 
 	const resolution = composerFromEvent(event, undefined);
-	const composer = resolution.composer
-		?? (resolution.blockedArmedFallback ? undefined : uniqueCurrentMessengerComposer());
-	if (!composer) {
-		return;
+	const activeComposer = resolution.blockedArmedFallback ? undefined : activeMessengerComposer();
+	const compositionComposer = aiComposerCompositionState.current();
+	if (
+		'isComposing' in event
+		&& event.isComposing === false
+		&& compositionComposer
+		&& (resolution.composer === compositionComposer || activeComposer === compositionComposer)
+	) {
+		aiComposerCompositionState.finish();
+		if (pendingAiComposerImeEnter === compositionComposer) {
+			pendingAiComposerImeEnter = undefined;
+		}
+
+		if (handledAiComposerImeEnter === compositionComposer) {
+			handledAiComposerImeEnter = undefined;
+		}
 	}
 
-	if ('isComposing' in event && event.isComposing === false) {
-		aiComposerCompositionState.finish();
+	const composer = resolution.composer
+		?? activeComposer;
+	if (!composer) {
+		return;
 	}
 
 	armComposerCommand(composer);
@@ -408,6 +431,8 @@ function handleAiComposerCompositionStart(event: CompositionEvent): void {
 		const snapshot = aiComposerCommandState.current();
 		const {composer} = composerFromEvent(event, snapshot?.composer);
 		aiComposerCompositionState.finish();
+		pendingAiComposerImeEnter = undefined;
+		handledAiComposerImeEnter = undefined;
 		if (composer) {
 			aiComposerCompositionState.start(composer);
 		}
@@ -422,6 +447,14 @@ function handleAiComposerCompositionEnd(event: CompositionEvent): void {
 	const compositionComposer = aiComposerCompositionState.finish();
 	if (!compositionComposer) {
 		return;
+	}
+
+	if (pendingAiComposerImeEnter === compositionComposer) {
+		pendingAiComposerImeEnter = undefined;
+	}
+
+	if (handledAiComposerImeEnter === compositionComposer) {
+		handledAiComposerImeEnter = undefined;
 	}
 
 	const resolvedComposer = composerFromEvent(event, undefined).composer;
@@ -445,17 +478,22 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 		return;
 	}
 
-	const compositionActive = aiComposerCompositionState.isActive();
-	pendingAiComposerImeEnter = undefined;
-	if (isAiComposerCompositionConfirmation(event, compositionActive)) {
-		const resolution = composerFromEvent(event, undefined);
-		const composer = resolution.composer
-			?? (resolution.blockedArmedFallback ? undefined : uniqueCurrentMessengerComposer());
-		if (composer && parseAiComposerCommand(composerText(composer))) {
-			pendingAiComposerImeEnter = composer;
-		}
+	const isCompositionConfirmation = isAiComposerCompositionConfirmation(event);
+	const resolution = composerFromEvent(event, undefined);
+	const composer = resolution.composer
+		?? (resolution.blockedArmedFallback ? undefined : uniqueCurrentMessengerComposer());
+	const command = composer ? parseAiComposerCommand(composerText(composer)) : undefined;
+	if (isCompositionConfirmation) {
+		pendingAiComposerImeEnter = command ? composer : undefined;
+		handledAiComposerImeEnter = undefined;
+	} else if (composer && command && aiComposerCompositionState.isActive()) {
+		aiComposerCompositionState.finish();
+		pendingAiComposerImeEnter = undefined;
+		handledAiComposerImeEnter = undefined;
+		armComposerCommand(composer);
 	}
 
+	const compositionActive = aiComposerCompositionState.isActive();
 	const snapshot = aiComposerCommandState.current();
 	routeAiComposerBrowserEnter(event, {
 		activeElement: document.activeElement ?? undefined,
@@ -494,14 +532,37 @@ function handleAiComposerBeforeInput(event: InputEvent): void {
 	}
 
 	pendingAiComposerImeEnter = undefined;
+	handledAiComposerImeEnter = pendingComposer;
 	event.preventDefault();
 	event.stopImmediatePropagation();
 }
 
 function handleAiComposerKeyup(event: KeyboardEvent): void {
-	if (event.isTrusted && event.key === 'Enter') {
-		pendingAiComposerImeEnter = undefined;
+	if (!event.isTrusted || event.key !== 'Enter') {
+		return;
 	}
+
+	const imeComposer = pendingAiComposerImeEnter ?? handledAiComposerImeEnter;
+	pendingAiComposerImeEnter = undefined;
+	handledAiComposerImeEnter = undefined;
+	if (!imeComposer) {
+		return;
+	}
+
+	if (aiComposerCompositionState.current() === imeComposer) {
+		aiComposerCompositionState.finish();
+	}
+
+	queueMicrotask(() => {
+		if (!isAiAssistEnabled) {
+			return;
+		}
+
+		const composer = activeMessengerComposer();
+		if (composer && parseAiComposerCommand(composerText(composer))) {
+			armComposerCommand(composer);
+		}
+	});
 }
 
 function handleAiComposerClick(event: MouseEvent): void {
@@ -634,6 +695,7 @@ function stopConversationObserver(): void {
 	composerCommandInFlight = false;
 	aiComposerCompositionState.finish();
 	pendingAiComposerImeEnter = undefined;
+	handledAiComposerImeEnter = undefined;
 	aiComposerSendGestureGuard.clear();
 	if (conversationReportTimer) {
 		clearTimeout(conversationReportTimer);

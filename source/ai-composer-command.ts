@@ -304,9 +304,8 @@ export function isNormalAiComposerEnter(event: Readonly<AiComposerEnterEvent>): 
 
 export function isAiComposerCompositionConfirmation(
 	event: Readonly<AiComposerEnterEvent>,
-	compositionActive: boolean,
 ): boolean {
-	return event.isComposing || event.keyCode === 229 || compositionActive;
+	return event.isComposing || event.keyCode === 229;
 }
 
 export function isAiComposerImeParagraphInputType(inputType: string): boolean {
@@ -374,7 +373,7 @@ export function routeAiComposerBrowserEnter<Node, Composer>(
 		return 'ignored';
 	}
 
-	const isCompositionConfirmation = isAiComposerCompositionConfirmation(event, options.compositionActive);
+	const isCompositionConfirmation = isAiComposerCompositionConfirmation(event);
 	const resolution = resolveAiComposerFromEventSignals({
 		activeElement: options.activeElement,
 		armedComposer: undefined,
