@@ -287,7 +287,7 @@ class AiAssistController {
 
 		const media = value.sourceType === 'https'
 			? await this.mediaResolver.resolveHttps(
-				value.url!,
+				value.url,
 				value.kind,
 				value.messageId,
 				pending.snapshot,
@@ -295,8 +295,8 @@ class AiAssistController {
 				pending.abortController.signal,
 			)
 			: await this.mediaResolver.resolveBlob(
-				value.bytes!,
-				value.mimeType!,
+				value.bytes,
+				value.mimeType,
 				value.kind,
 				value.messageId,
 				pending.snapshot,
