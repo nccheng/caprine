@@ -35,6 +35,10 @@ import {
 	MessengerMessageAnchor,
 } from './messenger-context';
 import {
+	isMessageAnchorRectangleVisible,
+	isMessageAnchorShortcut,
+} from './message-anchor-interaction';
+import {
 	extractLoadedMessengerMediaCandidates,
 	resolveMessengerMediaDomCandidate,
 } from './messenger-media-dom';
@@ -102,7 +106,7 @@ function positionMessageAnchorOverlay(): void {
 	}
 
 	const rectangle = messageAnchorTarget.row.getBoundingClientRect();
-	if (rectangle.width <= 0 || rectangle.height <= 0) {
+	if (!isMessageAnchorRectangleVisible(rectangle, window.innerWidth, window.innerHeight)) {
 		removeMessageAnchorOverlay();
 		return;
 	}
@@ -225,11 +229,7 @@ function handleMessageAnchorFocusIn(event: FocusEvent): void {
 function handleMessageAnchorKeydown(event: KeyboardEvent): void {
 	if (
 		!event.isTrusted
-		|| event.key.toLowerCase() !== 'a'
-		|| !event.altKey
-		|| event.ctrlKey
-		|| event.metaKey
-		|| event.shiftKey
+		|| !isMessageAnchorShortcut(event)
 		|| isEditableTarget(event.target ?? undefined)
 	) {
 		return;
