@@ -22,6 +22,7 @@ import {
 } from './media-contract';
 
 export const aiAssistIpcChannels = {
+	composerCommand: 'ai-assist:composer-command',
 	panelCommand: 'ai-assist:panel-command',
 	panelStateChanged: 'ai-assist:panel-state-changed',
 	messengerCommand: 'ai-assist:messenger-command',
@@ -35,6 +36,10 @@ export type AiAssistPanelState = {
 		secureStorageAvailable: boolean;
 	};
 	enabled: boolean;
+	invocation?: {
+		prompt: string;
+		sequence: number;
+	};
 	media: {
 		candidates: MessengerMediaCandidate[];
 		resolution?: MessengerMediaResolution;
@@ -48,6 +53,15 @@ export type AiAssistPanelState = {
 		notice?: string;
 	};
 	session: AiSessionState;
+};
+
+export type AiComposerCommandRequest = {
+	conversationId: string;
+	prompt: string;
+};
+
+export type AiComposerCommandResult = {
+	accepted: boolean;
 };
 
 export type AiAssistPanelCommand =
@@ -115,6 +129,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 	const actualKeys = Object.keys(value);
 	return actualKeys.length === keys.length && keys.every(key => actualKeys.includes(key));
+}
+
+export function isAiComposerCommandRequest(value: unknown): value is AiComposerCommandRequest {
+	return isRecord(value)
+		&& hasExactKeys(value, ['conversationId', 'prompt'])
+		&& typeof value.conversationId === 'string'
+		&& /^messenger-thread:[\w.:-]{1,200}$/.test(value.conversationId)
+		&& typeof value.prompt === 'string'
+		&& value.prompt.length <= openAiPromptCharacterLimit;
+}
+
+export function isAiComposerCommandResult(value: unknown): value is AiComposerCommandResult {
+	return isRecord(value)
+		&& hasExactKeys(value, ['accepted'])
+		&& typeof value.accepted === 'boolean';
 }
 
 export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCommand {
@@ -199,6 +228,15 @@ function isRequestState(value: unknown): boolean {
 		&& (value.answer === undefined || (typeof value.answer === 'string' && value.answer.length <= openAiAnswerCharacterLimit))
 		&& (value.notice === undefined || typeof value.notice === 'string')
 		&& (value.error === undefined || isRequestError(value.error));
+}
+
+function isInvocationState(value: unknown): boolean {
+	return isRecord(value)
+		&& hasExactKeys(value, ['prompt', 'sequence'])
+		&& typeof value.prompt === 'string'
+		&& value.prompt.length <= openAiPromptCharacterLimit
+		&& Number.isSafeInteger(value.sequence)
+		&& (value.sequence as number) > 0;
 }
 
 function isMediaCandidate(value: unknown): value is MessengerMediaCandidate {
@@ -297,11 +335,20 @@ function isSessionState(value: unknown): boolean {
 }
 
 export function isAiAssistPanelState(value: unknown): value is AiAssistPanelState {
-	return isRecord(value)
-		&& hasExactKeys(value, ['conversation', 'credentials', 'enabled', 'media', 'request', 'session'])
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['conversation', 'credentials', 'enabled', 'media', 'request', 'session'];
+	if (value.invocation !== undefined) {
+		keys.push('invocation');
+	}
+
+	return hasExactKeys(value, keys)
 		&& isConversationState(value.conversation)
 		&& isCredentialsState(value.credentials)
 		&& typeof value.enabled === 'boolean'
+		&& (value.invocation === undefined || isInvocationState(value.invocation))
 		&& isMediaState(value.media)
 		&& isRequestState(value.request)
 		&& isSessionState(value.session);
