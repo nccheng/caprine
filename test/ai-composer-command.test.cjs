@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
 	AiComposerCommandState,
+	AiComposerCompositionState,
+	armAiComposerFromBrowserEvent,
 	consumeAiComposerCommand,
 	isAiComposerSendControlDescription,
 	isNormalAiComposerEnter,
@@ -61,7 +63,7 @@ function routeEnter(state, snapshot, event, options) {
 		{
 			blockedArmedFallback: resolution.blockedArmedFallback,
 			composer: resolution.composer,
-			composingComposer: options.composingComposer,
+			compositionActive: options.compositionActive ?? false,
 			consume() {
 				consumed += 1;
 			},
@@ -92,15 +94,20 @@ class RoutedEvent extends Event {
 }
 
 function browserRouteOptions(state, snapshot, overrides = {}) {
+	const conversationId = Object.hasOwn(overrides, 'conversationId')
+		? overrides.conversationId
+		: 'conversation-a';
 	return {
 		activeElement: overrides.activeElement,
+		armCurrent: overrides.armCurrent
+			?? (composer => state.arm(composer, composer.draftText, conversationId)),
 		blocksArmedFallback: overrides.blocksArmedFallback ?? (() => false),
 		commandFromComposer: overrides.commandFromComposer
 			?? (composer => parseAiComposerCommand(composer.draftText)),
 		composerFromNode: overrides.composerFromNode ?? (() => undefined),
-		composingComposer: overrides.composingComposer,
-		consume() {
-			overrides.onConsume?.();
+		compositionActive: overrides.compositionActive ?? false,
+		consume(candidate) {
+			overrides.onConsume?.(candidate);
 		},
 		invalidate() {
 			overrides.onInvalidate?.();
@@ -118,12 +125,14 @@ function dispatchBrowserEnter(state, snapshot, overrides = {}) {
 	let consumed = 0;
 	let downstream = 0;
 	let invalidated = 0;
+	let prompt;
 	let outcome;
 	target.addEventListener('keydown', candidate => {
 		outcome = routeAiComposerBrowserEnter(candidate, browserRouteOptions(state, snapshot, {
 			...overrides,
-			onConsume() {
+			onConsume(candidate) {
 				consumed += 1;
+				prompt = candidate.command.prompt;
 			},
 			onInvalidate() {
 				invalidated += 1;
@@ -140,6 +149,7 @@ function dispatchBrowserEnter(state, snapshot, overrides = {}) {
 		downstream,
 		invalidated,
 		outcome,
+		...(overrides.capturePrompt && prompt !== undefined ? {prompt} : {}),
 	};
 }
 
@@ -214,17 +224,170 @@ test('browser keydown routing leaves no-arm normal messages and IME or Shift Ent
 		assert.equal(result.outcome, 'ignored');
 	}
 
-	const compositionState = new AiComposerCommandState();
+	const compositionCommandState = new AiComposerCommandState();
 	const composingComposer = {draftText: '/ai composition guard'};
-	const composingSnapshot = compositionState.arm(
+	const composingSnapshot = compositionCommandState.arm(
 		composingComposer,
 		composingComposer.draftText,
 		'conversation-a',
 	);
-	const compositionResult = dispatchBrowserEnter(compositionState, composingSnapshot, {composingComposer});
+	const compositionResult = dispatchBrowserEnter(compositionCommandState, composingSnapshot, {compositionActive: true});
 	assert.equal(compositionResult.defaultPrevented, false);
 	assert.equal(compositionResult.downstream, 1);
 	assert.equal(compositionResult.outcome, 'ignored');
+});
+
+test('composition end clears a retargeted session and rearms a replacement composer', () => {
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composerA = {draftText: '/ai 測'};
+	const oldSnapshot = state.arm(composerA, composerA.draftText, 'conversation-a');
+	composition.start(composerA);
+
+	const commitEnter = dispatchBrowserEnter(state, oldSnapshot, {
+		compositionActive: composition.isActive(),
+		event: {isComposing: true},
+	});
+	assert.equal(commitEnter.defaultPrevented, false);
+	assert.equal(commitEnter.consumed, 0);
+	assert.equal(commitEnter.downstream, 1);
+
+	const composerB = {draftText: '/ai 測試'};
+	const composerBNode = new EventTarget();
+	const retargetedEnd = resolveAiComposerFromEventSignals({
+		activeElement: composerBNode,
+		armedComposer: composerA,
+		composedPath: [],
+		target: new EventTarget(),
+	}, node => node === composerBNode ? composerB : undefined, () => false);
+	assert.equal(retargetedEnd.composer, composerB);
+	assert.equal(composition.finish(), composerA);
+	assert.equal(composition.isActive(), false);
+
+	const replacementSnapshot = state.arm(composerB, composerB.draftText, 'conversation-a');
+	assert.equal(state.matches(oldSnapshot, snapshotState(oldSnapshot)), false);
+	assert.deepEqual(dispatchBrowserEnter(state, replacementSnapshot, {
+		capturePrompt: true,
+		composerFromNode: node => node === composerBNode ? composerB : undefined,
+		routePath: [composerBNode],
+	}), {
+		consumed: 1,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 0,
+		outcome: 'protected-consumed',
+		prompt: '測試',
+	});
+});
+
+test('keyCode 229 never consumes during composition but normal Enter works after finish', () => {
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composer = {draftText: '/ai 測試'};
+	const snapshot = state.arm(composer, composer.draftText, 'conversation-a');
+	composition.start(composer);
+
+	const commitEnter = dispatchBrowserEnter(state, snapshot, {
+		compositionActive: composition.isActive(),
+		event: {keyCode: 229},
+	});
+	assert.equal(commitEnter.defaultPrevented, false);
+	assert.equal(commitEnter.consumed, 0);
+	composition.finish();
+	assert.equal(dispatchBrowserEnter(state, snapshot).outcome, 'protected-consumed');
+});
+
+test('removed composition owner cannot leave a replacement composer guarded', () => {
+	const state = new AiComposerCommandState();
+	const composition = new AiComposerCompositionState();
+	const composerA = {draftText: '/ai old', isConnected: true};
+	composition.start(composerA);
+
+	composerA.isConnected = false;
+	const composingComposer = composition.current();
+	if (composingComposer && !composingComposer.isConnected) {
+		composition.finish();
+	}
+
+	const composerB = {draftText: '/ai replacement'};
+	const composerBNode = new EventTarget();
+	const snapshot = state.arm(composerB, composerB.draftText, 'conversation-a');
+	assert.equal(composition.isActive(), false);
+	assert.deepEqual(dispatchBrowserEnter(state, snapshot, {
+		capturePrompt: true,
+		composerFromNode: node => node === composerBNode ? composerB : undefined,
+		routePath: [composerBNode],
+	}), {
+		consumed: 1,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 0,
+		outcome: 'protected-consumed',
+		prompt: 'replacement',
+	});
+});
+
+test('paste-visible Enter freshly arms and consumes when no input snapshot exists yet', () => {
+	const state = new AiComposerCommandState();
+	const composer = {draftText: '/ai pasted question'};
+	const target = new EventTarget();
+
+	assert.deepEqual(dispatchBrowserEnter(state, undefined, {
+		capturePrompt: true,
+		composerFromNode: node => node === target ? composer : undefined,
+		target,
+	}), {
+		consumed: 1,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 0,
+		outcome: 'protected-consumed',
+		prompt: 'pasted question',
+	});
+	assert.equal(state.current().composer, composer);
+});
+
+test('paste-visible Enter without a stable conversation protects without consuming', () => {
+	const state = new AiComposerCommandState();
+	const composer = {draftText: '/ai no conversation'};
+	const target = new EventTarget();
+
+	assert.deepEqual(dispatchBrowserEnter(state, undefined, {
+		composerFromNode: node => node === target ? composer : undefined,
+		conversationId: undefined,
+		target,
+	}), {
+		consumed: 0,
+		defaultPrevented: true,
+		downstream: 0,
+		invalidated: 1,
+		outcome: 'protected-stale',
+	});
+	assert.equal(state.current(), undefined);
+});
+
+test('input routing arms through composedPath or activeElement when target is unhelpful', () => {
+	for (const resolutionSource of ['composedPath', 'activeElement']) {
+		const state = new AiComposerCommandState();
+		const composer = {draftText: '/ai input route'};
+		const composerNode = new EventTarget();
+		const target = new EventTarget();
+		const event = new RoutedEvent('input', resolutionSource === 'composedPath' ? [composerNode] : []);
+		let snapshot;
+		target.addEventListener('input', candidate => {
+			snapshot = armAiComposerFromBrowserEvent(candidate, {
+				activeElement: resolutionSource === 'activeElement' ? composerNode : undefined,
+				armedComposer: undefined,
+				armCurrent: current => state.arm(current, current.draftText, 'conversation-a'),
+				blocksArmedFallback: () => false,
+				composerFromNode: node => node === composerNode ? composer : undefined,
+			});
+		}, {capture: true});
+		target.dispatchEvent(event);
+
+		assert.equal(snapshot.composer, composer);
+		assert.equal(state.current(), snapshot);
+	}
 });
 
 test('browser keydown routing protects a stale arm without consuming it', () => {

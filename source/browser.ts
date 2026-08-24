@@ -14,6 +14,8 @@ import {
 import {
 	AiComposerCommandSnapshot,
 	AiComposerCommandState,
+	AiComposerCompositionState,
+	armAiComposerFromBrowserEvent,
 	consumeAiComposerCommand,
 	isAiComposerSendControlDescription,
 	isNormalAiComposerEnter,
@@ -49,8 +51,8 @@ let isAiAssistEnabled = false;
 let conversationObserver: MutationObserver | undefined;
 let conversationReportTimer: ReturnType<typeof setTimeout> | undefined;
 const aiComposerCommandState = new AiComposerCommandState<HTMLElement>();
+const aiComposerCompositionState = new AiComposerCompositionState<HTMLElement>();
 let composerCommandInFlight = false;
-let composingAiComposer: HTMLElement | undefined;
 let composerStatusHost: HTMLElement | undefined;
 let composerStatusText: HTMLElement | undefined;
 
@@ -108,13 +110,16 @@ function activeMessengerComposer(): HTMLElement | undefined {
 		return focused;
 	}
 
-	const armedComposer = aiComposerCommandState.current()?.composer;
-	if (armedComposer?.isConnected && armedComposer.matches(messengerComposerSelector)) {
-		return armedComposer;
+	const composers = [...document.querySelectorAll<HTMLElement>(messengerComposerSelector)];
+	const currentComposer = composers[composers.length - 1];
+	if (currentComposer) {
+		return currentComposer;
 	}
 
-	const composers = [...document.querySelectorAll<HTMLElement>(messengerComposerSelector)];
-	return composers[composers.length - 1];
+	const armedComposer = aiComposerCommandState.current()?.composer;
+	return armedComposer?.isConnected && armedComposer.matches(messengerComposerSelector)
+		? armedComposer
+		: undefined;
 }
 
 function removeComposerStatus(): void {
@@ -169,18 +174,28 @@ function snapshotState(snapshot: Readonly<AiComposerCommandSnapshot<HTMLElement>
 }
 
 function revalidateArmedComposer(): void {
+	const composingComposer = aiComposerCompositionState.current();
+	if (composingComposer && (!composingComposer.isConnected || !composingComposer.matches(messengerComposerSelector))) {
+		aiComposerCompositionState.finish();
+	}
+
 	const snapshot = aiComposerCommandState.current();
 	if (!snapshot) {
 		removeComposerStatus();
 		return;
 	}
 
-	if (!isAiAssistEnabled || !aiComposerCommandState.matches(snapshot, snapshotState(snapshot))) {
+	const state = snapshotState(snapshot);
+	if (!isAiAssistEnabled || !aiComposerCommandState.matches(snapshot, state)) {
+		if (state.conversationId && state.conversationId !== snapshot.conversationId) {
+			aiComposerCompositionState.finish();
+		}
+
 		invalidateComposerCommand();
 	}
 }
 
-function updateComposerStatus(candidate: HTMLElement): void {
+function armComposerCommand(candidate: HTMLElement): Readonly<AiComposerCommandSnapshot<HTMLElement>> | undefined {
 	if (!isAiAssistEnabled) {
 		invalidateComposerCommand();
 		return;
@@ -197,6 +212,11 @@ function updateComposerStatus(candidate: HTMLElement): void {
 	}
 
 	showComposerStatus(snapshot.command);
+	return snapshot;
+}
+
+function updateComposerStatus(candidate: HTMLElement): void {
+	armComposerCommand(candidate);
 }
 
 function setComposerText(composer: HTMLElement, value: string): void {
@@ -300,10 +320,14 @@ function handleAiComposerInput(event: Event): void {
 		return;
 	}
 
-	const composer = composerFromTarget(event.target ?? undefined);
-	if (composer) {
-		updateComposerStatus(composer);
-	}
+	const snapshot = aiComposerCommandState.current();
+	armAiComposerFromBrowserEvent(event, {
+		activeElement: document.activeElement ?? undefined,
+		armedComposer: snapshot?.composer,
+		armCurrent: armComposerCommand,
+		blocksArmedFallback: blocksArmedComposerFallback,
+		composerFromNode: composerFromTarget,
+	});
 }
 
 function handleAiComposerFocusIn(event: FocusEvent): void {
@@ -321,15 +345,39 @@ function handleAiComposerFocusIn(event: FocusEvent): void {
 function handleAiComposerCompositionStart(event: CompositionEvent): void {
 	if (event.isTrusted) {
 		const snapshot = aiComposerCommandState.current();
-		composingAiComposer = composerFromEvent(event, snapshot?.composer).composer;
+		const {composer} = composerFromEvent(event, snapshot?.composer);
+		aiComposerCompositionState.finish();
+		if (composer) {
+			aiComposerCompositionState.start(composer);
+		}
 	}
 }
 
 function handleAiComposerCompositionEnd(event: CompositionEvent): void {
-	const snapshot = aiComposerCommandState.current();
-	if (event.isTrusted && composerFromEvent(event, snapshot?.composer).composer === composingAiComposer) {
-		composingAiComposer = undefined;
+	if (!event.isTrusted) {
+		return;
 	}
+
+	const compositionComposer = aiComposerCompositionState.finish();
+	if (!compositionComposer) {
+		return;
+	}
+
+	const snapshot = aiComposerCommandState.current();
+	const resolvedComposer = composerFromEvent(event, snapshot?.composer).composer;
+	queueMicrotask(() => {
+		if (!isAiAssistEnabled) {
+			return;
+		}
+
+		const candidate = activeMessengerComposer()
+			?? (resolvedComposer?.isConnected ? resolvedComposer : undefined);
+		if (candidate) {
+			updateComposerStatus(candidate);
+		} else {
+			invalidateComposerCommand();
+		}
+	});
 }
 
 function handleAiComposerKeydown(event: KeyboardEvent): void {
@@ -340,10 +388,11 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 	const snapshot = aiComposerCommandState.current();
 	routeAiComposerBrowserEnter(event, {
 		activeElement: document.activeElement ?? undefined,
+		armCurrent: armComposerCommand,
 		blocksArmedFallback: blocksArmedComposerFallback,
 		commandFromComposer: composer => parseAiComposerCommand(composerText(composer)),
 		composerFromNode: composerFromTarget,
-		composingComposer: composingAiComposer,
+		compositionActive: aiComposerCompositionState.isActive(),
 		consume(candidate) {
 			void consumeComposerCommand(candidate);
 		},
@@ -362,10 +411,11 @@ function handleAiComposerClick(event: MouseEvent): void {
 	const snapshot = aiComposerCommandState.current();
 	routeAiComposerBrowserSend(event, {
 		activeElement: document.activeElement ?? undefined,
+		armCurrent: armComposerCommand,
 		blocksArmedFallback: blocksArmedComposerFallback,
 		commandFromComposer: composer => parseAiComposerCommand(composerText(composer)),
 		composerFromNode: composerFromTarget,
-		composingComposer: composingAiComposer,
+		compositionActive: aiComposerCompositionState.isActive(),
 		consume(candidate) {
 			void consumeComposerCommand(candidate);
 		},
@@ -460,7 +510,7 @@ function stopConversationObserver(): void {
 	window.removeEventListener('pointerdown', handleAiComposerClick, true);
 	invalidateComposerCommand();
 	composerCommandInFlight = false;
-	composingAiComposer = undefined;
+	aiComposerCompositionState.finish();
 	if (conversationReportTimer) {
 		clearTimeout(conversationReportTimer);
 		conversationReportTimer = undefined;
@@ -620,6 +670,7 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 });
 
 const notifyConversationRouteChanged = (): void => {
+	aiComposerCompositionState.finish();
 	invalidateComposerCommand();
 	scheduleConversationStateReport();
 };

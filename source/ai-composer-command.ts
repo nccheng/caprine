@@ -41,7 +41,7 @@ export type AiComposerEventRouteOutcome = 'ignored' | 'protected-consumed' | 'pr
 export type AiComposerEventRouteOptions<Composer> = {
 	blockedArmedFallback: boolean;
 	composer: Composer | undefined;
-	composingComposer: Composer | undefined;
+	compositionActive: boolean;
 	consume: (snapshot: Readonly<AiComposerCommandSnapshot<Composer>>) => void;
 	invalidate: () => void;
 	isCurrent: (snapshot: Readonly<AiComposerCommandSnapshot<Composer>>) => boolean;
@@ -58,6 +58,7 @@ AiComposerEventRouteOptions<Composer>,
 'blockedArmedFallback' | 'composer'
 > & {
 	activeElement: Node | undefined;
+	armCurrent: (composer: Composer) => Readonly<AiComposerCommandSnapshot<Composer>> | undefined;
 	blocksArmedFallback: (node: Node | undefined) => boolean;
 	commandFromComposer: (composer: Composer) => Readonly<AiComposerCommand> | undefined;
 	composerFromNode: (node: Node | undefined) => Composer | undefined;
@@ -66,6 +67,14 @@ AiComposerEventRouteOptions<Composer>,
 export type AiComposerBrowserSendRouteOptions<Node, Composer> = AiComposerBrowserRouteOptions<Node, Composer> & {
 	fallbackComposer: Composer | undefined;
 	isSendControl: (node: Node | undefined, composer: Composer) => boolean;
+};
+
+export type AiComposerBrowserArmOptions<Node, Composer> = {
+	activeElement: Node | undefined;
+	armedComposer: Composer | undefined;
+	armCurrent: (composer: Composer) => Readonly<AiComposerCommandSnapshot<Composer>> | undefined;
+	blocksArmedFallback: (node: Node | undefined) => boolean;
+	composerFromNode: (node: Node | undefined) => Composer | undefined;
 };
 
 export type AiComposerCommandSnapshot<Composer> = Readonly<{
@@ -157,6 +166,28 @@ export class AiComposerCommandState<Composer> {
 	}
 }
 
+export class AiComposerCompositionState<Composer> {
+	private activeComposer: Composer | undefined;
+
+	start(composer: Composer): void {
+		this.activeComposer = composer;
+	}
+
+	finish(): Composer | undefined {
+		const composer = this.activeComposer;
+		this.activeComposer = undefined;
+		return composer;
+	}
+
+	current(): Composer | undefined {
+		return this.activeComposer;
+	}
+
+	isActive(): boolean {
+		return this.activeComposer !== undefined;
+	}
+}
+
 export function resolveAiComposerFromEventSignals<Node, Composer>(
 	signals: Readonly<AiComposerEventSignals<Node, Composer>>,
 	composerFromNode: (node: Node | undefined) => Composer | undefined,
@@ -188,13 +219,13 @@ export function routeArmedAiComposerEnter<Composer>(
 	const {
 		blockedArmedFallback,
 		composer,
-		composingComposer,
+		compositionActive,
 		consume,
 		invalidate,
 		isCurrent,
 		snapshot,
 	} = options;
-	if (!isNormalAiComposerEnter(event) || !snapshot || composingComposer === snapshot.composer) {
+	if (!isNormalAiComposerEnter(event) || !snapshot || compositionActive) {
 		return 'ignored';
 	}
 
@@ -217,13 +248,13 @@ export function routeArmedAiComposerSend<Composer>(
 	const {
 		blockedArmedFallback,
 		composer,
-		composingComposer,
+		compositionActive,
 		consume,
 		invalidate,
 		isCurrent,
 		snapshot,
 	} = options;
-	if (!isSendControl || !snapshot || composingComposer === snapshot.composer) {
+	if (!isSendControl || !snapshot || compositionActive) {
 		return 'ignored';
 	}
 
@@ -257,6 +288,21 @@ export function isAiComposerSendControlEvent<Node>(
 	return [target, ...composedPath].some(candidate => isSendControl(candidate));
 }
 
+export function armAiComposerFromBrowserEvent<Node, Composer>(
+	event: AiComposerBrowserEvent<Node>,
+	options: Readonly<AiComposerBrowserArmOptions<Node, Composer>>,
+): Readonly<AiComposerCommandSnapshot<Composer>> | undefined {
+	const resolution = resolveAiComposerFromEventSignals({
+		activeElement: options.activeElement,
+		armedComposer: options.armedComposer,
+		composedPath: event.composedPath(),
+		target: event.target ?? undefined,
+	}, options.composerFromNode, options.blocksArmedFallback);
+	return resolution.composer === undefined
+		? undefined
+		: options.armCurrent(resolution.composer);
+}
+
 export function routeAiComposerBrowserEnter<Node, Composer>(
 	event: Readonly<AiComposerEnterEvent> & AiComposerBrowserEvent<Node>,
 	options: Readonly<AiComposerBrowserRouteOptions<Node, Composer>>,
@@ -276,20 +322,29 @@ export function routeAiComposerBrowserEnter<Node, Composer>(
 		return outcome;
 	}
 
-	if (options.snapshot && options.composingComposer === options.snapshot.composer) {
+	if (options.compositionActive) {
 		return 'ignored';
 	}
 
-	const command = resolution.composer === undefined
-		? undefined
-		: options.commandFromComposer(resolution.composer);
+	if (resolution.composer === undefined) {
+		return 'ignored';
+	}
+
+	const command = options.commandFromComposer(resolution.composer);
 	if (!shouldInterceptAiComposerEnter(event, command)) {
 		return 'ignored';
 	}
 
 	event.preventDefault();
 	event.stopImmediatePropagation();
-	return 'protected-stale';
+	const snapshot = options.armCurrent(resolution.composer);
+	if (!snapshot || !options.isCurrent(snapshot)) {
+		options.invalidate();
+		return 'protected-stale';
+	}
+
+	options.consume(snapshot);
+	return 'protected-consumed';
 }
 
 export function routeAiComposerBrowserSend<Node, Composer>(
@@ -320,7 +375,7 @@ export function routeAiComposerBrowserSend<Node, Composer>(
 		return outcome;
 	}
 
-	if (options.snapshot && options.composingComposer === options.snapshot.composer) {
+	if (options.compositionActive) {
 		return 'ignored';
 	}
 
@@ -331,7 +386,14 @@ export function routeAiComposerBrowserSend<Node, Composer>(
 
 	event.preventDefault();
 	event.stopImmediatePropagation();
-	return 'protected-stale';
+	const snapshot = options.armCurrent(composer);
+	if (!snapshot || !options.isCurrent(snapshot)) {
+		options.invalidate();
+		return 'protected-stale';
+	}
+
+	options.consume(snapshot);
+	return 'protected-consumed';
 }
 
 export function shouldInterceptAiComposerEnter(
