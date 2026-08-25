@@ -307,6 +307,35 @@ test('replacement cancellation and conversation invalidation discard pixels fail
 		await wrongConversationStore.capture('fixture-incoming-2', snapshot, new AbortController().signal),
 		{reason: 'conversation-changed', status: 'unavailable'},
 	);
+
+	const wrongInitialMessagePage = nativePage();
+	const wrongInitialMessageStore = new MessengerImageCaptureStore(
+		async () => availableTarget({messageId: 'other-message'}),
+		wrongInitialMessagePage.page,
+		() => true,
+	);
+	assert.deepEqual(
+		await wrongInitialMessageStore.capture('fixture-incoming-2', snapshot, new AbortController().signal),
+		{reason: 'replaced-target', status: 'unavailable'},
+	);
+	assert.deepEqual(wrongInitialMessagePage.rectangles, []);
+
+	const wrongCurrentMessageReleased = [];
+	let messageResolutionCount = 0;
+	const wrongCurrentMessageStore = new MessengerImageCaptureStore(
+		async () => availableTarget({
+			messageId: ++messageResolutionCount === 1 ? 'fixture-incoming-2' : 'other-message',
+		}),
+		nativePage().page,
+		() => true,
+		bytes => wrongCurrentMessageReleased.push([...bytes]),
+	);
+	assert.deepEqual(
+		await wrongCurrentMessageStore.capture('fixture-incoming-2', snapshot, new AbortController().signal),
+		{reason: 'replaced-target', status: 'unavailable'},
+	);
+	assert.equal(wrongCurrentMessageReleased.length, 1);
+	assert.equal(wrongCurrentMessageReleased[0].every(byte => byte === 0), true);
 });
 
 test('target resolver exceptions become typed failures and never leak captured bytes', async () => {

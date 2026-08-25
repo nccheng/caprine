@@ -384,6 +384,10 @@ export class MessengerImageCaptureStore {
 			return {reason: 'conversation-changed', status: 'unavailable'};
 		}
 
+		if (initialTarget.messageId !== messageId) {
+			return {reason: 'replaced-target', status: 'unavailable'};
+		}
+
 		const resolvedAuthorizationFailure = captureAuthorizationFailure(
 			signal,
 			snapshot,
@@ -440,7 +444,8 @@ export class MessengerImageCaptureStore {
 		}
 
 		if (
-			currentTarget.targetToken !== initialTarget.targetToken
+			currentTarget.messageId !== messageId
+			|| currentTarget.targetToken !== initialTarget.targetToken
 			|| !sameRectangle(currentTarget.rectangle, initialTarget.rectangle)
 		) {
 			return rejectPixels('replaced-target');
