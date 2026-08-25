@@ -28,6 +28,10 @@ const askButton = document.querySelector('#ask-button');
 const cancelButton = document.querySelector('#cancel-button');
 const requestMessage = document.querySelector('#request-message');
 const answerOutput = document.querySelector('#answer-output');
+const answerSearchStatus = document.querySelector('#answer-search-status');
+const answerSources = document.querySelector('#answer-sources');
+const answerSourcesSummary = document.querySelector('#answer-sources-summary');
+const answerSourceList = document.querySelector('#answer-source-list');
 const insertAnswerButton = document.querySelector('#insert-answer-button');
 const historySearchForm = document.querySelector('#history-search-form');
 const historySearchInput = document.querySelector('#history-search');
@@ -51,10 +55,83 @@ function shouldClearPrompt(state) {
 		);
 }
 
-function answerForState(state) {
-	return state.conversation.status === 'ready'
-		? (state.request.answer?.text ?? 'No answer yet.')
-		: 'No answer yet.';
+function sourceLabel(source) {
+	if (source.title?.trim()) {
+		return source.title.trim();
+	}
+
+	return new URL(source.url).hostname;
+}
+
+function renderAnswer(state) {
+	answerOutput.textContent = '';
+	answerSourceList.textContent = '';
+	answerSources.hidden = true;
+	if (state.conversation.status !== 'ready' || !state.request.answer) {
+		answerOutput.textContent = 'No answer yet.';
+		answerSearchStatus.textContent = 'No answer yet.';
+		return;
+	}
+
+	const view = window.caprineCitationViewModel.build(state.request.answer);
+	if (view.status === 'malformed') {
+		answerOutput.textContent = view.text || 'No answer yet.';
+		answerSearchStatus.textContent = 'Search evidence could not be displayed safely.';
+		return;
+	}
+
+	answerSearchStatus.textContent = view.status === 'searched'
+		? 'Web search was used for this answer.'
+		: 'Web search was not used for this answer.';
+	let cursor = 0;
+	for (const marker of view.markers) {
+		if (marker.endIndex > cursor) {
+			const text = document.createElement('span');
+			text.textContent = view.text.slice(cursor, marker.endIndex);
+			answerOutput.append(text);
+			cursor = marker.endIndex;
+		}
+
+		const reference = document.createElement('sup');
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'citation-marker';
+		button.textContent = `[${marker.sourceNumber}]`;
+		button.setAttribute('aria-label', `Open source ${marker.sourceNumber} for cited text: ${marker.evidence}`);
+		button.addEventListener('click', async () => {
+			await window.caprineAiAssist.openCitation(marker.url);
+		});
+		reference.append(button);
+		answerOutput.append(reference);
+	}
+
+	if (cursor < view.text.length) {
+		const text = document.createElement('span');
+		text.textContent = view.text.slice(cursor);
+		answerOutput.append(text);
+	}
+
+	if (view.sources.length === 0) {
+		return;
+	}
+
+	answerSources.hidden = false;
+	answerSourcesSummary.textContent = view.sourceCount > view.sources.length
+		? `Showing ${view.sources.length} of ${view.sourceCount} sources cited in this answer.`
+		: `${view.sourceCount} ${view.sourceCount === 1 ? 'source' : 'sources'} cited in this answer.`;
+	for (const source of view.sources) {
+		const item = document.createElement('li');
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'citation-source';
+		button.textContent = sourceLabel(source);
+		button.setAttribute('aria-label', `Open cited source ${source.number}: ${sourceLabel(source)}`);
+		button.addEventListener('click', async () => {
+			await window.caprineAiAssist.openCitation(source.url);
+		});
+		item.append(button);
+		answerSourceList.append(item);
+	}
 }
 
 function mediaStatusForState(state) {
@@ -478,7 +555,7 @@ function render(state) {
 	cancelButton.disabled = !isRequesting && !isMediaResolving && !isContextCapturing;
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));
-	answerOutput.textContent = answerForState(state);
+	renderAnswer(state);
 	renderedInsertion = state.request.insertion;
 	insertAnswerButton.disabled = !renderedInsertion || !state.request.answer || !isConversationReady;
 }

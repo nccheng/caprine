@@ -8,6 +8,7 @@ import {
 	IpcMainInvokeEvent,
 	ipcMain,
 	safeStorage,
+	shell,
 } from 'electron';
 import config from './config';
 import {
@@ -39,6 +40,7 @@ import {
 	MessageAnchorSnapshot,
 } from './ai-assist-state';
 import {isTrustedMessengerOrigin} from './ipc-validation';
+import {openCitationExternal} from './citation-navigation';
 import {MediaKind} from './media-contract';
 import {
 	MediaDiagnostic,
@@ -383,6 +385,11 @@ class AiAssistController {
 
 			case 'new-history-chat': {
 				this.createHistoryChat();
+				break;
+			}
+
+			case 'open-citation': {
+				await openCitationExternal(value.url, async url => shell.openExternal(url));
 				break;
 			}
 
