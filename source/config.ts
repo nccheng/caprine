@@ -1,11 +1,13 @@
 import Store from 'electron-store';
 import {is} from 'electron-util';
 import {EmojiStyle} from './emoji';
+import {WebSearchMode} from './openai-client';
 
 export type StoreType = {
 	aiAssistEnabled: boolean;
 	aiAssistContextWindowSize: 10 | 20 | 50;
 	aiAssistOpenAiKeyCiphertext: string;
+	aiAssistWebSearchMode: WebSearchMode;
 	theme: 'system' | 'light' | 'dark';
 	privateMode: boolean;
 	showPrivateModePrompt: boolean;
@@ -63,6 +65,11 @@ const schema: Store.Schema<StoreType> = {
 	aiAssistOpenAiKeyCiphertext: {
 		type: 'string',
 		default: '',
+	},
+	aiAssistWebSearchMode: {
+		type: 'string',
+		enum: ['always', 'auto', 'off'],
+		default: 'always',
 	},
 	theme: {
 		type: 'string',

@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 	resolveMedia: async (messageId: string, kind: 'audio' | 'video') => sendCommand({type: 'resolve-media', kind, messageId}),
 	saveApiKey: async (apiKey: string) => sendCommand({type: 'save-api-key', apiKey}),
 	setContextWindow: async (requestedCount: 10 | 20 | 50) => sendCommand({requestedCount, type: 'set-context-window'}),
+	setWebSearchMode: async (mode: 'always' | 'auto' | 'off') => sendCommand({mode, type: 'set-web-search-mode'}),
 	submitPrompt: async (prompt: string) => sendCommand({type: 'submit-prompt', prompt}),
 	testApiKey: async () => sendCommand({type: 'test-api-key'}),
 	onStateChanged(callback: (state: AiAssistPanelState) => void) {
