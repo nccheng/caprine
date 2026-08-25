@@ -50,6 +50,17 @@ export type AiHistoryChat = {
 	interactions: AiHistoryInteraction[];
 };
 
+export type AiHistoryChatSummary = {
+	badges: Array<'Audio' | 'Image' | 'Video' | 'Web'>;
+	contextCount: number;
+	createdAt: number;
+	id: string;
+	interactionCount: number;
+	lastActivityAt: number;
+	preview: string;
+	title: string;
+};
+
 type AiHistoryStoreOptions = {
 	databasePath: string;
 	failAt?: (stage: 'after-interaction' | 'after-question-turn') => void;
@@ -82,6 +93,20 @@ type InteractionRow = {
 	web_search_sources_json: string;
 };
 
+type SummaryRow = {
+	context_count: number;
+	created_at: number;
+	has_audio: 0 | 1;
+	has_image: 0 | 1;
+	has_video: 0 | 1;
+	has_web: 0 | 1;
+	id: string;
+	interaction_count: number;
+	last_activity_at: number;
+	preview: string;
+	title: string;
+};
+
 function parseJson<T>(value: string): T {
 	return JSON.parse(value) as T;
 }
@@ -96,6 +121,29 @@ function requireText(value: string, name: string, maximumLength = 20_000): strin
 
 function requireIdentifier(value: string, name: string): string {
 	return requireText(value, name, 512);
+}
+
+function interactionFromRow(row: InteractionRow): AiHistoryInteraction {
+	return {
+		answer: row.answer,
+		artifactReferences: parseJson<AiHistoryArtifactReference[]>(row.artifact_references_json),
+		browsingMode: row.browsing_mode,
+		completedAt: row.completed_at,
+		context: parseJson<AiHistoryReviewedContext>(row.context_json),
+		draftStatus: row.draft_status,
+		id: row.id,
+		model: row.model,
+		outcome: row.outcome,
+		provider: row.provider,
+		question: row.question,
+		requestedAt: row.requested_at,
+		shareStatus: row.share_status,
+		webSearch: {
+			citations: parseJson<OpenAiUrlCitation[]>(row.web_search_citations_json),
+			ran: row.web_search_ran === 1,
+			sources: parseJson<OpenAiWebSource[]>(row.web_search_sources_json),
+		},
+	};
 }
 
 export class AiHistoryStore {
@@ -185,27 +233,144 @@ export class AiHistoryStore {
 			conversationId: chat.conversation_id,
 			createdAt: chat.created_at,
 			id: chat.id,
-			interactions: (loadInteractions.all(chat.id) as InteractionRow[]).map(row => ({
-				answer: row.answer,
-				artifactReferences: parseJson<AiHistoryArtifactReference[]>(row.artifact_references_json),
-				browsingMode: row.browsing_mode,
-				completedAt: row.completed_at,
-				context: parseJson<AiHistoryReviewedContext>(row.context_json),
-				draftStatus: row.draft_status,
-				id: row.id,
-				model: row.model,
-				outcome: row.outcome,
-				provider: row.provider,
-				question: row.question,
-				requestedAt: row.requested_at,
-				shareStatus: row.share_status,
-				webSearch: {
-					citations: parseJson<OpenAiUrlCitation[]>(row.web_search_citations_json),
-					ran: row.web_search_ran === 1,
-					sources: parseJson<OpenAiWebSource[]>(row.web_search_sources_json),
-				},
-			})),
+			interactions: (loadInteractions.all(chat.id) as InteractionRow[]).map(row => interactionFromRow(row)),
 		}));
+	}
+
+	loadConversationSummaries(conversationId: string, query = ''): AiHistoryChatSummary[] {
+		requireIdentifier(conversationId, 'conversationId');
+		if (query.length > 200) {
+			throw new TypeError('query must contain at most 200 characters');
+		}
+
+		const normalizedQuery = query.trim().toLocaleLowerCase();
+		const pattern = `%${normalizedQuery.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+		const rows = this.database.prepare(`
+			SELECT
+				c.id,
+				c.created_at,
+				COALESCE(MAX(i.completed_at), c.created_at) AS last_activity_at,
+				COALESCE((
+					SELECT t.content
+					FROM ai_history_interactions first_i
+					JOIN ai_history_turns t ON t.interaction_id = first_i.id AND t.role = 'user'
+					WHERE first_i.chat_id = c.id
+					ORDER BY first_i.requested_at, first_i.id
+					LIMIT 1
+				), 'New AI chat') AS title,
+				COALESCE((
+					SELECT t.content
+					FROM ai_history_interactions last_i
+					JOIN ai_history_turns t ON t.interaction_id = last_i.id AND t.role = 'assistant'
+					WHERE last_i.chat_id = c.id
+					ORDER BY last_i.completed_at DESC, last_i.id DESC
+					LIMIT 1
+				), 'No answers yet.') AS preview,
+				COALESCE(SUM(json_array_length(json_extract(i.context_json, '$.items'))), 0) AS context_count,
+				COUNT(i.id) AS interaction_count,
+				COALESCE(MAX(i.web_search_ran), 0) AS has_web,
+				COALESCE(MAX(i.context_json LIKE '%"kind":"image"%'), 0) AS has_image,
+				COALESCE(MAX(i.context_json LIKE '%"kind":"audio"%'), 0) AS has_audio,
+				COALESCE(MAX(i.context_json LIKE '%"kind":"video"%'), 0) AS has_video
+			FROM ai_history_chats c
+			LEFT JOIN ai_history_interactions i ON i.chat_id = c.id
+			WHERE c.conversation_id = ?
+				AND (? = '' OR EXISTS (
+					SELECT 1
+					FROM ai_history_interactions search_i
+					JOIN ai_history_turns search_t ON search_t.interaction_id = search_i.id
+					WHERE search_i.chat_id = c.id
+						AND (
+							LOWER(search_t.content) LIKE ? ESCAPE '\\'
+							OR LOWER(search_i.context_json) LIKE ? ESCAPE '\\'
+							OR LOWER(search_i.web_search_citations_json) LIKE ? ESCAPE '\\'
+							OR LOWER(search_i.web_search_sources_json) LIKE ? ESCAPE '\\'
+						)
+				))
+			GROUP BY c.id
+			ORDER BY last_activity_at DESC, c.created_at DESC, c.id DESC
+			LIMIT 100
+		`).all(conversationId, normalizedQuery, pattern, pattern, pattern, pattern) as SummaryRow[];
+
+		return rows.map(row => ({
+			badges: [
+				...(row.has_web ? ['Web' as const] : []),
+				...(row.has_image ? ['Image' as const] : []),
+				...(row.has_audio ? ['Audio' as const] : []),
+				...(row.has_video ? ['Video' as const] : []),
+			],
+			contextCount: row.context_count,
+			createdAt: row.created_at,
+			id: row.id,
+			interactionCount: row.interaction_count,
+			lastActivityAt: row.last_activity_at,
+			preview: row.preview,
+			title: row.title,
+		}));
+	}
+
+	loadChat(conversationId: string, chatId: string, maximumInteractions = 25): AiHistoryChat | undefined {
+		requireIdentifier(conversationId, 'conversationId');
+		requireIdentifier(chatId, 'chatId');
+		if (!Number.isSafeInteger(maximumInteractions) || maximumInteractions < 1 || maximumInteractions > 100) {
+			throw new TypeError('maximumInteractions must be between 1 and 100');
+		}
+
+		const chat = this.database.prepare(`
+			SELECT id, conversation_id, created_at
+			FROM ai_history_chats
+			WHERE conversation_id = ? AND id = ?
+		`).get(conversationId, chatId) as ChatRow | undefined;
+		if (!chat) {
+			return;
+		}
+
+		const rows = this.database.prepare(`
+			SELECT * FROM (
+				SELECT
+					i.id, i.requested_at, i.completed_at, i.context_json, i.provider, i.model,
+					i.browsing_mode, i.web_search_ran, i.web_search_citations_json,
+					i.web_search_sources_json, i.draft_status, i.share_status,
+					i.artifact_references_json, i.outcome,
+					MAX(CASE WHEN t.role = 'user' THEN t.content END) AS question,
+					MAX(CASE WHEN t.role = 'assistant' THEN t.content END) AS answer
+				FROM ai_history_interactions i
+				JOIN ai_history_turns t ON t.interaction_id = i.id
+				WHERE i.chat_id = ?
+				GROUP BY i.id
+				ORDER BY i.requested_at DESC, i.id DESC
+				LIMIT ?
+			) recent
+			ORDER BY requested_at, id
+		`).all(chatId, maximumInteractions) as InteractionRow[];
+
+		return {
+			conversationId: chat.conversation_id,
+			createdAt: chat.created_at,
+			id: chat.id,
+			interactions: rows.map(row => interactionFromRow(row)),
+		};
+	}
+
+	searchConversation(conversationId: string, query: string): AiHistoryChat[] {
+		requireIdentifier(conversationId, 'conversationId');
+		const normalizedQuery = requireText(query.trim(), 'query', 200).toLocaleLowerCase();
+		const pattern = `%${normalizedQuery.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+		const matchingChatIds = new Set((this.database.prepare(`
+			SELECT DISTINCT i.chat_id
+			FROM ai_history_interactions i
+			JOIN ai_history_chats c ON c.id = i.chat_id
+			JOIN ai_history_turns t ON t.interaction_id = i.id
+			WHERE c.conversation_id = ?
+				AND (
+					LOWER(t.content) LIKE ? ESCAPE '\\'
+					OR LOWER(i.context_json) LIKE ? ESCAPE '\\'
+					OR LOWER(i.web_search_citations_json) LIKE ? ESCAPE '\\'
+					OR LOWER(i.web_search_sources_json) LIKE ? ESCAPE '\\'
+				)
+		`).all(conversationId, pattern, pattern, pattern, pattern) as Array<{chat_id: string}>).map(row => row.chat_id));
+
+		return this.loadConversation(conversationId).filter(chat => matchingChatIds.has(chat.id));
 	}
 
 	deleteChat(conversationId: string, chatId: string): boolean {

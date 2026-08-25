@@ -29,6 +29,13 @@ const cancelButton = document.querySelector('#cancel-button');
 const requestMessage = document.querySelector('#request-message');
 const answerOutput = document.querySelector('#answer-output');
 const insertAnswerButton = document.querySelector('#insert-answer-button');
+const historySearchForm = document.querySelector('#history-search-form');
+const historySearchInput = document.querySelector('#history-search');
+const historySearchButton = document.querySelector('#history-search-button');
+const newHistoryChatButton = document.querySelector('#new-history-chat-button');
+const historyStatus = document.querySelector('#history-status');
+const historyList = document.querySelector('#history-list');
+const historyDetail = document.querySelector('#history-detail');
 const closeButton = document.querySelector('#close-button');
 let renderedCaptureGeneration;
 let renderedInvocationSequence;
@@ -268,12 +275,150 @@ function renderContextReview(review, isRequesting) {
 	}
 }
 
+function historyTime(timestamp) {
+	return new Date(timestamp).toLocaleString([], {dateStyle: 'medium', timeStyle: 'short'});
+}
+
+function appendHistoryDetail(chat) {
+	historyDetail.textContent = '';
+	if (!chat) {
+		historyDetail.textContent = 'Select a chat to inspect its frozen local history.';
+		return;
+	}
+
+	const heading = document.createElement('h3');
+	heading.textContent = chat.title;
+	historyDetail.append(heading);
+	if (chat.interactions.length < chat.interactionCount) {
+		const boundedNotice = document.createElement('p');
+		boundedNotice.textContent = `Showing the ${chat.interactions.length} most recent of ${chat.interactionCount} interactions to keep the local panel responsive.`;
+		historyDetail.append(boundedNotice);
+	}
+
+	if (chat.interactions.length === 0) {
+		const empty = document.createElement('p');
+		empty.textContent = 'This new AI chat has no questions yet.';
+		historyDetail.append(empty);
+		return;
+	}
+
+	for (const interaction of chat.interactions) {
+		const article = document.createElement('article');
+		article.className = 'history-turn';
+		const questionHeading = document.createElement('h4');
+		questionHeading.textContent = 'You asked';
+		const question = document.createElement('pre');
+		question.tabIndex = 0;
+		question.textContent = interaction.question;
+		const answerHeading = document.createElement('h4');
+		answerHeading.textContent = 'AI answer';
+		const answer = document.createElement('pre');
+		answer.tabIndex = 0;
+		answer.textContent = interaction.answer;
+		const metadata = document.createElement('p');
+		metadata.textContent = `${historyTime(interaction.completedAt)} · ${interaction.model} · Web ${interaction.browsingMode}${interaction.webSearchRan ? ' (used)' : ''} · ${interaction.draftStatus === 'inserted' ? 'Inserted into draft' : 'Not inserted'} · ${interaction.shareStatus}`;
+		article.append(questionHeading, question, answerHeading, answer, metadata);
+
+		if (interaction.citations.length > 0) {
+			const citationsHeading = document.createElement('h4');
+			citationsHeading.textContent = 'Sources';
+			const citations = document.createElement('ul');
+			for (const citation of interaction.citations) {
+				const item = document.createElement('li');
+				item.textContent = `${citation.title} — ${citation.url}`;
+				citations.append(item);
+			}
+
+			article.append(citationsHeading, citations);
+		}
+
+		const context = document.createElement('details');
+		const contextSummary = document.createElement('summary');
+		contextSummary.textContent = `Context used (${interaction.context.length})`;
+		context.append(contextSummary);
+		for (const contextItem of interaction.context) {
+			const item = document.createElement('article');
+			item.className = 'history-context-item';
+			const itemMetadata = document.createElement('p');
+			itemMetadata.textContent = contextItem.metadata;
+			const excerpt = document.createElement('pre');
+			excerpt.tabIndex = 0;
+			excerpt.textContent = contextItem.excerpt;
+			item.append(itemMetadata, excerpt);
+			context.append(item);
+		}
+
+		article.append(context);
+		if (interaction.artifacts.length > 0) {
+			const artifacts = document.createElement('p');
+			artifacts.textContent = `Saved artifact references: ${interaction.artifacts.map(artifact => `${artifact.kind} ${artifact.id}`).join(', ')}`;
+			article.append(artifacts);
+		}
+
+		historyDetail.append(article);
+	}
+}
+
+function renderHistory(history, isConversationReady) {
+	const ready = history?.status === 'ready' && isConversationReady;
+	historySearchInput.disabled = !ready;
+	historySearchButton.disabled = !ready;
+	newHistoryChatButton.disabled = !ready;
+	historyList.textContent = '';
+	if (!ready) {
+		historySearchInput.value = '';
+		historyStatus.textContent = history?.status === 'unavailable'
+			? 'Local AI history is unavailable. Your current Messenger conversation is not being queried.'
+			: 'Open a reliable Messenger conversation to view its local AI history.';
+		appendHistoryDetail();
+		return;
+	}
+
+	if (historySearchInput.value !== history.query) {
+		historySearchInput.value = history.query;
+	}
+
+	historyStatus.textContent = history.chats.length === 0
+		? (history.query ? 'No local history matches this search.' : 'No local AI chats for this conversation yet.')
+		: `${history.chats.length} local AI ${history.chats.length === 1 ? 'chat' : 'chats'}${history.query ? ' matched' : ''}.`;
+	let currentDate = '';
+	for (const chat of history.chats) {
+		const date = new Date(chat.lastActivityAt).toLocaleDateString([], {dateStyle: 'medium'});
+		if (date !== currentDate) {
+			const dateHeading = document.createElement('h3');
+			dateHeading.className = 'history-date';
+			dateHeading.textContent = date;
+			historyList.append(dateHeading);
+			currentDate = date;
+		}
+
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'history-chat';
+		button.setAttribute('aria-current', chat.id === history.selectedChatId ? 'true' : 'false');
+		const title = document.createElement('strong');
+		title.textContent = chat.title;
+		const preview = document.createElement('span');
+		preview.textContent = chat.preview;
+		const metadata = document.createElement('small');
+		metadata.textContent = `${historyTime(chat.lastActivityAt)} · ${chat.contextCount} context items${chat.badges.length > 0 ? ` · ${chat.badges.join(', ')}` : ''}`;
+		button.append(title, preview, metadata);
+		button.addEventListener('click', async () => {
+			render(await window.caprineAiAssist.selectHistoryChat(chat.id));
+		});
+		historyList.append(button);
+	}
+
+	appendHistoryDetail(history.chats.find(chat => chat.id === history.selectedChatId));
+}
+
 function render(state) {
 	const isRequesting = state.session.status === 'requesting';
 	const isReviewLocked = Boolean(state.review?.locked);
 	const isConversationReady = state.conversation.status === 'ready';
 	const isMediaResolving = state.media.resolution?.status === 'resolving';
 	const isContextCapturing = state.contextCapturePending;
+	renderHistory(state.history, isConversationReady);
 	if (shouldClearPrompt(state)) {
 		promptInput.value = '';
 		promptCaptureGeneration = undefined;
@@ -404,6 +549,15 @@ insertAnswerButton.addEventListener('click', async () => {
 		insertion.authorizationToken,
 		insertion.conversationId,
 	));
+});
+
+historySearchForm.addEventListener('submit', async event => {
+	event.preventDefault();
+	render(await window.caprineAiAssist.searchHistory(historySearchInput.value));
+});
+
+newHistoryChatButton.addEventListener('click', async () => {
+	render(await window.caprineAiAssist.newHistoryChat());
 });
 
 closeButton.addEventListener('click', async () => {

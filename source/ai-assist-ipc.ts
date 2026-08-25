@@ -40,6 +40,7 @@ import {
 	mediaSourceTypes,
 	MediaSourceType,
 } from './media-contract';
+import {AiHistoryChatView, maximumHistoryChats, maximumHistoryInteractionsPerChat} from './ai-history-workspace';
 
 export const aiAssistIpcChannels = {
 	composerCommand: 'ai-assist:composer-command',
@@ -69,6 +70,12 @@ export type AiAssistPanelState = {
 		secureStorageAvailable: boolean;
 	};
 	enabled: boolean;
+	history: {
+		chats: AiHistoryChatView[];
+		query: string;
+		selectedChatId?: string;
+		status: 'inactive' | 'ready' | 'unavailable';
+	};
 	invocation?: {
 		prompt: string;
 		sequence: number;
@@ -117,12 +124,15 @@ export type AiAssistPanelCommand =
 	| {type: 'delete-api-key'}
 	| {editedExcerpt: string; itemId: string; reviewSequence: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
+	| {type: 'new-history-chat'}
 	| {answerGeneration: number; authorizationToken: string; conversationId: string; type: 'insert-answer'}
 	| {itemId: string; reviewSequence: number; type: 'remove-context-item'}
 	| {type: 'refresh-context'}
 	| {type: 'refresh-conversation'}
 	| {type: 'resolve-media'; kind: MediaKind; messageId: string}
 	| {type: 'save-api-key'; apiKey: string}
+	| {chatId: string; type: 'select-history-chat'}
+	| {query: string; type: 'search-history'}
 	| {requestedCount: ContextWindowSize; type: 'set-context-window'}
 	| {mode: WebSearchMode; type: 'set-web-search-mode'}
 	| {type: 'submit-prompt'; prompt: string}
@@ -472,8 +482,18 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 		return false;
 	}
 
-	if (['cancel', 'close', 'delete-api-key', 'get-state', 'refresh-context', 'refresh-conversation', 'test-api-key'].includes(value.type)) {
+	if (['cancel', 'close', 'delete-api-key', 'get-state', 'new-history-chat', 'refresh-context', 'refresh-conversation', 'test-api-key'].includes(value.type)) {
 		return hasExactKeys(value, ['type']);
+	}
+
+	if (value.type === 'select-history-chat') {
+		return hasExactKeys(value, ['chatId', 'type']) && isBoundedString(value.chatId, 512);
+	}
+
+	if (value.type === 'search-history') {
+		return hasExactKeys(value, ['query', 'type'])
+			&& typeof value.query === 'string'
+			&& value.query.length <= 200;
 	}
 
 	if (value.type === 'save-api-key') {
@@ -733,12 +753,99 @@ function isSessionState(value: unknown): boolean {
 		);
 }
 
+function isHistoryInteraction(value: unknown): boolean {
+	return isRecord(value)
+		&& hasExactKeys(value, [
+			'answer',
+			'artifacts',
+			'browsingMode',
+			'citations',
+			'completedAt',
+			'context',
+			'draftStatus',
+			'id',
+			'model',
+			'question',
+			'shareStatus',
+			'webSearchRan',
+		])
+		&& typeof value.answer === 'string'
+		&& value.answer.length <= 20_000
+		&& Array.isArray(value.artifacts)
+		&& value.artifacts.length <= 100
+		&& value.artifacts.every(artifact => isRecord(artifact)
+			&& hasExactKeys(artifact, ['id', 'kind'])
+			&& isBoundedString(artifact.id, 512)
+			&& ['keyframe', 'timeline', 'transcript'].includes(artifact.kind as string))
+		&& webSearchModes.includes(value.browsingMode as never)
+		&& Array.isArray(value.citations)
+		&& value.citations.length <= 100
+		&& value.citations.every(citation => isRecord(citation)
+			&& hasExactKeys(citation, ['title', 'url'])
+			&& typeof citation.title === 'string'
+			&& citation.title.length <= 500
+			&& typeof citation.url === 'string'
+			&& citation.url.length <= 2048)
+		&& Number.isSafeInteger(value.completedAt)
+		&& Array.isArray(value.context)
+		&& value.context.length <= 50
+		&& value.context.every(item => isRecord(item)
+			&& hasExactKeys(item, ['excerpt', 'id', 'metadata'])
+			&& typeof item.excerpt === 'string'
+			&& item.excerpt.length <= 20_000
+			&& isBoundedString(item.id, 512)
+			&& typeof item.metadata === 'string'
+			&& item.metadata.length <= 500)
+		&& ['inserted', 'not-inserted'].includes(value.draftStatus as string)
+		&& isBoundedString(value.id, 512)
+		&& isBoundedString(value.model, 200)
+		&& typeof value.question === 'string'
+		&& value.question.length <= 20_000
+		&& ['private', 'shared'].includes(value.shareStatus as string)
+		&& typeof value.webSearchRan === 'boolean';
+}
+
+function isHistoryState(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['chats', 'query', 'status'];
+	if (value.selectedChatId !== undefined) {
+		keys.push('selectedChatId');
+	}
+
+	return hasExactKeys(value, keys)
+		&& ['inactive', 'ready', 'unavailable'].includes(value.status as string)
+		&& typeof value.query === 'string'
+		&& value.query.length <= 200
+		&& (value.selectedChatId === undefined || isBoundedString(value.selectedChatId, 512))
+		&& Array.isArray(value.chats)
+		&& value.chats.length <= maximumHistoryChats
+		&& value.chats.every(chat => isRecord(chat)
+			&& hasExactKeys(chat, ['badges', 'contextCount', 'createdAt', 'id', 'interactionCount', 'interactions', 'lastActivityAt', 'preview', 'title'])
+			&& Array.isArray(chat.badges)
+			&& chat.badges.length <= 4
+			&& chat.badges.every(badge => ['Audio', 'Image', 'Video', 'Web'].includes(badge as string))
+			&& Number.isSafeInteger(chat.contextCount)
+			&& Number.isSafeInteger(chat.createdAt)
+			&& isBoundedString(chat.id, 512)
+			&& Number.isSafeInteger(chat.interactionCount)
+			&& Array.isArray(chat.interactions)
+			&& chat.interactions.length <= maximumHistoryInteractionsPerChat
+			&& chat.interactions.every(interaction => isHistoryInteraction(interaction))
+			&& Number.isSafeInteger(chat.lastActivityAt)
+			&& typeof chat.preview === 'string'
+			&& chat.preview.length <= 240
+			&& isBoundedString(chat.title, 120));
+}
+
 export function isAiAssistPanelState(value: unknown): value is AiAssistPanelState {
 	if (!isRecord(value)) {
 		return false;
 	}
 
-	const keys = ['contextCapturePending', 'contextWindowSize', 'conversation', 'credentials', 'enabled', 'media', 'request', 'session', 'webSearchMode'];
+	const keys = ['contextCapturePending', 'contextWindowSize', 'conversation', 'credentials', 'enabled', 'history', 'media', 'request', 'session', 'webSearchMode'];
 	if (value.anchor !== undefined) {
 		keys.push('anchor');
 	}
@@ -770,6 +877,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		))
 		&& isCredentialsState(value.credentials)
 		&& typeof value.enabled === 'boolean'
+		&& isHistoryState(value.history)
 		&& (value.invocation === undefined || isInvocationState(value.invocation))
 		&& isMediaState(value.media)
 		&& (value.review === undefined || isReviewState(value.review))

@@ -98,6 +98,21 @@
 				<h2 id="history-heading">History</h2>
 				<p>Completed AI chats are stored only in Caprine's local macOS app data. They rely on your macOS account and FileVault for disk protection; Caprine does not add separate database encryption.</p>
 				<p>API keys, authentication data, raw Messenger page data, provider payloads, and raw media are never stored in history.</p>
+				<div class="history-actions">
+					<form id="history-search-form" role="search">
+						<label for="history-search">Search this Messenger conversation</label>
+						<div class="field-row">
+							<input id="history-search" type="search" maxlength="200" autocomplete="off">
+							<button id="history-search-button" type="submit">Search</button>
+						</div>
+					</form>
+					<button id="new-history-chat-button" class="secondary" type="button">New AI chat</button>
+				</div>
+				<p id="history-status" class="request-message" role="status">Open a Messenger conversation to view its local AI history.</p>
+				<div class="history-workspace">
+					<nav id="history-list" class="history-list" aria-label="AI chat history"></nav>
+					<div id="history-detail" class="history-detail" aria-live="polite"></div>
+				</div>
 			</section>
 		</main>
 
