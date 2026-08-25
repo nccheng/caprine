@@ -118,6 +118,33 @@ test('stable conversation IDs keep duplicate display names isolated', () => {
 	store.close();
 });
 
+test('conversation search matches turns, frozen context, and source titles without crossing conversation IDs', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
+	const matching = store.createChat('thread:search');
+	const other = store.createChat('thread:search');
+	const duplicateName = store.createChat('thread:other');
+	store.appendCompletedInteraction(matching, interaction({
+		answer: 'Answer with a distinctive phrase',
+		context: {
+			...interaction().context,
+			items: [{
+				id: 'context-search',
+				item: {confidence: 'high', sender: {role: 'incoming'}, text: 'Frozen meeting notes'},
+			}],
+		},
+		webSearch: {citations: [], ran: true, sources: [{title: 'Rare source title', url: 'https://example.com/rare'}]},
+	}));
+	store.appendCompletedInteraction(other, interaction({question: 'Unrelated question', context: {...interaction().context, question: 'Unrelated question'}}));
+	store.appendCompletedInteraction(duplicateName, interaction({answer: 'Answer with a distinctive phrase'}));
+	assert.deepEqual(store.searchConversation('thread:search', 'distinctive').map(chat => chat.id), [matching]);
+	assert.deepEqual(store.searchConversation('thread:search', 'meeting notes').map(chat => chat.id), [matching]);
+	assert.deepEqual(store.searchConversation('thread:search', 'rare source').map(chat => chat.id), [matching]);
+	assert.deepEqual(store.searchConversation('thread:search', 'unrelated').map(chat => chat.id), [other]);
+	assert.deepEqual(store.searchConversation('thread:search', 'missing'), []);
+	store.close();
+});
+
 test('injected transaction failure rolls back the interaction and both turns', () => {
 	const databasePath = temporaryDatabasePath();
 	const store = new AiHistoryStore({

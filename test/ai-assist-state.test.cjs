@@ -60,6 +60,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
+		history: {chats: [], query: '', status: 'ready'},
 		media: {candidates: []},
 		request: {
 			answer: {
@@ -78,6 +79,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
+		history: {chats: [], query: '', status: 'ready'},
 		media: {candidates: []},
 		request: {apiKey: 'secret'},
 		session: {generation: 1, status: 'open'},
@@ -132,6 +134,11 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
 	assert.equal(isAiAssistPanelCommand({mode: 'always', type: 'set-web-search-mode'}), true);
 	assert.equal(isAiAssistPanelCommand({mode: 'sometimes', type: 'set-web-search-mode'}), false);
+	assert.equal(isAiAssistPanelCommand({type: 'new-history-chat'}), true);
+	assert.equal(isAiAssistPanelCommand({chatId: 'chat-1', type: 'select-history-chat'}), true);
+	assert.equal(isAiAssistPanelCommand({chatId: '', type: 'select-history-chat'}), false);
+	assert.equal(isAiAssistPanelCommand({query: 'source title', type: 'search-history'}), true);
+	assert.equal(isAiAssistPanelCommand({query: 'x'.repeat(201), type: 'search-history'}), false);
 	const insertionToken = 'draft-insertion-token:00000000-0000-4000-8000-000000000001';
 	assert.equal(isAiAssistPanelCommand({
 		answerGeneration: 3,
@@ -316,6 +323,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
+		history: {chats: [], query: '', status: 'ready'},
 		media: {
 			candidates: [],
 			resolution: {
@@ -634,6 +642,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
+		history: {chats: [], query: '', status: 'ready'},
 		media: {candidates: []},
 		request,
 		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},

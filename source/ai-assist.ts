@@ -57,6 +57,7 @@ import {
 	OpenAiRequestError,
 } from './openai-client';
 import {AiHistoryInteractionInput, AiHistoryStore} from './ai-history-store';
+import {buildAiHistoryChatViews} from './ai-history-workspace';
 import {
 	buildReviewedPrompt,
 	ContextReviewSnapshot,
@@ -110,6 +111,9 @@ class AiAssistController {
 	private readonly mediaResolver: MessengerMediaResolver;
 	private readonly historyStore?: AiHistoryStore;
 	private historyChat?: {chatId: string; conversationId: string; sessionId: string};
+	private historyConversationId?: string;
+	private historyQuery = '';
+	private selectedHistoryChatId?: string;
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
 	private readonly pendingConversationReports = new Map<string, (generation?: number) => void>();
@@ -217,6 +221,7 @@ class AiAssistController {
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
 			},
 			enabled: config.get('aiAssistEnabled'),
+			history: this.historyState,
 			...(this.invocation ? {invocation: this.invocation} : {}),
 			media: {
 				candidates: this.mediaCandidates,
@@ -236,6 +241,42 @@ class AiAssistController {
 			request,
 			session: this.sessionState.snapshot,
 		};
+	}
+
+	private get historyState(): AiAssistPanelState['history'] {
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (!snapshot) {
+			this.resetHistoryWorkspace();
+			return {chats: [], query: '', status: 'inactive'};
+		}
+
+		if (this.historyConversationId !== snapshot.conversationId) {
+			this.historyConversationId = snapshot.conversationId;
+			this.historyQuery = '';
+			this.selectedHistoryChatId = undefined;
+		}
+
+		if (!this.historyStore) {
+			return {chats: [], query: this.historyQuery, status: 'unavailable'};
+		}
+
+		try {
+			const chats = buildAiHistoryChatViews(this.historyQuery
+				? this.historyStore.searchConversation(snapshot.conversationId, this.historyQuery)
+				: this.historyStore.loadConversation(snapshot.conversationId));
+			if (!chats.some(chat => chat.id === this.selectedHistoryChatId)) {
+				this.selectedHistoryChatId = chats[0]?.id;
+			}
+
+			return {
+				chats,
+				query: this.historyQuery,
+				...(this.selectedHistoryChatId ? {selectedChatId: this.selectedHistoryChatId} : {}),
+				status: 'ready',
+			};
+		} catch {
+			return {chats: [], query: this.historyQuery, status: 'unavailable'};
+		}
 	}
 
 	private get hasApiKey(): boolean {
@@ -337,6 +378,11 @@ class AiAssistController {
 				break;
 			}
 
+			case 'new-history-chat': {
+				this.createHistoryChat();
+				break;
+			}
+
 			case 'refresh-conversation': {
 				await this.refreshConversation();
 				break;
@@ -357,6 +403,21 @@ class AiAssistController {
 
 			case 'resolve-media': {
 				await this.resolveMedia(value.messageId, value.kind);
+				break;
+			}
+
+			case 'search-history': {
+				if (this.conversationBinding.currentSnapshot) {
+					this.historyQuery = value.query.trim();
+					this.selectedHistoryChatId = undefined;
+					this.broadcastState();
+				}
+
+				break;
+			}
+
+			case 'select-history-chat': {
+				this.selectHistoryChat(value.chatId);
 				break;
 			}
 
@@ -1547,9 +1608,11 @@ class AiAssistController {
 					conversationId: snapshot.conversationId,
 					sessionId: snapshot.sessionId,
 				};
+				this.selectedHistoryChatId = result.chatId;
 				return result.interactionId;
 			}
 
+			this.selectedHistoryChatId = this.historyChat.chatId;
 			return this.historyStore.appendCompletedInteraction(this.historyChat.chatId, input);
 		} catch {
 			throw new OpenAiRequestError(
@@ -1557,6 +1620,52 @@ class AiAssistController {
 				'OpenAI answered, but Caprine could not save the completed interaction. Nothing was shown.',
 			);
 		}
+	}
+
+	private createHistoryChat(): void {
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (!snapshot || !this.historyStore) {
+			return;
+		}
+
+		try {
+			const chatId = this.historyStore.createChat(snapshot.conversationId);
+			this.historyChat = {chatId, conversationId: snapshot.conversationId, sessionId: snapshot.sessionId};
+			this.historyConversationId = snapshot.conversationId;
+			this.historyQuery = '';
+			this.selectedHistoryChatId = chatId;
+			this.notice = 'New local AI chat created.';
+			this.broadcastState();
+		} catch {
+			this.notice = 'Caprine could not create a new local AI chat.';
+			this.broadcastState();
+		}
+	}
+
+	private selectHistoryChat(chatId: string): void {
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (!snapshot || !this.historyStore) {
+			return;
+		}
+
+		try {
+			if (!this.historyStore.loadConversation(snapshot.conversationId).some(chat => chat.id === chatId)) {
+				return;
+			}
+
+			this.selectedHistoryChatId = chatId;
+			this.historyChat = {chatId, conversationId: snapshot.conversationId, sessionId: snapshot.sessionId};
+			this.broadcastState();
+		} catch {
+			this.notice = 'Caprine could not open that local AI chat.';
+			this.broadcastState();
+		}
+	}
+
+	private resetHistoryWorkspace(): void {
+		this.historyConversationId = undefined;
+		this.historyQuery = '';
+		this.selectedHistoryChatId = undefined;
 	}
 
 	private isRequestSnapshotCurrent(snapshot: Readonly<ConversationSnapshot>): boolean {

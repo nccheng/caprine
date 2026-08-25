@@ -208,6 +208,26 @@ export class AiHistoryStore {
 		}));
 	}
 
+	searchConversation(conversationId: string, query: string): AiHistoryChat[] {
+		requireIdentifier(conversationId, 'conversationId');
+		const normalizedQuery = requireText(query.trim(), 'query', 200).toLocaleLowerCase();
+		const pattern = `%${normalizedQuery.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+		const matchingChatIds = new Set((this.database.prepare(`
+			SELECT DISTINCT i.chat_id
+			FROM ai_history_interactions i
+			JOIN ai_history_chats c ON c.id = i.chat_id
+			JOIN ai_history_turns t ON t.interaction_id = i.id
+			WHERE c.conversation_id = ?
+				AND (
+					LOWER(t.content) LIKE ? ESCAPE '\\'
+					OR LOWER(i.context_json) LIKE ? ESCAPE '\\'
+					OR LOWER(i.web_search_sources_json) LIKE ? ESCAPE '\\'
+				)
+		`).all(conversationId, pattern, pattern, pattern) as Array<{chat_id: string}>).map(row => row.chat_id));
+
+		return this.loadConversation(conversationId).filter(chat => matchingChatIds.has(chat.id));
+	}
+
 	deleteChat(conversationId: string, chatId: string): boolean {
 		requireIdentifier(conversationId, 'conversationId');
 		requireIdentifier(chatId, 'chatId');
