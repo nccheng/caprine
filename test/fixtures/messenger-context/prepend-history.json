@@ -1,0 +1,38 @@
+{
+  "baseUrl": "https://messenger.invalid/thread/sanitized",
+  "dom": {
+    "tag": "document",
+    "children": [
+      {
+        "attributes": {"role": "main"},
+        "children": [
+          {
+            "attributes": {"role": "grid"},
+            "children": [
+              {
+                "attributes": {"aria-label": "Alex sent a message", "data-message-id": "fixture-3", "role": "row"},
+                "children": [{"attributes": {"data-ad-preview": "message"}, "text": "Third"}]
+              },
+              {
+                "attributes": {"aria-label": "You sent a message", "data-message-id": "fixture-4", "role": "row"},
+                "children": [{"attributes": {"data-ad-preview": "message"}, "text": "Fourth"}]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "prependRows": [
+    {
+      "attributes": {"aria-label": "Alex sent a message", "data-message-id": "fixture-1", "role": "row"},
+      "children": [{"attributes": {"data-ad-preview": "message"}, "text": "First"}]
+    },
+    {
+      "attributes": {"aria-label": "You sent a message", "data-message-id": "fixture-2", "role": "row"},
+      "children": [{"attributes": {"data-ad-preview": "message"}, "text": "Second"}]
+    }
+  ],
+  "expectedBefore": ["fixture-3", "fixture-4"],
+  "expectedAfter": ["fixture-1", "fixture-2", "fixture-3", "fixture-4"]
+}

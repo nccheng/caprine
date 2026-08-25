@@ -10,6 +10,65 @@ const {
 	messengerContextSelectors,
 } = require('../dist-js/messenger-context.js');
 const {contextVersion} = require('../dist-js/context-review.js');
+const {
+	loadMessengerContextFixture,
+	MessengerContextFixtureElement,
+} = require('./helpers/messenger-context-fixture.cjs');
+
+const sanitizedFixtureFilenames = [
+	'edge-cases.json',
+	'prepend-history.json',
+	'supported-messages.json',
+];
+
+test('Messenger context fixtures contain no recognizable authenticated or account data', () => {
+	for (const filename of sanitizedFixtureFilenames) {
+		const fixture = loadMessengerContextFixture(filename);
+		assert.doesNotMatch(
+			fixture.source,
+			/access_token|c_user|facebook\.com\/messages\/t\/\d|set-cookie|\bxs=/i,
+		);
+	}
+});
+
+test('fixture selector matching fails closed for syntax outside its supported subset', () => {
+	const row = new MessengerContextFixtureElement({attributes: {role: 'row'}});
+
+	assert.equal(row.matches('[role="row"]'), true);
+	assert.equal(row.matches('.required-class[role="row"]'), false);
+	assert.equal(row.matches('[role="row"]:last-child'), false);
+});
+
+for (const filename of ['supported-messages.json', 'edge-cases.json']) {
+	test(`sanitized Messenger context fixture ${filename} produces exact logical items`, () => {
+		const fixture = loadMessengerContextFixture(filename);
+		global.window = {location: {href: fixture.baseUrl}};
+
+		assert.deepEqual(extractLoadedMessengerConversationContext(fixture.root), fixture.expected);
+	});
+}
+
+test('sanitized newest-tail fixture reaches the exact bounded fingerprint item', () => {
+	const fixture = loadMessengerContextFixture('supported-messages.json');
+	global.window = {location: {href: fixture.baseUrl}};
+
+	assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
+});
+
+test('prepend-style fixture evolution preserves chronological logical identity', () => {
+	const fixture = loadMessengerContextFixture('prepend-history.json');
+	global.window = {location: {href: fixture.baseUrl}};
+
+	assert.deepEqual(
+		extractLoadedMessengerConversationContext(fixture.root).map(item => item.messageId),
+		fixture.expectedBefore,
+	);
+	fixture.prependRows();
+	assert.deepEqual(
+		extractLoadedMessengerConversationContext(fixture.root).map(item => item.messageId),
+		fixture.expectedAfter,
+	);
+});
 
 class FixtureElement {
 	constructor({attributes = {}, children = {}, closest = [], elementChildren = [], href, id = '', matches = [], text = '', traversal} = {}) {

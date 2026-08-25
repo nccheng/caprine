@@ -1,0 +1,100 @@
+{
+  "baseUrl": "https://messenger.invalid/thread/sanitized",
+  "dom": {
+    "tag": "document",
+    "children": [
+      {
+        "attributes": {"role": "main"},
+        "children": [
+          {
+            "attributes": {"role": "grid"},
+            "children": [
+              {
+                "attributes": {
+                  "aria-label": "You sent a message",
+                  "data-message-id": "fixture-outgoing-1",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "attributes": {"data-ad-preview": "message"},
+                    "text": "Meet at six?"
+                  }
+                ]
+              },
+              {
+                "attributes": {
+                  "aria-label": "Alex sent a message",
+                  "data-message-id": "fixture-incoming-2",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "attributes": {"aria-label": "Taylor sent a message"},
+                    "tag": "blockquote",
+                    "text": "Earlier note"
+                  },
+                  {"attributes": {"data-ad-preview": "message"}, "text": "Here is the update"},
+                  {"attributes": {"aria-label": "👍 2 reactions"}, "tag": "span", "text": "👍"},
+                  {
+                    "attributes": {"href": "https://example.invalid/guide"},
+                    "href": "https://example.invalid/guide",
+                    "tag": "a",
+                    "children": [
+                      {"attributes": {"dir": "auto"}, "text": "Example guide"},
+                      {"attributes": {"dir": "auto"}, "text": "Sanitized preview"}
+                    ]
+                  },
+                  {"attributes": {"datetime": "2026-08-25T12:00:00Z"}, "tag": "time"},
+                  {"tag": "audio"},
+                  {"tag": "video"},
+                  {"attributes": {"alt": "Photo"}, "tag": "img"}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "confidence": "high",
+      "messageId": "fixture-outgoing-1",
+      "sender": {"displayName": "You", "role": "outgoing"},
+      "text": "Meet at six?"
+    },
+    {
+      "attachments": [{"kind": "audio"}, {"kind": "video"}, {"kind": "image"}],
+      "confidence": "high",
+      "linkPreview": {
+        "description": "Sanitized preview",
+        "domain": "example.invalid",
+        "title": "Example guide",
+        "url": "https://example.invalid/guide"
+      },
+      "messageId": "fixture-incoming-2",
+      "reactions": [{"count": 2, "emoji": "👍"}],
+      "reply": {"quotedSender": "Taylor", "text": "Earlier note"},
+      "sender": {"displayName": "Alex", "role": "incoming"},
+      "text": "Here is the update",
+      "timestamp": "2026-08-25T12:00:00Z"
+    }
+  ],
+  "expectedTail": {
+    "attachments": [{"kind": "audio"}, {"kind": "video"}, {"kind": "image"}],
+    "confidence": "high",
+    "linkPreview": {
+      "description": "Sanitized preview",
+      "domain": "example.invalid",
+      "title": "Example guide",
+      "url": "https://example.invalid/guide"
+    },
+    "messageId": "fixture-incoming-2",
+    "reactions": [{"count": 2, "emoji": "👍"}],
+    "reply": {"quotedSender": "Taylor", "text": "Earlier note"},
+    "sender": {"displayName": "Alex", "role": "incoming"},
+    "text": "Here is the update",
+    "timestamp": "2026-08-25T12:00:00Z"
+  }
+}
