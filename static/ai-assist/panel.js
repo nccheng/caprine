@@ -235,10 +235,14 @@ function renderContextReview(review) {
 	const presentIds = new Set();
 	for (const [index, reviewed] of review.items.entries()) {
 		presentIds.add(reviewed.id);
-		const row = contextReviewRows.get(reviewed.id) ?? createContextReviewRow(reviewed, index);
-		contextReviewRows.set(reviewed.id, row);
+		let row = contextReviewRows.get(reviewed.id);
+		if (!row) {
+			row = createContextReviewRow(reviewed, index);
+			contextReviewRows.set(reviewed.id, row);
+			contextItems.append(row.article);
+		}
+
 		updateContextReviewRow(row, reviewed, index);
-		contextItems.append(row.article);
 	}
 
 	for (const [id, row] of contextReviewRows) {
