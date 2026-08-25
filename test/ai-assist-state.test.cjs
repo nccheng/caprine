@@ -54,6 +54,8 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'close', extra: true}), false);
 	assert.equal(isAiAssistPanelState({
 		conversation: {captureGeneration: 2, displayName: 'Derek', status: 'ready'},
+		contextCapturePending: false,
+		contextWindowSize: 10,
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
@@ -62,6 +64,8 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), true);
 	assert.equal(isAiAssistPanelState({
 		conversation: {captureGeneration: 2, status: 'ready'},
+		contextCapturePending: false,
+		contextWindowSize: 10,
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
@@ -107,6 +111,25 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), false);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
 	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
+		requestId: 'context-capture-1',
+		requestedCount: 20,
+		type: 'capture-context',
+	}), true);
+	assert.equal(isAiAssistMessengerCommand({requestId: 'context-capture-1', type: 'cancel-context-capture'}), true);
+	assert.equal(isAiAssistPanelCommand({type: 'refresh-context'}), true);
+	assert.equal(isAiAssistPanelCommand({requestedCount: 50, type: 'set-context-window'}), true);
+	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
+	assert.equal(isAiAssistPanelCommand({
+		editedExcerpt: 'Redacted',
+		itemId: 'context-capture-1:0',
+		reviewSequence: 3,
+		type: 'edit-context-item',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({itemId: 'context-capture-1:0', reviewSequence: 3, type: 'remove-context-item'}), true);
+	assert.equal(isAiAssistPanelCommand({index: 0, type: 'remove-context-item'}), false);
+	assert.equal(isAiAssistPanelCommand({itemId: 'context-capture-1:0', reviewSequence: 0, type: 'remove-context-item'}), false);
+	assert.equal(isAiAssistMessengerCommand({
 		kind: 'video',
 		messageId: 'message-1',
 		requestId: 'media-request-1',
@@ -120,9 +143,20 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: 'yes'}), false);
 	assert.equal(isAiAssistMessengerEvent({
 		conversationId: 'messenger-thread:123',
+		contextVersion: '3:message-3',
 		requestId: 'conversation-report-1',
 		status: 'available',
 		type: 'conversation-state',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		contextVersion: '1:message-1',
+		conversationId: 'messenger-thread:123',
+		items: [anchorRequest.item],
+		requestId: 'context-capture-1',
+		requestedCount: 10,
+		status: 'available',
+		stopReason: 'no-more-history',
+		type: 'context-capture',
 	}), true);
 	const rawBlobEvent = {
 		byteLength: 3,
@@ -198,6 +232,8 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), true);
 	const panelStateWithHandle = {
 		conversation: {captureGeneration: 2, status: 'ready'},
+		contextCapturePending: false,
+		contextWindowSize: 20,
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {
@@ -216,6 +252,8 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		session: {generation: 1, status: 'open'},
 	};
 	assert.equal(isAiAssistPanelState(panelStateWithHandle), true);
+	assert.equal(isAiAssistPanelState({...panelStateWithHandle, contextCapturePending: 'yes'}), false);
+	assert.equal(isAiAssistPanelState({...panelStateWithHandle, contextWindowSize: 12}), false);
 	assert.equal(isAiAssistPanelState({
 		...panelStateWithHandle,
 		invocation: {prompt: 'Exact inline question', sequence: 1},
@@ -226,6 +264,18 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 			item: anchorRequest.item,
 			loadedCount: anchorRequest.loadedCount,
 			loadedIndex: anchorRequest.loadedIndex,
+			sequence: 1,
+		},
+	}), true);
+	assert.equal(isAiAssistPanelState({
+		...panelStateWithHandle,
+		review: {
+			actualCount: 3,
+			items: [{editedExcerpt: 'Reviewed excerpt', id: 'context-capture-1:0', item: anchorRequest.item}],
+			locked: false,
+			newMessagesAvailable: true,
+			question: 'Exact question',
+			requestedCount: 10,
 			sequence: 1,
 		},
 	}), true);
@@ -390,19 +440,35 @@ test('conversation reports are rejected until the replacement document is ready'
 	assert.equal(gate.acceptsReports, true);
 });
 
-test('panel clears stale prompts and hides stale answers outside ready state', () => {
+test('panel clears stale prompts and hides stale answers outside ready state', async () => {
 	const elements = new Map();
+	let activeElement;
+	const reviewCommands = [];
+	const commandState = {current: undefined};
 	const element = id => {
 		if (!elements.has(id)) {
 			const listeners = new Map();
+			const children = [];
 			elements.set(id, {
 				addEventListener(type, listener) {
 					listeners.set(type, listener);
 				},
+				append(...nodes) {
+					children.push(...nodes);
+				},
 				classList: {toggle() {}},
+				children,
 				disabled: false,
+				focus() {
+					activeElement = elements.get(id);
+				},
 				listeners,
+				prepend(...nodes) {
+					children.unshift(...nodes);
+				},
+				remove() {},
 				textContent: '',
+				setAttribute() {},
 				value: '',
 			});
 		}
@@ -411,22 +477,39 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 	};
 
 	let renderState;
+	let createdElements = 0;
 	const context = {
-		document: {querySelector: selector => element(selector.slice(1))},
+		document: {
+			get activeElement() {
+				return activeElement;
+			},
+			createElement: tag => element(`${tag}-${++createdElements}`),
+			querySelector: selector => element(selector.slice(1)),
+		},
 		window: {
 			caprineAiAssist: {
 				async cancel() {},
 				async close() {},
 				async deleteApiKey() {},
+				async editContextItem(...arguments_) {
+					reviewCommands.push(['edit', ...arguments_]);
+					return commandState.current;
+				},
 				async getState() {
 					return new Promise(() => {});
 				},
 				onStateChanged(callback) {
 					renderState = callback;
 				},
+				async refreshContext() {},
 				async refreshConversation() {},
+				async removeContextItem(...arguments_) {
+					reviewCommands.push(['remove', ...arguments_]);
+					return commandState.current;
+				},
 				async resolveMedia() {},
 				async saveApiKey() {},
+				async setContextWindow() {},
 				async submitPrompt() {},
 				async testApiKey() {},
 			},
@@ -439,6 +522,8 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 
 	const state = (status, captureGeneration, request = {}) => ({
 		conversation: {captureGeneration, status},
+		contextCapturePending: false,
+		contextWindowSize: 20,
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
@@ -447,6 +532,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 	});
 	renderState(state('ready', 1));
 	const prompt = element('prompt');
+	assert.equal(element('context-window').value, '20');
 	prompt.value = 'Question for A';
 	prompt.listeners.get('input')();
 
@@ -457,6 +543,133 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 	renderState(state('ready', 3));
 	assert.equal(prompt.value, '');
 	assert.equal(element('ask-button').disabled, false);
+	renderState({...state('ready', 3), contextCapturePending: true});
+	assert.equal(element('context-window').disabled, true);
+	assert.equal(element('refresh-context-button').disabled, true);
+	assert.equal(element('ask-button').disabled, true);
+	assert.equal(element('cancel-button').disabled, false);
+	renderState({
+		...state('ready', 3),
+		review: {
+			actualCount: 1,
+			items: [{
+				id: 'context-capture-1:0',
+				item: {
+					confidence: 'high',
+					messageId: 'message-1',
+					sender: {role: 'incoming'},
+					text: 'Reviewed context',
+				},
+			}],
+			locked: false,
+			newMessagesAvailable: false,
+			question: '',
+			requestedCount: 10,
+			sequence: 1,
+		},
+	});
+	assert.equal(element('ask-button').disabled, false);
+	const editor = [...elements.entries()].find(([id]) => id.startsWith('textarea-'))[1];
+	const elementCountAfterReview = createdElements;
+	editor.value = 'Unsaved local redaction';
+	editor.selectionStart = 8;
+	editor.selectionEnd = 13;
+	editor.focus();
+	const unrelatedReviewState = {
+		...state('ready', 3, {notice: 'Unrelated state update'}),
+		review: {
+			actualCount: 1,
+			items: [{
+				id: 'context-capture-1:0',
+				item: {
+					confidence: 'high',
+					messageId: 'message-1',
+					sender: {role: 'incoming'},
+					text: 'Reviewed context',
+				},
+			}],
+			locked: false,
+			newMessagesAvailable: true,
+			question: '',
+			requestedCount: 10,
+			sequence: 1,
+		},
+	};
+	renderState(unrelatedReviewState);
+	assert.equal(createdElements, elementCountAfterReview);
+	assert.equal(editor.value, 'Unsaved local redaction');
+	assert.equal(editor.selectionStart, 8);
+	assert.equal(editor.selectionEnd, 13);
+	assert.equal(context.document.activeElement, editor);
+	assert.equal(element('context-items').children.length > 0, true);
+	commandState.current = unrelatedReviewState;
+	const removeButton = [...elements.values()].find(node => node.textContent === 'Remove');
+	const saveButton = [...elements.values()].find(node => node.textContent === 'Save redaction');
+	await Promise.all([
+		removeButton.listeners.get('click')(),
+		removeButton.listeners.get('click')(),
+		saveButton.listeners.get('click')(),
+	]);
+	assert.deepEqual(reviewCommands, [
+		['remove', 1, 'context-capture-1:0'],
+		['remove', 1, 'context-capture-1:0'],
+		['edit', 1, 'context-capture-1:0', 'Unsaved local redaction'],
+	]);
+	renderState({
+		...unrelatedReviewState,
+		review: {...unrelatedReviewState.review, locked: true},
+	});
+	assert.equal(removeButton.disabled, true);
+	assert.equal(saveButton.disabled, true);
+	assert.equal(editor.disabled, true);
+	assert.equal(prompt.disabled, true);
+	assert.equal(element('ask-button').disabled, true);
+	assert.equal(element('ask-button').textContent, 'Asked — Refresh context to ask again');
+	assert.equal(element('refresh-context-button').disabled, false);
+	assert.match(element('context-availability').textContent, /locked Ask snapshot\. Use Refresh context to make changes/);
+	renderState({
+		...unrelatedReviewState,
+		review: {...unrelatedReviewState.review, locked: true},
+		request: {answer: 'Completed answer'},
+	});
+	assert.equal(prompt.disabled, true);
+	assert.equal(element('ask-button').disabled, true);
+	renderState({
+		...unrelatedReviewState,
+		review: {...unrelatedReviewState.review, locked: true},
+		request: {error: {code: 'provider-unavailable', message: 'Provider failed'}},
+	});
+	assert.equal(prompt.disabled, true);
+	assert.equal(element('ask-button').disabled, true);
+	renderState({
+		...state('ready', 3),
+		review: {
+			actualCount: 2,
+			items: [{
+				id: 'context-capture-1:0',
+				item: {
+					confidence: 'high',
+					messageId: 'message-1',
+					sender: {role: 'incoming'},
+					text: 'Reviewed context',
+				},
+			}, {
+				id: 'context-capture-1:1',
+				item: {
+					confidence: 'low',
+					omittedReason: 'unsupported-message',
+					sender: {role: 'unknown'},
+				},
+			}],
+			locked: false,
+			newMessagesAvailable: false,
+			question: '',
+			requestedCount: 10,
+			sequence: 1,
+		},
+	});
+	assert.equal([...elements.keys()].filter(id => id.startsWith('textarea-')).length, 1);
+	assert.equal([...elements.values()].some(node => node.textContent.includes('Not sent to OpenAI')), true);
 	renderState({
 		...state('ready', 3),
 		invocation: {prompt: 'Exact inline question', sequence: 1},

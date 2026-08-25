@@ -36,7 +36,17 @@
 			</section>
 			<section aria-labelledby="context-heading">
 				<h2 id="context-heading">Context review</h2>
-				<p>A selected message anchor stays local for review. This temporary flow sends only the prompt you enter below.</p>
+				<p>Review the exact Messenger excerpts below. Nothing is sent to OpenAI until you select Ask.</p>
+				<label for="context-window">Message window</label>
+				<select id="context-window" name="context-window">
+					<option value="10">10 messages</option>
+					<option value="20">20 messages</option>
+					<option value="50">50 messages</option>
+				</select>
+				<p id="context-availability" class="context-availability">No context captured.</p>
+				<p id="new-messages" class="new-messages" role="status" hidden>New messages available. This frozen review has not changed.</p>
+				<button id="refresh-context-button" class="secondary" type="button">Refresh context</button>
+				<div id="context-items" class="context-items" aria-live="polite"></div>
 				<article id="message-anchor" class="message-anchor" aria-labelledby="message-anchor-heading" hidden>
 					<h3 id="message-anchor-heading">Ask AI anchor</h3>
 					<p id="message-anchor-position"></p>
@@ -62,10 +72,10 @@
 				<h2 id="progress-heading">Private prompt</h2>
 				<p>For the strongest privacy, type <code>/ai</code> by itself. Text after <code>/ai</code> is visible to Messenger while you type it, then moves here without being sent.</p>
 				<form id="prompt-form">
-					<label for="prompt">Ask OpenAI</label>
+					<label for="prompt">Exact question for OpenAI</label>
 					<textarea id="prompt" name="prompt" rows="5" maxlength="20000" required></textarea>
 					<div class="button-row">
-						<button id="ask-button" type="submit">Ask privately</button>
+						<button id="ask-button" type="submit">Ask with reviewed context</button>
 						<button id="cancel-button" class="secondary" type="button" disabled>Cancel request</button>
 					</div>
 				</form>

@@ -47,9 +47,20 @@ import {
 } from './media-resolver-ipc';
 import {
 	OpenAiClient,
+	openAiPromptCharacterLimit,
 	OpenAiErrorCode,
 	OpenAiRequestError,
 } from './openai-client';
+import {
+	buildReviewedPrompt,
+	ContextReviewSnapshot,
+	ContextWindowSize,
+	contextReviewSubmissionDecision,
+	createUnlockedContextReview,
+	editContextReviewItem,
+	removeContextReviewItem,
+	updateContextReview,
+} from './context-review';
 
 const panelPartition = 'ai-assist';
 
@@ -71,6 +82,7 @@ class AiAssistController {
 	private readonly conversationLifecycle = new ConversationLifecycle();
 	private conversationReportCounter = 0;
 	private readonly conversationReportGate = new ConversationReportGate();
+	private contextCaptureCounter = 0;
 	private error?: {code: OpenAiErrorCode; message: string};
 	private invocation?: AiAssistPanelState['invocation'];
 	private invocationSequence = 0;
@@ -82,6 +94,15 @@ class AiAssistController {
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
 	private readonly pendingConversationReports = new Map<string, (generation?: number) => void>();
+	private pendingContextCapture?: {
+		anchorMessageId?: string;
+		question: string;
+		requestId: string;
+		requestedCount: ContextWindowSize;
+		resolve: () => void;
+		snapshot: Readonly<ConversationSnapshot>;
+	};
+
 	private readonly pendingMediaRequests = new Map<string, {
 		abortController: AbortController;
 		durationSeconds?: number;
@@ -92,6 +113,13 @@ class AiAssistController {
 	}>();
 
 	private requestCounter = 0;
+	private review?: {
+		locked: boolean;
+		sequence: number;
+		snapshot: Readonly<ContextReviewSnapshot>;
+	};
+
+	private reviewSequence = 0;
 	private readonly sessionState = new AiAssistSessionStateMachine();
 	private panelUrl?: string;
 	private panelReady?: Promise<boolean>;
@@ -139,6 +167,8 @@ class AiAssistController {
 				},
 			} : {}),
 			conversation: this.conversationBinding.panelState,
+			contextCapturePending: this.pendingContextCapture !== undefined,
+			contextWindowSize: config.get('aiAssistContextWindowSize'),
 			credentials: {
 				configured: this.hasApiKey,
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
@@ -149,6 +179,17 @@ class AiAssistController {
 				candidates: this.mediaCandidates,
 				...(this.mediaResolution ? {resolution: this.mediaResolution} : {}),
 			},
+			...(this.review && this.isRequestSnapshotCurrent(this.review.snapshot.snapshot) ? {
+				review: {
+					actualCount: this.review.snapshot.actualCount,
+					items: this.review.snapshot.items,
+					locked: this.review.locked,
+					newMessagesAvailable: this.review.snapshot.newMessagesAvailable,
+					question: this.review.snapshot.question,
+					requestedCount: this.review.snapshot.requestedCount,
+					sequence: this.review.sequence,
+				},
+			} : {}),
 			request,
 			session: this.sessionState.snapshot,
 		};
@@ -213,8 +254,10 @@ class AiAssistController {
 		switch (value.type) {
 			case 'cancel': {
 				this.cancelActiveRequest();
+				this.cancelPendingContextCapture();
 				this.cancelMediaResolution();
 				this.sessionState.cancel();
+				this.review = undefined;
 				this.notice = 'Request cancelled.';
 				this.broadcastState();
 				break;
@@ -239,13 +282,40 @@ class AiAssistController {
 				break;
 			}
 
+			case 'edit-context-item': {
+				this.editContextItem(value.reviewSequence, value.itemId, value.editedExcerpt);
+				break;
+			}
+
 			case 'refresh-conversation': {
 				await this.refreshConversation();
 				break;
 			}
 
+			case 'refresh-context': {
+				await this.requestContextReview(
+					this.review?.snapshot.question ?? this.invocation?.prompt ?? '',
+					this.anchor?.snapshot.item.messageId,
+				);
+				break;
+			}
+
+			case 'remove-context-item': {
+				this.removeContextItem(value.reviewSequence, value.itemId);
+				break;
+			}
+
 			case 'resolve-media': {
 				await this.resolveMedia(value.messageId, value.kind);
+				break;
+			}
+
+			case 'set-context-window': {
+				config.set('aiAssistContextWindowSize', value.requestedCount);
+				await this.requestContextReview(
+					this.review?.snapshot.question ?? this.invocation?.prompt ?? '',
+					this.anchor?.snapshot.item.messageId,
+				);
 				break;
 			}
 
@@ -255,7 +325,7 @@ class AiAssistController {
 			}
 
 			case 'submit-prompt': {
-				await this.runOpenAiRequest(value.prompt, false);
+				await this.submitReviewedPrompt(value.prompt);
 				break;
 			}
 
@@ -271,6 +341,11 @@ class AiAssistController {
 		}
 
 		if (!this.conversationReportGate.acceptsReports) {
+			return;
+		}
+
+		if (value.type === 'context-capture') {
+			this.handleContextCapture(value);
 			return;
 		}
 
@@ -292,6 +367,18 @@ class AiAssistController {
 				this.invalidate('conversation-changed', false, value.requestId);
 			} else {
 				this.mediaCandidates = value.mediaCandidates ?? [];
+				if (
+					this.review
+					&& value.contextVersion
+					&& value.contextVersion !== this.review.snapshot.contextVersion
+				) {
+					this.review = {
+						locked: this.review.locked,
+						sequence: this.review.sequence,
+						snapshot: updateContextReview(this.review.snapshot, {newMessagesAvailable: true}),
+					};
+				}
+
 				this.broadcastState();
 			}
 
@@ -434,6 +521,7 @@ class AiAssistController {
 		this.panelWindow.show();
 		this.panelWindow.focus();
 		this.broadcastState();
+		void this.requestContextReview(value.prompt);
 		return true;
 	}
 
@@ -473,7 +561,152 @@ class AiAssistController {
 		this.panelWindow.show();
 		this.panelWindow.focus();
 		this.broadcastState();
+		void this.requestContextReview('', value.item.messageId);
 		return true;
+	}
+
+	private async requestContextReview(question: string, anchorMessageId?: string): Promise<void> {
+		this.cancelPendingContextCapture();
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot)) {
+			this.review = undefined;
+			this.error = undefined;
+			this.notice = 'Messenger context is unavailable. Refresh context and try again.';
+			this.broadcastState();
+			return;
+		}
+
+		this.review = undefined;
+		this.error = undefined;
+		const requestedCount = config.get('aiAssistContextWindowSize');
+		const requestId = `context-capture-${++this.contextCaptureCounter}`;
+		this.notice = `Capturing up to ${requestedCount} Messenger messages for local review…`;
+		return new Promise(resolve => {
+			const timeout = setTimeout(() => {
+				if (this.pendingContextCapture?.requestId !== requestId) {
+					return;
+				}
+
+				this.pendingContextCapture = undefined;
+				this.notifyMessenger({requestId, type: 'cancel-context-capture'});
+				this.error = undefined;
+				this.notice = 'Messenger context capture timed out. Nothing was sent. Select Refresh context to retry.';
+				this.broadcastState();
+				resolve();
+			}, 3500);
+			this.pendingContextCapture = {
+				...(anchorMessageId ? {anchorMessageId} : {}),
+				question,
+				requestId,
+				requestedCount,
+				resolve() {
+					clearTimeout(timeout);
+					resolve();
+				},
+				snapshot,
+			};
+			this.broadcastState();
+			this.notifyMessenger({
+				...(anchorMessageId ? {anchorMessageId} : {}),
+				conversationId: snapshot.conversationId,
+				requestId,
+				requestedCount,
+				type: 'capture-context',
+			});
+		});
+	}
+
+	private handleContextCapture(value: Extract<AiAssistMessengerEvent, {type: 'context-capture'}>): void {
+		const pending = this.pendingContextCapture;
+		if (!pending || pending.requestId !== value.requestId) {
+			return;
+		}
+
+		this.pendingContextCapture = undefined;
+		if (!this.isRequestSnapshotCurrent(pending.snapshot)) {
+			pending.resolve();
+			return;
+		}
+
+		if (
+			value.status === 'unavailable'
+			|| value.conversationId !== pending.snapshot.conversationId
+			|| value.requestedCount !== pending.requestedCount
+			|| (value.stopReason === 'complete' && value.items.length !== pending.requestedCount)
+			|| (pending.anchorMessageId && !value.items.some(item => item.messageId === pending.anchorMessageId))
+		) {
+			this.review = undefined;
+			this.error = undefined;
+			this.notice = 'Messenger context was unavailable or ambiguous. Nothing was sent. Select Refresh context to retry.';
+			this.broadcastState();
+			pending.resolve();
+			return;
+		}
+
+		this.review = {
+			...createUnlockedContextReview({
+				contextVersion: value.contextVersion,
+				items: value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item})),
+				question: pending.question,
+				requestedCount: pending.requestedCount,
+				snapshot: pending.snapshot,
+			}),
+			sequence: ++this.reviewSequence,
+		};
+		this.error = undefined;
+		this.notice = `${value.items.length} of ${pending.requestedCount} messages available for review. Nothing has left Messenger.`;
+		this.broadcastState();
+		pending.resolve();
+	}
+
+	private removeContextItem(reviewSequence: number, itemId: string): void {
+		if (
+			!this.review
+			|| this.review.locked
+			|| this.review.sequence !== reviewSequence
+			|| this.sessionState.snapshot.status === 'requesting'
+			|| !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)
+		) {
+			return;
+		}
+
+		const snapshot = removeContextReviewItem(this.review.snapshot, itemId);
+		if (!snapshot) {
+			return;
+		}
+
+		this.review = {
+			locked: false,
+			sequence: this.review.sequence,
+			snapshot,
+		};
+		this.notice = 'Context item removed from this request.';
+		this.broadcastState();
+	}
+
+	private editContextItem(reviewSequence: number, itemId: string, editedExcerpt: string): void {
+		if (
+			!this.review
+			|| this.review.locked
+			|| this.review.sequence !== reviewSequence
+			|| this.sessionState.snapshot.status === 'requesting'
+			|| !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)
+		) {
+			return;
+		}
+
+		const snapshot = editContextReviewItem(this.review.snapshot, itemId, editedExcerpt);
+		if (!snapshot) {
+			return;
+		}
+
+		this.review = {
+			locked: false,
+			sequence: this.review.sequence,
+			snapshot,
+		};
+		this.notice = 'Edited excerpt saved for this request.';
+		this.broadcastState();
 	}
 
 	private createPanelWindow(): BrowserWindow {
@@ -789,6 +1022,19 @@ class AiAssistController {
 				resolve(undefined);
 			}
 		}
+
+		this.cancelPendingContextCapture();
+	}
+
+	private cancelPendingContextCapture(): void {
+		const pending = this.pendingContextCapture;
+		if (!pending) {
+			return;
+		}
+
+		this.pendingContextCapture = undefined;
+		this.notifyMessenger({requestId: pending.requestId, type: 'cancel-context-capture'});
+		pending.resolve();
 	}
 
 	private saveApiKey(apiKey: string): void {
@@ -833,6 +1079,49 @@ class AiAssistController {
 		}
 	}
 
+	private async submitReviewedPrompt(question: string): Promise<void> {
+		if (!this.review) {
+			await this.requestContextReview(question, this.anchor?.snapshot.item.messageId);
+			return;
+		}
+
+		const submissionDecision = contextReviewSubmissionDecision(this.review.locked);
+		if (!submissionDecision.allowed) {
+			this.notice = submissionDecision.notice;
+			this.broadcastState();
+			return;
+		}
+
+		if (!this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)) {
+			this.error = {
+				code: 'provider-unavailable',
+				message: 'Conversation changed — capture context again before asking OpenAI.',
+			};
+			this.broadcastState();
+			return;
+		}
+
+		this.review = {
+			locked: false,
+			sequence: ++this.reviewSequence,
+			snapshot: updateContextReview(this.review.snapshot, {question}),
+		};
+		const prompt = buildReviewedPrompt(this.review.snapshot);
+		if (prompt.length > openAiPromptCharacterLimit) {
+			this.error = {
+				code: 'input-too-large',
+				message: 'The reviewed question and context are too large. Remove or redact context before asking.',
+			};
+			this.broadcastState();
+			return;
+		}
+
+		this.review = {...this.review, locked: true};
+		this.broadcastState();
+
+		await this.runOpenAiRequest(prompt, false);
+	}
+
 	private async runOpenAiRequest(prompt: string, isConnectionTest: boolean): Promise<void> {
 		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
 		const reportedGeneration = await this.requestConversationState();
@@ -864,7 +1153,9 @@ class AiAssistController {
 			return;
 		}
 
-		this.clearConversationBoundRequestState();
+		this.answer.clear();
+		this.error = undefined;
+		this.notice = undefined;
 
 		let apiKey: string;
 		try {
@@ -953,10 +1244,12 @@ class AiAssistController {
 
 	private clearConversationBoundRequestState(): void {
 		this.cancelActiveRequest();
+		this.cancelPendingContextCapture();
 		this.answer.clear();
 		this.anchor = undefined;
 		this.error = undefined;
 		this.invocation = undefined;
+		this.review = undefined;
 		this.notice = undefined;
 	}
 
