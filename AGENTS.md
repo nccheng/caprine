@@ -23,16 +23,19 @@ that contract but must not silently expand it.
 Use authority in this order:
 
 1. Derek's explicit instruction in the current task.
-2. This `AGENTS.md`.
-3. Team NC's `Convergent Autonomous Implementation and Review Standard`.
-4. The active Linear issue or pull request supplied for the task.
-5. The `Caprine AI Assist MVP Contract and Delivery Map` and canonical worker
-   prompt.
-6. Current code, executable checks, and user-facing documentation.
+2. This `AGENTS.md`, which is the sole executable implementation, review,
+   approval, and merge workflow for this repository.
+3. The active Linear issue or pull request supplied for the task.
+4. The `Caprine AI Assist MVP Contract and Delivery Map`.
+5. Current code, executable checks, and user-facing documentation.
 
-Canonical Linear documents:
+The Team NC convergent-review document, Caprine worker prompt, project
+description, and issue template are supporting references. They must defer to
+this file and must not create additional approval or stop gates.
 
-- Convergent review standard:
+Supporting Linear documents:
+
+- Convergent review reference:
   `https://linear.app/nccheng-personal/document/convergent-autonomous-implementation-and-review-standard-8a7617ca88d6`
 - Caprine worker prompt:
   `https://linear.app/nccheng-personal/document/caprine-ai-assist-autonomous-worker-prompt-251f030a0c47`
@@ -40,10 +43,10 @@ Canonical Linear documents:
   `https://linear.app/nccheng-personal/document/caprine-ai-assist-mvp-contract-and-delivery-map-50fc97314820`
 
 A bare active Linear issue URL from the `Caprine AI Assist` project is a direct
-implementation request. Fetch the full issue, project, Review Contract,
-attached documents, and `blockedBy` relations; inspect current code and checks;
-then begin without requiring a label, ADR, separate approval, or repo-local
-issue spec.
+implementation request. Fetch the full issue, project, product contract,
+attachments, and `blockedBy` relations; inspect current code and checks; then
+begin without requiring a label, ADR, separate approval, repo-local issue spec,
+or pre-approved Review Contract wording.
 
 Done, Canceled, Duplicate, and other terminal issues are read-only unless Derek
 explicitly authorizes an administrative correction. An issue outside this
@@ -54,28 +57,85 @@ lineage. Fetch the PR, linked Linear issue, exact latest head, checks, reviews,
 and unresolved threads. Reuse the primary branch/worktree and PR. The PR does
 not authorize work outside the linked issue and validated review findings.
 
-## Reviewability gate
+## Personal-project autonomy and approval policy
 
-Before coding a new issue, verify that it has:
+A bare active project issue authorizes implementation and routine issue or PR
+specification maintenance within the issue's existing product scope.
+
+Codex is pre-authorized, without separate approval, to:
+
+- derive, shorten, normalize, or repair a Review Contract or bounded review
+  packet from the issue goal, scope, acceptance criteria, project contract,
+  current code, and tests;
+- update the active Linear issue or PR review packet with that derived content;
+- separate executable acceptance from manual-only acceptance;
+- choose the smallest reversible implementation detail, schema shape, file
+  structure, dependency, and deterministic test seam;
+- record reasonable implementation assumptions and continue in the same run.
+
+A missing, incomplete, duplicated, or overly verbose Review Contract is not a
+stop condition. The reviewability gate evaluates whether the underlying product
+outcome and material risk boundaries are clear, not whether prescribed headings
+or governance prose already exist.
+
+Do not ask Derek to approve documentation-only changes that preserve existing
+user-visible behavior, privacy posture, persisted-data boundaries, destructive
+scope, dependencies, and milestone outcome. For reversible ambiguity, choose
+the smallest direct macOS-only implementation, record the assumption, and
+proceed.
+
+Return `NEEDS_USER` only when at least one of these conditions is true:
+
+1. Canonical requirements conflict in a way that changes implementation or
+   user-visible behavior.
+2. Multiple materially different user-visible behaviors remain plausible.
+3. Proceeding would newly broaden sensitive-data retention or transmission,
+   permissions, automatic external side effects, destructive behavior, project
+   scope, or milestone scope.
+4. Required owner-provided private evidence, credentials, or real-device action
+   is unavailable.
+5. The dependency graph is cyclic or materially ambiguous.
+6. The bounded targeted verifier still fails after its allowed repair.
+
+Missing process prose, incomplete manual-only evidence, naming, internal
+architecture preferences, optional refactors, and reversible implementation
+choices must not trigger `NEEDS_USER`.
+
+## Derive-and-continue reviewability gate
+
+Before coding a new issue, evaluate the underlying product work rather than the
+presence of a particular template. The issue is reviewable when its existing
+sources make these points materially clear:
 
 - one independently testable product outcome;
-- explicit critical invariants;
-- executable acceptance criteria;
-- manual-only acceptance separated from code acceptance;
+- the privacy, security, wrong-conversation, data-loss, auto-send, secret, or
+  destructive-operation invariants relevant to the change;
+- executable acceptance that can be proven by tests, builds, static checks, or
+  unavoidable code-path evidence;
+- manual-only acceptance that cannot be proven autonomously;
 - bounded non-goals;
-- identified risk domains and focused deterministic test seams.
+- focused deterministic test seams.
 
-Split the issue before implementation when it combines multiple independently
-testable high-risk domains such as remote DOM behavior, cross-process
-authorization, provider/secrets, persistence, editable UI state, media
-processing, and real-device integration.
+When these facts are inferable but missing or verbose in Linear, derive a short
+review packet, update the issue or PR when useful, and continue without owner
+approval. Ordinary UI, formatting, bounded refactor, and low-risk internal work
+may use Goal, Scope, Acceptance Criteria, and Non-goals without a dedicated
+Review Contract heading.
 
-Do not split mechanically by file or layer. Keep one issue when its parts form
-one inseparable user-visible invariant and splitting would create speculative
-interfaces or unusable half-features.
+Use explicit critical invariants for material boundaries such as secrets,
+persistence and migrations, destructive operations, wrong-conversation state,
+automatic external side effects, media privacy, and cross-process
+authorization. Keep them concise and non-duplicative.
 
-If decomposition requires a product decision, stop before coding and report the
-proposed Linear split to Derek.
+Split before implementation only when the issue combines multiple independently
+testable high-risk product outcomes whose separation changes product scope or
+delivery dependencies. Do not split mechanically by file or layer. Keep one
+issue when its parts form one inseparable user-visible invariant and splitting
+would create speculative interfaces or unusable half-features.
+
+If decomposition requires a material product choice, return `NEEDS_USER` with a
+specific proposed Linear split. Missing headings or contract wording alone
+never require decomposition or approval.
 
 ## Dependency-aware work selection
 
@@ -108,8 +168,8 @@ credential-dependent, mobile-client, or logged-in Messenger results.
 
 For the selected issue:
 
-1. Revalidate that it is active, in-project, reviewable, and unblocked; then set
-   it to `In Progress`.
+1. Revalidate that it is active, in-project, reviewable, and unblocked; derive or
+   normalize its review packet when necessary; then set it to `In Progress`.
 2. Implement the smallest complete solution and focused deterministic tests.
 3. Run relevant checks, inspect the complete diff, commit, push, and open or
    update the one primary PR.
@@ -133,7 +193,7 @@ controller adjudicates every finding as:
 A candidate is a `VALIDATED_BLOCKER` only when all material conditions hold:
 
 1. The PR introduces or materially worsens the problem.
-2. It directly violates an issue acceptance criterion or critical invariant.
+2. It directly violates an issue acceptance criterion or material invariant.
 3. It has a concrete input/state/execution path and wrong result.
 4. It has deterministic evidence, a reproducible operation, or unavoidable
    code-path proof.
@@ -157,8 +217,8 @@ When validated blockers exist:
    unrelated cleanup or architecture expansion.
 3. Rerun checks, commit, and push.
 4. Start one new fresh clean-context Closure reviewer with a bounded packet:
-   issue Review Contract, critical invariants, previous/revised SHAs, Closure
-   Set, proving tests, revision diff, and manual-only checklist.
+   issue review packet, critical invariants, previous/revised SHAs, Closure Set,
+   proving tests, revision diff, and manual-only checklist.
 5. The reviewer verifies the frozen findings, critical invariants, and concrete
    revision-caused regressions. It does not begin another unrestricted
    discovery pass.
@@ -211,9 +271,10 @@ The single scheduled workflow is `Caprine AI Assist Autonomous Worker`:
 - Success: green required checks and no validated blocker may squash-merge and
   move the issue to `Done`.
 
-Do not create separate selector, writer, reviewer, adjudicator, reconciler, or
-merge automations. Do not simulate locks with Linear comments, marker schemas,
-prompt hashes, or review digests.
+The scheduled prompt selects and resumes work, then follows this file. Do not
+create separate selector, writer, reviewer, adjudicator, reconciler, or merge
+automations. Do not simulate locks with Linear comments, marker schemas, prompt
+hashes, or review digests.
 
 ## Development commands and conventions
 
