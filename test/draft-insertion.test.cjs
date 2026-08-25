@@ -1,10 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+	draftInsertionTimeoutResult,
 	DraftInsertionAuthorizationState,
 	executeDraftInsertion,
 	InsertedDraftProvenanceState,
 } = require('../dist-js/draft-insertion.js');
+
+test('draft insertion timeout is conservatively reported as possible partial insertion', () => {
+	assert.deepEqual(draftInsertionTimeoutResult, {
+		reason: 'partial-insertion',
+		status: 'blocked',
+	});
+});
 
 const snapshot = (overrides = {}) => ({
 	captureGeneration: 3,

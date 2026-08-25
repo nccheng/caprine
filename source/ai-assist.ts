@@ -66,6 +66,7 @@ import {
 	updateContextReview,
 } from './context-review';
 import {
+	draftInsertionTimeoutResult,
 	DraftInsertionAuthorizationState,
 	DraftInsertionFailureReason,
 	DraftInsertionResult,
@@ -1152,7 +1153,7 @@ class AiAssistController {
 				if (this.pendingDraftInsertion?.requestId === requestId) {
 					this.notifyMessenger({requestId, type: 'cancel-draft-insertion'});
 					this.pendingDraftInsertion = undefined;
-					resolvePromise({reason: 'stale-authorization', status: 'blocked'});
+					resolvePromise(draftInsertionTimeoutResult);
 				}
 			}, 2500);
 			this.pendingDraftInsertion = {

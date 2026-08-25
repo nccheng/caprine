@@ -47,6 +47,11 @@ export type DraftInsertionResult =
 	| {status: 'inserted'}
 	| {reason: DraftInsertionFailureReason; status: 'blocked'};
 
+export const draftInsertionTimeoutResult: DraftInsertionResult = {
+	reason: 'partial-insertion',
+	status: 'blocked',
+};
+
 export class InsertedDraftProvenanceState<Composer> {
 	private provenance?: {composer: Composer; conversationId: string; text: string};
 
