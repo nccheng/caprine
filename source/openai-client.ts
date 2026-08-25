@@ -11,6 +11,8 @@ export type OpenAiUrlCitation = {
 	contentIndex: number;
 	endIndex: number;
 	outputIndex: number;
+	providerEndIndex: number;
+	providerStartIndex: number;
 	startIndex: number;
 	title?: string;
 	url: string;
@@ -134,6 +136,7 @@ function extractOutput(value: unknown, mode: WebSearchMode): OpenAiAnswer {
 	const citations: OpenAiUrlCitation[] = [];
 	const sources: OpenAiWebSource[] = [];
 	const textParts: string[] = [];
+	let flattenedTextLength = 0;
 	let webSearchRan = false;
 	for (const [outputIndex, item] of value.output.entries()) {
 		if (!isRecord(item)) {
@@ -157,7 +160,9 @@ function extractOutput(value: unknown, mode: WebSearchMode): OpenAiAnswer {
 				continue;
 			}
 
+			const contentStartIndex = flattenedTextLength + (textParts.length > 0 ? 1 : 0);
 			textParts.push(content.text);
+			flattenedTextLength = contentStartIndex + content.text.length;
 			if (content.annotations === undefined) {
 				continue;
 			}
@@ -184,9 +189,11 @@ function extractOutput(value: unknown, mode: WebSearchMode): OpenAiAnswer {
 				const title = optionalTitle(annotation.title);
 				citations.push({
 					contentIndex,
-					endIndex: annotation.end_index as number,
+					endIndex: contentStartIndex + (annotation.end_index as number),
 					outputIndex,
-					startIndex: annotation.start_index as number,
+					providerEndIndex: annotation.end_index as number,
+					providerStartIndex: annotation.start_index as number,
+					startIndex: contentStartIndex + (annotation.start_index as number),
 					...(title ? {title} : {}),
 					url: normalizeUrl(annotation.url),
 				});
@@ -268,7 +275,7 @@ export function isOpenAiAnswer(value: unknown): value is OpenAiAnswer {
 		&& hasValidTitle(source)
 		&& isSafeNormalizedUrl(source.url))
 		&& value.webSearch.citations.every(citation => isRecord(citation)
-			&& Object.keys(citation).length === (citation.title === undefined ? 6 : 7)
+			&& Object.keys(citation).length === (citation.title === undefined ? 8 : 9)
 			&& hasValidTitle(citation)
 			&& Number.isSafeInteger(citation.outputIndex)
 			&& (citation.outputIndex as number) >= 0
@@ -279,6 +286,10 @@ export function isOpenAiAnswer(value: unknown): value is OpenAiAnswer {
 			&& Number.isSafeInteger(citation.endIndex)
 			&& (citation.endIndex as number) > (citation.startIndex as number)
 			&& (citation.endIndex as number) <= answerText.length
+			&& Number.isSafeInteger(citation.providerStartIndex)
+			&& (citation.providerStartIndex as number) >= 0
+			&& Number.isSafeInteger(citation.providerEndIndex)
+			&& (citation.providerEndIndex as number) > (citation.providerStartIndex as number)
 			&& isSafeNormalizedUrl(citation.url));
 }
 

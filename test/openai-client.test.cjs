@@ -137,6 +137,8 @@ test('OpenAI client normalizes provider citations and sources without parsing pr
 			contentIndex: 0,
 			endIndex: 18,
 			outputIndex: 1,
+			providerEndIndex: 18,
+			providerStartIndex: 15,
 			startIndex: 15,
 			title: 'Evidence title',
 			url: 'https://evidence.example/source',
@@ -144,6 +146,8 @@ test('OpenAI client normalizes provider citations and sources without parsing pr
 			contentIndex: 0,
 			endIndex: 18,
 			outputIndex: 1,
+			providerEndIndex: 18,
+			providerStartIndex: 15,
 			startIndex: 15,
 			url: 'https://evidence.example/source',
 		}],
@@ -155,6 +159,41 @@ test('OpenAI client normalizes provider citations and sources without parsing pr
 		],
 	});
 	assert.equal(answer.webSearch.sources.some(source => source.url.includes('not-evidence')), false);
+});
+
+test('OpenAI client translates part-local citation offsets while retaining provider offsets', async () => {
+	const client = new OpenAiClient({
+		fetchImplementation: async () => new Response(JSON.stringify({
+			output: [{
+				status: 'completed',
+				type: 'web_search_call',
+			}, {
+				content: [outputText('ab\nc'), outputText('XYZ', [{
+					// Provider-owned response field names are snake_case.
+					// eslint-disable-next-line camelcase
+					end_index: 3,
+					// eslint-disable-next-line camelcase
+					start_index: 0,
+					type: 'url_citation',
+					url: 'https://example.com/source',
+				}])],
+				type: 'message',
+			}],
+		}), {status: 200}),
+	});
+
+	const answer = await client.createResponse('sk-private', 'Question');
+	assert.equal(answer.text, 'ab\nc\nXYZ');
+	assert.deepEqual(answer.webSearch.citations[0], {
+		contentIndex: 1,
+		endIndex: 8,
+		outputIndex: 1,
+		providerEndIndex: 3,
+		providerStartIndex: 0,
+		startIndex: 5,
+		url: 'https://example.com/source',
+	});
+	assert.equal(answer.text.slice(answer.webSearch.citations[0].startIndex, answer.webSearch.citations[0].endIndex), 'XYZ');
 });
 
 test('OpenAI client rejects unsupported annotations, malformed offsets, and excessive sources', async () => {
