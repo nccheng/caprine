@@ -1,0 +1,145 @@
+{
+  "baseUrl": "https://messenger.invalid/thread/sanitized",
+  "dom": {
+    "tag": "document",
+    "children": [
+      {
+        "attributes": {"role": "main"},
+        "children": [
+          {
+            "attributes": {"role": "grid"},
+            "children": [
+              {
+                "attributes": {"role": "row"},
+                "children": [
+                  {
+                    "attributes": {
+                      "aria-label": "Alex sent a message",
+                      "data-message-id": "fixture-nested",
+                      "role": "row"
+                    },
+                    "children": [
+                      {"attributes": {"data-ad-preview": "message"}, "text": "Deepest row only"}
+                    ]
+                  }
+                ]
+              },
+              {
+                "attributes": {
+                  "aria-hidden": "true",
+                  "aria-label": "Alex sent a message",
+                  "data-message-id": "fixture-hidden",
+                  "role": "row"
+                },
+                "children": [
+                  {"attributes": {"data-ad-preview": "message"}, "text": "Hidden text"}
+                ]
+              },
+              {
+                "attributes": {"data-message-id": "fixture-malformed", "role": "row"},
+                "throwOnSelectors": ["[data-ad-preview=\"message\"]"]
+              },
+              {
+                "attributes": {"data-messenger-sidebar": ""},
+                "children": [
+                  {
+                    "attributes": {"role": "row"},
+                    "children": [
+                      {"attributes": {"data-ad-preview": "message"}, "text": "Pinned chats"}
+                    ]
+                  }
+                ]
+              },
+              {"attributes": {"aria-busy": "true", "role": "row"}},
+              {
+                "attributes": {"role": "row"},
+                "children": [
+                  {"attributes": {"data-ad-preview": "message"}, "text": "Unanchored text"}
+                ]
+              },
+              {
+                "attributes": {"aria-label": "Alex sent a message", "data-message-id": "fixture-duplicate", "role": "row"},
+                "children": [{"attributes": {"data-ad-preview": "message"}, "text": "Rendered twice"}]
+              },
+              {
+                "attributes": {"aria-label": "Alex sent a message", "data-message-id": "fixture-duplicate", "role": "row"},
+                "children": [{"attributes": {"data-ad-preview": "message"}, "text": "Rendered twice"}]
+              },
+              {
+                "attributes": {"aria-label": "Alex sent a message", "data-message-id": "fixture-virtualized", "role": "row"},
+                "children": [
+                  {"attributes": {"data-ad-preview": "message"}, "text": "Virtualized row"},
+                  {"attributes": {"aria-label": "👍 1 reaction"}, "tag": "span", "text": "👍"}
+                ]
+              },
+              {
+                "attributes": {"aria-label": "Alex sent a message", "data-message-id": "fixture-virtualized", "role": "row"},
+                "children": [
+                  {"attributes": {"data-ad-preview": "message"}, "text": "Virtualized row"},
+                  {"attributes": {"aria-label": "👍 3 reactions"}, "tag": "span", "text": "👍"}
+                ]
+              },
+              {
+                "attributes": {"aria-label": "Alex sent a message", "data-message-id": "fixture-conflict", "role": "row"},
+                "children": [{"attributes": {"data-ad-preview": "message"}, "text": "First value"}]
+              },
+              {
+                "attributes": {"aria-label": "Alex sent a message", "data-message-id": "fixture-conflict", "role": "row"},
+                "children": [{"attributes": {"data-ad-preview": "message"}, "text": "Changed value"}]
+              },
+              {
+                "attributes": {"aria-label": "Alex sent a message", "role": "row"},
+                "children": [{"attributes": {"data-ad-preview": "message"}, "text": "Repeated without ID"}]
+              },
+              {
+                "attributes": {"aria-label": "Alex sent a message", "role": "row"},
+                "children": [{"attributes": {"data-ad-preview": "message"}, "text": "Repeated without ID"}]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "confidence": "high",
+      "messageId": "fixture-nested",
+      "sender": {"displayName": "Alex", "role": "incoming"},
+      "text": "Deepest row only"
+    },
+    {"confidence": "low", "omittedReason": "malformed-message", "sender": {"role": "unknown"}},
+    {"confidence": "low", "omittedReason": "non-message-ui", "sender": {"role": "unknown"}},
+    {"confidence": "low", "omittedReason": "virtualized-placeholder", "sender": {"role": "unknown"}},
+    {"confidence": "low", "omittedReason": "incomplete-message", "sender": {"role": "unknown"}, "text": "Unanchored text"},
+    {
+      "confidence": "high",
+      "messageId": "fixture-duplicate",
+      "sender": {"displayName": "Alex", "role": "incoming"},
+      "text": "Rendered twice"
+    },
+    {
+      "confidence": "high",
+      "messageId": "fixture-virtualized",
+      "reactions": [{"count": 3, "emoji": "👍"}],
+      "sender": {"displayName": "Alex", "role": "incoming"},
+      "text": "Virtualized row"
+    },
+    {
+      "confidence": "low",
+      "messageId": "fixture-conflict",
+      "omittedReason": "ambiguous-message",
+      "sender": {"role": "unknown"}
+    },
+    {
+      "confidence": "medium",
+      "sender": {"displayName": "Alex", "role": "incoming"},
+      "text": "Repeated without ID"
+    },
+    {
+      "confidence": "medium",
+      "sender": {"displayName": "Alex", "role": "incoming"},
+      "text": "Repeated without ID"
+    }
+  ]
+}
