@@ -53,9 +53,10 @@ import {
 } from './openai-client';
 import {
 	buildReviewedPrompt,
-	captureContextReviewSnapshot,
 	ContextReviewSnapshot,
 	ContextWindowSize,
+	contextReviewSubmissionDecision,
+	createUnlockedContextReview,
 	editContextReviewItem,
 	removeContextReviewItem,
 	updateContextReview,
@@ -643,15 +644,14 @@ class AiAssistController {
 		}
 
 		this.review = {
-			locked: false,
-			sequence: ++this.reviewSequence,
-			snapshot: captureContextReviewSnapshot({
+			...createUnlockedContextReview({
 				contextVersion: value.contextVersion,
 				items: value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item})),
 				question: pending.question,
 				requestedCount: pending.requestedCount,
 				snapshot: pending.snapshot,
 			}),
+			sequence: ++this.reviewSequence,
 		};
 		this.error = undefined;
 		this.notice = `${value.items.length} of ${pending.requestedCount} messages available for review. Nothing has left Messenger.`;
@@ -1085,7 +1085,10 @@ class AiAssistController {
 			return;
 		}
 
-		if (this.review.locked) {
+		const submissionDecision = contextReviewSubmissionDecision(this.review.locked);
+		if (!submissionDecision.allowed) {
+			this.notice = submissionDecision.notice;
+			this.broadcastState();
 			return;
 		}
 

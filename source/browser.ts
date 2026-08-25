@@ -903,14 +903,13 @@ async function captureMessengerContext(
 	const initialContextVersion = contextVersion(extractLoadedMessengerConversationContext(document));
 	const capture = await captureBoundedContext({
 		async backfillOnce(captureSignal) {
-			if (!scrollContainer || scrollContainer.scrollTop <= 0) {
+			if (!scrollContainer) {
 				return 'no-more-history';
 			}
 
-			const previousScrollTop = scrollContainer.scrollTop;
-			scrollContainer.scrollTop = Math.max(0, previousScrollTop - Math.max(240, scrollContainer.clientHeight * 0.8));
+			scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - Math.max(240, scrollContainer.clientHeight * 0.8));
 			await waitForContextBackfill(captureSignal);
-			return scrollContainer.scrollTop < previousScrollTop ? 'moved' : 'no-more-history';
+			return 'attempted';
 		},
 		isComplete(items) {
 			return isContextWindowComplete(items, command.requestedCount, command.anchorMessageId);

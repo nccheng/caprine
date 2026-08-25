@@ -267,6 +267,7 @@ function renderContextReview(review, isRequesting) {
 
 function render(state) {
 	const isRequesting = state.session.status === 'requesting';
+	const isReviewLocked = Boolean(state.review?.locked);
 	const isConversationReady = state.conversation.status === 'ready';
 	const isMediaResolving = state.media.resolution?.status === 'resolving';
 	const isContextCapturing = state.contextCapturePending;
@@ -316,12 +317,14 @@ function render(state) {
 	mediaKind.disabled = isRequesting || isMediaResolving || !isConversationReady;
 	resolveMediaButton.disabled = isRequesting || isMediaResolving || !isConversationReady;
 	mediaStatus.textContent = mediaStatusForState(state);
-	promptInput.disabled = isRequesting || !isConversationReady;
+	promptInput.disabled = isRequesting || isReviewLocked || !isConversationReady;
 	contextWindow.disabled = isRequesting || isContextCapturing || !isConversationReady;
 	refreshContextButton.disabled = isRequesting || isContextCapturing || !isConversationReady;
 	refreshContextButton.textContent = state.review?.newMessagesAvailable ? 'Refresh context — new messages available' : 'Refresh context';
-	askButton.textContent = state.review ? 'Ask with reviewed context' : 'Review context';
-	askButton.disabled = isRequesting || isContextCapturing || !isConversationReady || Boolean(state.review && !state.credentials.configured);
+	askButton.textContent = isReviewLocked
+		? 'Asked — Refresh context to ask again'
+		: (state.review ? 'Ask with reviewed context' : 'Review context');
+	askButton.disabled = isRequesting || isReviewLocked || isContextCapturing || !isConversationReady || Boolean(state.review && !state.credentials.configured);
 	cancelButton.disabled = !isRequesting && !isMediaResolving && !isContextCapturing;
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));

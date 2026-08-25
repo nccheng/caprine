@@ -618,12 +618,29 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	renderState({
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},
-		session: {generation: 1, sessionId: 'ai-session-1', status: 'requesting'},
 	});
 	assert.equal(removeButton.disabled, true);
 	assert.equal(saveButton.disabled, true);
 	assert.equal(editor.disabled, true);
+	assert.equal(prompt.disabled, true);
+	assert.equal(element('ask-button').disabled, true);
+	assert.equal(element('ask-button').textContent, 'Asked — Refresh context to ask again');
+	assert.equal(element('refresh-context-button').disabled, false);
 	assert.match(element('context-availability').textContent, /locked Ask snapshot\. Use Refresh context to make changes/);
+	renderState({
+		...unrelatedReviewState,
+		review: {...unrelatedReviewState.review, locked: true},
+		request: {answer: 'Completed answer'},
+	});
+	assert.equal(prompt.disabled, true);
+	assert.equal(element('ask-button').disabled, true);
+	renderState({
+		...unrelatedReviewState,
+		review: {...unrelatedReviewState.review, locked: true},
+		request: {error: {code: 'provider-unavailable', message: 'Provider failed'}},
+	});
+	assert.equal(prompt.disabled, true);
+	assert.equal(element('ask-button').disabled, true);
 	renderState({
 		...state('ready', 3),
 		review: {

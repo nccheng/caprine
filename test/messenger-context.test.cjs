@@ -6,14 +6,20 @@ const {
 	extractLoadedMessengerConversationContext,
 	extractLoadedMessengerConversationTail,
 	maximumMessengerDomExtractionItems,
+	maximumMessengerTailTraversalElements,
 	messengerContextSelectors,
 } = require('../dist-js/messenger-context.js');
+const {contextVersion} = require('../dist-js/context-review.js');
 
 class FixtureElement {
-	constructor({attributes = {}, children = {}, closest = [], href, id = '', text = ''} = {}) {
+	constructor({attributes = {}, children = {}, closest = [], elementChildren = [], href, id = '', matches = [], text = '', traversal} = {}) {
 		this.attributes = attributes;
 		this.children = children;
 		this.closestSelectors = closest;
+		this.elementChildren = elementChildren;
+		this.matchSelectors = matches;
+		this.parentElement = null;
+		this.traversal = traversal;
 		this.dataset = {
 			messageId: attributes['data-message-id'],
 			messageid: attributes['data-messageid'],
@@ -21,10 +27,30 @@ class FixtureElement {
 		this.href = href;
 		this.id = id;
 		this.textContent = text;
+		for (const [index, child] of elementChildren.entries()) {
+			child.parentElement = this;
+			child.previousElementSibling = elementChildren[index - 1] ?? null;
+		}
 	}
 
 	closest(selector) {
-		return this.closestSelectors.some(value => selector.includes(value)) ? this : undefined;
+		if (this.closestSelectors.some(value => selector.includes(value))) {
+			return this;
+		}
+
+		return this.parentElement?.closest(selector);
+	}
+
+	get lastElementChild() {
+		return this.elementChildren.at(-1) ?? null;
+	}
+
+	matches(selector) {
+		if (this.traversal) {
+			this.traversal.visits += 1;
+		}
+
+		return this.matchSelectors.some(value => selector.includes(value));
 	}
 
 	getAttribute(name) {
@@ -101,10 +127,15 @@ test('tail extraction inspects only the newest logical row', () => {
 			[messengerContextSelectors.message]: [],
 			[messengerContextSelectors.messageText]: [text],
 		},
+		matches: [messengerContextSelectors.message],
 	});
 	const conversation = new FixtureElement({
-		children: {[messengerContextSelectors.message]: [older, newest]},
+		elementChildren: [older, newest],
 	});
+	conversation.querySelectorAll = () => {
+		throw new Error('tail extraction must not query the whole conversation');
+	};
+
 	const root = new FixtureElement({
 		children: {[messengerContextSelectors.conversation]: [conversation]},
 	});
@@ -115,6 +146,83 @@ test('tail extraction inspects only the newest logical row', () => {
 		sender: {displayName: 'Alex', role: 'incoming'},
 		text: 'Newest message',
 	});
+});
+
+test('tail extraction uses a fixed reverse traversal budget on large conversations', () => {
+	const traversal = {visits: 0};
+	const newest = new FixtureElement({
+		attributes: {'aria-label': 'Alex sent a message', 'data-message-id': 'message-large-tail'},
+		children: {
+			[messengerContextSelectors.messageText]: [new FixtureElement({text: 'Newest of many'})],
+		},
+		matches: [messengerContextSelectors.message],
+		traversal,
+	});
+	const elements = [
+		...Array.from({length: maximumMessengerTailTraversalElements + 200}, () => new FixtureElement({traversal})),
+		newest,
+	];
+	const conversation = new FixtureElement({elementChildren: elements});
+	conversation.querySelectorAll = () => {
+		throw new Error('tail extraction must not query the whole conversation');
+	};
+
+	const root = new FixtureElement({
+		children: {[messengerContextSelectors.conversation]: [conversation]},
+	});
+
+	assert.equal(extractLoadedMessengerConversationTail(root).messageId, 'message-large-tail');
+	assert.equal(traversal.visits <= maximumMessengerTailTraversalElements, true);
+
+	const noRowTraversal = {visits: 0};
+	const noRowConversation = new FixtureElement({
+		elementChildren: Array.from(
+			{length: maximumMessengerTailTraversalElements + 1},
+			() => new FixtureElement({traversal: noRowTraversal}),
+		),
+	});
+	noRowConversation.querySelectorAll = conversation.querySelectorAll;
+	const noRowRoot = new FixtureElement({
+		children: {[messengerContextSelectors.conversation]: [noRowConversation]},
+	});
+	assert.equal(extractLoadedMessengerConversationTail(noRowRoot), undefined);
+	assert.equal(noRowTraversal.visits, maximumMessengerTailTraversalElements);
+});
+
+test('tail extraction chooses the deepest logical row and skips hidden and non-message tail nodes', () => {
+	const text = new FixtureElement({text: 'Deep newest message'});
+	const deepest = new FixtureElement({
+		attributes: {'aria-label': 'Alex sent a message', 'data-message-id': 'message-deepest'},
+		children: {
+			[messengerContextSelectors.messageText]: [text],
+		},
+		matches: [messengerContextSelectors.message],
+	});
+	const wrapper = new FixtureElement({
+		elementChildren: [deepest],
+		matches: [messengerContextSelectors.message],
+	});
+	const hidden = new FixtureElement({
+		closest: ['[aria-hidden="true"]'],
+		matches: [messengerContextSelectors.message],
+	});
+	const conversation = new FixtureElement({
+		elementChildren: [wrapper, hidden, new FixtureElement()],
+	});
+	conversation.querySelectorAll = () => {
+		throw new Error('tail extraction must not query the whole conversation');
+	};
+
+	const root = new FixtureElement({
+		children: {[messengerContextSelectors.conversation]: [conversation]},
+	});
+
+	const tail = extractLoadedMessengerConversationTail(root);
+	assert.equal(tail.messageId, 'message-deepest');
+	assert.equal(contextVersion(tail), contextVersion(extractLoadedMessengerConversationTail(root)));
+	deepest.attributes['data-message-id'] = 'message-changed';
+	deepest.dataset.messageId = 'message-changed';
+	assert.notEqual(contextVersion(tail), contextVersion(extractLoadedMessengerConversationTail(root)));
 });
 
 test('message anchors capture one immutable-order logical message with visible sender semantics', () => {

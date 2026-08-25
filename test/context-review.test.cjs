@@ -5,7 +5,9 @@ const {
 	captureBoundedContext,
 	captureContextReviewSnapshot,
 	ContextCaptureCoordinator,
+	contextReviewSubmissionDecision,
 	contextVersion,
+	createUnlockedContextReview,
 	editContextReviewItem,
 	isContextWindowComplete,
 	mergeContextPages,
@@ -23,6 +25,38 @@ function messages(count) {
 		text: `Message ${index + 1}`,
 	}));
 }
+
+test('locked reviewed submissions publish the terminal notice without invoking a provider', () => {
+	let providerCalls = 0;
+	const decision = contextReviewSubmissionDecision(true);
+	if (decision.allowed) {
+		providerCalls += 1;
+	}
+
+	assert.equal(decision.allowed, false);
+	assert.equal(decision.notice, 'This reviewed context has already been submitted. Refresh context before asking again.');
+	assert.equal(providerCalls, 0);
+	assert.deepEqual(contextReviewSubmissionDecision(false), {allowed: true});
+});
+
+test('refreshing context creates an unlocked review and preserves the previous question', () => {
+	const previousQuestion = 'Keep this exact question';
+	const review = createUnlockedContextReview({
+		contextVersion: 'message:message-1',
+		items: [{id: 'refresh:0', item: messages(1)[0]}],
+		question: previousQuestion,
+		requestedCount: 10,
+		snapshot: {
+			captureGeneration: 2,
+			conversationId: 'messenger-thread:123',
+			messengerWebContentsId: 3,
+			sessionId: 'ai-session-1',
+		},
+	});
+
+	assert.equal(review.locked, false);
+	assert.equal(review.snapshot.question, previousQuestion);
+});
 
 test('latest and anchor-aware windows select deterministic 10/20/50 ranges', () => {
 	const items = messages(60);
@@ -69,7 +103,7 @@ test('anchor backfill continues until enough older messages can center the windo
 		async backfillOnce() {
 			attempts += 1;
 			page = messages(20).slice(Math.max(0, 10 - (attempts * 5)));
-			return 'moved';
+			return 'attempted';
 		},
 		isComplete: items => isContextWindowComplete(items, 10, 'message-11'),
 		isConversationCurrent: () => true,
@@ -91,7 +125,7 @@ test('newest anchor backfills a full 50-message window from the older side', asy
 		async backfillOnce() {
 			attempts += 1;
 			page = all.slice(-60);
-			return 'moved';
+			return 'attempted';
 		},
 		isComplete: items => isContextWindowComplete(items, 50, 'message-75'),
 		isConversationCurrent: () => true,
@@ -114,7 +148,7 @@ test('anchor completion backfills toward a centered window even when N loaded it
 		async backfillOnce() {
 			attempts += 1;
 			page = all;
-			return 'moved';
+			return 'attempted';
 		},
 		isComplete: items => isContextWindowComplete(items, 50, 'message-32'),
 		isConversationCurrent: () => true,
@@ -177,7 +211,7 @@ test('bounded backfill reports partial history and always restores scroll state'
 			attempts += 1;
 			if (attempts === 1) {
 				page = messages(10).slice(0, 8);
-				return 'moved';
+				return 'attempted';
 			}
 
 			return 'no-more-history';
@@ -195,11 +229,150 @@ test('bounded backfill reports partial history and always restores scroll state'
 	assert.equal(restoredConversationScrollTop(400, 2000, 2600), 1000);
 });
 
+test('a backfill attempt can load new rows without observable scroll motion', async () => {
+	let page = messages(4);
+	const result = await captureBoundedContext({
+		async backfillOnce() {
+			page = messages(10);
+			return 'attempted';
+		},
+		isConversationCurrent: () => true,
+		readPage: () => page,
+		requestedCount: 10,
+		restore() {},
+	});
+	assert.equal(result.stopReason, 'complete');
+	assert.equal(result.items.length, 10);
+});
+
+test('the completed wait is read before explicit no-more-history and completion wins', async () => {
+	let page = messages(4);
+	const complete = await captureBoundedContext({
+		async backfillOnce() {
+			page = messages(10);
+			return 'no-more-history';
+		},
+		isConversationCurrent: () => true,
+		readPage: () => page,
+		requestedCount: 10,
+		restore() {},
+	});
+	assert.equal(complete.stopReason, 'complete');
+	assert.equal(complete.items.at(-1).messageId, 'message-10');
+
+	page = messages(4);
+	const partial = await captureBoundedContext({
+		async backfillOnce() {
+			page = messages(6);
+			return 'no-more-history';
+		},
+		isConversationCurrent: () => true,
+		readPage: () => page,
+		requestedCount: 10,
+		restore() {},
+	});
+	assert.equal(partial.stopReason, 'no-more-history');
+	assert.equal(partial.items.at(-1).messageId, 'message-6');
+});
+
+test('repeated attempted backfills with no progress exhaust the attempt bound as timeout', async () => {
+	let attempts = 0;
+	const result = await captureBoundedContext({
+		async backfillOnce() {
+			attempts += 1;
+			return 'attempted';
+		},
+		isConversationCurrent: () => true,
+		maximumAttempts: 3,
+		readPage: () => messages(1),
+		requestedCount: 10,
+		restore() {},
+	});
+	assert.equal(attempts, 3);
+	assert.equal(result.stopReason, 'timeout');
+});
+
+test('abort and conversation change after a completed wait stop before merging its page', async () => {
+	const abortController = new AbortController();
+	let abortPage = messages(1);
+	let abortReads = 0;
+	const cancelled = await captureBoundedContext({
+		async backfillOnce() {
+			abortPage = messages(10);
+			abortController.abort();
+			return 'attempted';
+		},
+		isConversationCurrent: () => true,
+		readPage() {
+			abortReads += 1;
+			return abortPage;
+		},
+		requestedCount: 10,
+		restore() {},
+		signal: abortController.signal,
+	});
+	assert.equal(cancelled.stopReason, 'cancelled');
+	assert.equal(cancelled.items.length, 1);
+	assert.equal(abortReads, 1);
+
+	let current = true;
+	let changedPage = messages(1);
+	let changedReads = 0;
+	const changed = await captureBoundedContext({
+		async backfillOnce() {
+			changedPage = messages(10);
+			current = false;
+			return 'attempted';
+		},
+		isConversationCurrent: () => current,
+		readPage() {
+			changedReads += 1;
+			return changedPage;
+		},
+		requestedCount: 10,
+		restore() {},
+	});
+	assert.equal(changed.stopReason, 'conversation-changed');
+	assert.equal(changed.items.length, 1);
+	assert.equal(changedReads, 1);
+});
+
+test('complete no-more timeout cancel and conversation-change paths restore exactly once', async () => {
+	await Promise.all(['complete', 'no-more-history', 'timeout', 'cancelled', 'conversation-changed'].map(async scenario => {
+		let current = true;
+		let restored = 0;
+		const abortController = new AbortController();
+		const result = await captureBoundedContext({
+			async backfillOnce() {
+				if (scenario === 'cancelled') {
+					abortController.abort();
+				}
+
+				if (scenario === 'conversation-changed') {
+					current = false;
+				}
+
+				return scenario === 'no-more-history' ? 'no-more-history' : 'attempted';
+			},
+			isConversationCurrent: () => current,
+			maximumAttempts: 1,
+			readPage: () => messages(scenario === 'complete' ? 10 : 1),
+			requestedCount: 10,
+			restore() {
+				restored += 1;
+			},
+			signal: abortController.signal,
+		});
+		assert.equal(result.stopReason, scenario);
+		assert.equal(restored, 1);
+	}));
+});
+
 test('bounded backfill stops on timeout and conversation changes', async () => {
 	let now = 0;
 	let restored = 0;
 	const timedOut = await captureBoundedContext({
-		backfillOnce: async () => 'moved',
+		backfillOnce: async () => 'attempted',
 		isConversationCurrent: () => true,
 		now() {
 			now += 1000;
@@ -214,7 +387,7 @@ test('bounded backfill stops on timeout and conversation changes', async () => {
 	});
 	assert.equal(timedOut.stopReason, 'timeout');
 	const changed = await captureBoundedContext({
-		backfillOnce: async () => 'moved',
+		backfillOnce: async () => 'attempted',
 		isConversationCurrent: () => false,
 		readPage: () => messages(1),
 		requestedCount: 10,
@@ -275,7 +448,7 @@ test('cancelled backfill stops and restores exactly once', async () => {
 	const result = await captureBoundedContext({
 		async backfillOnce() {
 			abortController.abort();
-			return 'moved';
+			return 'attempted';
 		},
 		isConversationCurrent: () => true,
 		readPage: () => messages(1),

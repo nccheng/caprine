@@ -2,6 +2,7 @@ export const conversationContextConfidenceLevels = ['high', 'medium', 'low'] as 
 export type ConversationContextConfidence = typeof conversationContextConfidenceLevels[number];
 // This bounds loaded DOM traversal only; AI context selection belongs to a later layer.
 export const maximumMessengerDomExtractionItems = 500;
+export const maximumMessengerTailTraversalElements = 128;
 
 export const conversationContextOmittedReasons = [
 	'ambiguous-message',
@@ -638,6 +639,32 @@ export function extractLoadedMessengerConversationContext(root: ParentNode = doc
 	}
 }
 
+function recordMessengerTailVisit(visited: Set<Element>, element: Element): boolean {
+	if (visited.has(element)) {
+		return true;
+	}
+
+	if (visited.size >= maximumMessengerTailTraversalElements) {
+		return false;
+	}
+
+	visited.add(element);
+	return true;
+}
+
+function deepestMessengerTailElement(element: Element, visited: Set<Element>): Element | undefined {
+	let deepest = element;
+	for (let child = deepest.lastElementChild; child; child = deepest.lastElementChild) {
+		if (!recordMessengerTailVisit(visited, deepest)) {
+			return;
+		}
+
+		deepest = child;
+	}
+
+	return deepest;
+}
+
 export function extractLoadedMessengerConversationTail(root: ParentNode = document): ConversationContextItem | undefined {
 	try {
 		const conversation = root.querySelector(messengerContextSelectors.conversation);
@@ -645,17 +672,45 @@ export function extractLoadedMessengerConversationTail(root: ParentNode = docume
 			return;
 		}
 
-		const rows = conversation.querySelectorAll(messengerContextSelectors.message);
-		for (let index = rows.length - 1; index >= 0; index -= 1) {
-			const row = rows[index];
-			if (!visibleElement(row) || row.querySelector(messengerContextSelectors.message)) {
-				continue;
+		const visited = new Set<Element>();
+		const elementsWithMessageDescendants = new Set<Element>();
+		let current: Element | undefined = conversation.lastElementChild ?? undefined;
+		let shouldDescend = true;
+		while (current && current !== conversation) {
+			if (shouldDescend) {
+				const deepest = deepestMessengerTailElement(current, visited);
+				if (!deepest) {
+					return;
+				}
+
+				current = deepest;
 			}
 
-			try {
-				return extractConversationContextCandidates([candidateFromElement(row, 0)])[0];
-			} catch {
-				return extractConversationContextCandidates([{domOrder: 0, malformed: true}])[0];
+			if (!recordMessengerTailVisit(visited, current)) {
+				return;
+			}
+
+			const hasMessageDescendant = elementsWithMessageDescendants.has(current);
+			const isMessage = current.matches(messengerContextSelectors.message);
+			const parent = current.parentElement;
+			if ((isMessage || hasMessageDescendant) && parent) {
+				elementsWithMessageDescendants.add(parent);
+			}
+
+			if (isMessage && !hasMessageDescendant && visibleElement(current)) {
+				try {
+					return extractConversationContextCandidates([candidateFromElement(current, 0)])[0];
+				} catch {
+					return extractConversationContextCandidates([{domOrder: 0, malformed: true}])[0];
+				}
+			}
+
+			if (current.previousElementSibling) {
+				current = current.previousElementSibling;
+				shouldDescend = true;
+			} else {
+				current = parent ?? undefined;
+				shouldDescend = false;
 			}
 		}
 	} catch {}

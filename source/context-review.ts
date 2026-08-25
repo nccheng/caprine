@@ -23,7 +23,7 @@ export type ContextReviewSnapshot = {
 export type ContextBackfillStopReason = 'cancelled' | 'complete' | 'conversation-changed' | 'no-more-history' | 'timeout';
 
 type ContextBackfillOptions = {
-	backfillOnce: (signal?: AbortSignal) => Promise<'moved' | 'no-more-history'>;
+	backfillOnce: (signal?: AbortSignal) => Promise<'attempted' | 'no-more-history'>;
 	isComplete?: (items: readonly ConversationContextItem[]) => boolean;
 	isConversationCurrent: () => boolean;
 	maximumAttempts?: number;
@@ -39,6 +39,17 @@ type ContextCaptureRequest = {
 	requestId: string;
 	run: (signal: AbortSignal) => Promise<void>;
 };
+
+export function contextReviewSubmissionDecision(locked: boolean):
+| {allowed: true}
+| {allowed: false; notice: string} {
+	return locked
+		? {
+			allowed: false,
+			notice: 'This reviewed context has already been submitted. Refresh context before asking again.',
+		}
+		: {allowed: true};
+}
 
 function freezePlainValue(value: unknown): void {
 	if (!value || typeof value !== 'object' || Object.isFrozen(value)) {
@@ -221,10 +232,10 @@ export async function captureBoundedContext(
 	let attempts = 0;
 	let stopReason: ContextBackfillStopReason = isComplete(items)
 		? 'complete'
-		: 'no-more-history';
+		: 'timeout';
 
 	try {
-		for (; !isComplete(items) && attempts < maximumAttempts; attempts += 1) {
+		for (; !isComplete(items) && attempts < maximumAttempts;) {
 			if (options.signal?.aborted) {
 				stopReason = 'cancelled';
 				break;
@@ -242,8 +253,20 @@ export async function captureBoundedContext(
 
 			// eslint-disable-next-line no-await-in-loop
 			const result = await options.backfillOnce(options.signal);
+			attempts += 1;
 			if (options.signal?.aborted) {
 				stopReason = 'cancelled';
+				break;
+			}
+
+			if (!options.isConversationCurrent()) {
+				stopReason = 'conversation-changed';
+				break;
+			}
+
+			items = mergeContextPages(options.readPage(), items);
+			if (isComplete(items)) {
+				stopReason = 'complete';
 				break;
 			}
 
@@ -251,13 +274,6 @@ export async function captureBoundedContext(
 				stopReason = 'no-more-history';
 				break;
 			}
-
-			items = mergeContextPages(options.readPage(), items);
-			stopReason = isComplete(items) ? 'complete' : 'no-more-history';
-		}
-
-		if (!isComplete(items) && attempts >= maximumAttempts && stopReason === 'no-more-history') {
-			stopReason = 'timeout';
 		}
 	} finally {
 		await options.restore();
@@ -329,6 +345,12 @@ export function captureContextReviewSnapshot(
 	});
 	freezePlainValue(captured);
 	return captured;
+}
+
+export function createUnlockedContextReview(
+	data: Omit<ContextReviewSnapshot, 'actualCount' | 'newMessagesAvailable'>,
+): {locked: false; snapshot: Readonly<ContextReviewSnapshot>} {
+	return {locked: false, snapshot: captureContextReviewSnapshot(data)};
 }
 
 export function updateContextReview(
