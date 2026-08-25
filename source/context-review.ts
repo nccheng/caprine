@@ -23,6 +23,7 @@ export type ContextBackfillStopReason = 'complete' | 'conversation-changed' | 'n
 
 type ContextBackfillOptions = {
 	backfillOnce: () => Promise<'moved' | 'no-more-history'>;
+	isComplete?: (items: readonly ConversationContextItem[]) => boolean;
 	isConversationCurrent: () => boolean;
 	maximumAttempts?: number;
 	now?: () => number;
@@ -48,16 +49,12 @@ export function mergeContextPages(
 	olderPage: readonly ConversationContextItem[],
 	newerItems: readonly ConversationContextItem[],
 ): ConversationContextItem[] {
-	const olderSignatures = olderPage.map(item => JSON.stringify(item));
-	const newerSignatures = newerItems.map(item => JSON.stringify(item));
-	const maximumOverlap = Math.min(olderPage.length, newerItems.length);
-	for (let overlap = maximumOverlap; overlap > 0; overlap -= 1) {
-		if (olderSignatures.slice(-overlap).every((signature, index) => signature === newerSignatures[index])) {
-			return [...olderPage, ...newerItems.slice(overlap)];
-		}
-	}
-
-	return [...olderPage, ...newerItems];
+	const olderMessageIds = new Set(olderPage.flatMap(item => item.messageId ? [item.messageId] : []));
+	const latestByMessageId = new Map(newerItems.flatMap(item => item.messageId ? [[item.messageId, item] as const] : []));
+	return [
+		...olderPage.map(item => item.messageId ? (latestByMessageId.get(item.messageId) ?? item) : item),
+		...newerItems.filter(item => !item.messageId || !olderMessageIds.has(item.messageId)),
+	];
 }
 
 export function selectContextWindow(
@@ -92,14 +89,15 @@ export async function captureBoundedContext(
 	const startedAt = now();
 	const timeoutMilliseconds = options.timeoutMilliseconds ?? 2000;
 	const maximumAttempts = options.maximumAttempts ?? 8;
+	const isComplete = options.isComplete ?? (items => items.length >= options.requestedCount);
 	let items = [...options.readPage()];
 	let attempts = 0;
-	let stopReason: ContextBackfillStopReason = items.length >= options.requestedCount
+	let stopReason: ContextBackfillStopReason = isComplete(items)
 		? 'complete'
 		: 'no-more-history';
 
 	try {
-		for (; items.length < options.requestedCount && attempts < maximumAttempts; attempts += 1) {
+		for (; !isComplete(items) && attempts < maximumAttempts; attempts += 1) {
 			if (!options.isConversationCurrent()) {
 				stopReason = 'conversation-changed';
 				break;
@@ -118,10 +116,10 @@ export async function captureBoundedContext(
 			}
 
 			items = mergeContextPages(options.readPage(), items);
-			stopReason = items.length >= options.requestedCount ? 'complete' : 'no-more-history';
+			stopReason = isComplete(items) ? 'complete' : 'no-more-history';
 		}
 
-		if (items.length < options.requestedCount && attempts >= maximumAttempts && stopReason === 'no-more-history') {
+		if (!isComplete(items) && attempts >= maximumAttempts && stopReason === 'no-more-history') {
 			stopReason = 'timeout';
 		}
 	} finally {

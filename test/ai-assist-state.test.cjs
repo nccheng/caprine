@@ -54,6 +54,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'close', extra: true}), false);
 	assert.equal(isAiAssistPanelState({
 		conversation: {captureGeneration: 2, displayName: 'Derek', status: 'ready'},
+		contextWindowSize: 10,
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
@@ -62,6 +63,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), true);
 	assert.equal(isAiAssistPanelState({
 		conversation: {captureGeneration: 2, status: 'ready'},
+		contextWindowSize: 10,
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
@@ -219,6 +221,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), true);
 	const panelStateWithHandle = {
 		conversation: {captureGeneration: 2, status: 'ready'},
+		contextWindowSize: 20,
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {
@@ -237,6 +240,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		session: {generation: 1, status: 'open'},
 	};
 	assert.equal(isAiAssistPanelState(panelStateWithHandle), true);
+	assert.equal(isAiAssistPanelState({...panelStateWithHandle, contextWindowSize: 12}), false);
 	assert.equal(isAiAssistPanelState({
 		...panelStateWithHandle,
 		invocation: {prompt: 'Exact inline question', sequence: 1},
@@ -480,6 +484,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 
 	const state = (status, captureGeneration, request = {}) => ({
 		conversation: {captureGeneration, status},
+		contextWindowSize: 20,
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
@@ -488,6 +493,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 	});
 	renderState(state('ready', 1));
 	const prompt = element('prompt');
+	assert.equal(element('context-window').value, '20');
 	prompt.value = 'Question for A';
 	prompt.listeners.get('input')();
 

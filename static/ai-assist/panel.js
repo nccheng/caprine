@@ -202,6 +202,7 @@ function render(state) {
 
 	renderedCaptureGeneration = state.conversation.captureGeneration;
 	renderMessageAnchor(state.anchor);
+	contextWindow.value = String(state.contextWindowSize);
 	renderContextReview(state.review);
 	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
 		promptInput.value = state.invocation.prompt;

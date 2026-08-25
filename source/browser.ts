@@ -909,6 +909,14 @@ async function captureMessengerContext(
 			});
 			return scrollContainer.scrollTop < previousScrollTop ? 'moved' : 'no-more-history';
 		},
+		isComplete(items) {
+			if (!command.anchorMessageId) {
+				return items.length >= command.requestedCount;
+			}
+
+			const anchorIndex = items.findIndex(item => item.messageId === command.anchorMessageId);
+			return anchorIndex >= Math.floor((command.requestedCount - 1) / 2);
+		},
 		isConversationCurrent: () => currentConversationId() === command.conversationId,
 		readPage: () => extractLoadedMessengerConversationContext(document),
 		requestedCount: command.requestedCount,

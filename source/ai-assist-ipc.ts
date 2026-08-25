@@ -44,6 +44,7 @@ export const aiAssistIpcChannels = {
 export type AiAssistPanelState = {
 	anchor?: MessageAnchorData & {sequence: number};
 	conversation: ConversationBindingState;
+	contextWindowSize: ContextWindowSize;
 	credentials: {
 		configured: boolean;
 		secureStorageAvailable: boolean;
@@ -634,7 +635,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		return false;
 	}
 
-	const keys = ['conversation', 'credentials', 'enabled', 'media', 'request', 'session'];
+	const keys = ['contextWindowSize', 'conversation', 'credentials', 'enabled', 'media', 'request', 'session'];
 	if (value.anchor !== undefined) {
 		keys.push('anchor');
 	}
@@ -648,6 +649,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 	}
 
 	return hasExactKeys(value, keys)
+		&& contextWindowSizes.includes(value.contextWindowSize as never)
 		&& isConversationState(value.conversation)
 		&& (value.anchor === undefined || (
 			isRecord(value.anchor)

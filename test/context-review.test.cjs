@@ -43,6 +43,31 @@ test('backfill merging preserves repeated anonymous omissions while removing pag
 		'message-2',
 		'message-3',
 	]);
+	assert.equal(mergeContextPages([omission], [omission]).length, 2);
+});
+
+test('anchor backfill continues until enough older messages can center the window', async () => {
+	let page = messages(20).slice(10);
+	let attempts = 0;
+	const capture = await captureBoundedContext({
+		async backfillOnce() {
+			attempts += 1;
+			page = messages(20).slice(Math.max(0, 10 - (attempts * 5)));
+			return 'moved';
+		},
+		isComplete(items) {
+			const anchorIndex = items.findIndex(item => item.messageId === 'message-11');
+			return anchorIndex >= 4;
+		},
+		isConversationCurrent: () => true,
+		readPage: () => page,
+		requestedCount: 10,
+		restore() {},
+	});
+	assert.equal(capture.stopReason, 'complete');
+	assert.equal(attempts, 1);
+	assert.deepEqual(selectContextWindow(capture.items, 10, 'message-11').map(item => item.messageId),
+		messages(20).slice(6, 16).map(item => item.messageId));
 });
 
 test('bounded backfill reports partial history and always restores scroll state', async () => {

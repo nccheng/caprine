@@ -162,6 +162,7 @@ class AiAssistController {
 				},
 			} : {}),
 			conversation: this.conversationBinding.panelState,
+			contextWindowSize: config.get('aiAssistContextWindowSize'),
 			credentials: {
 				configured: this.hasApiKey,
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
