@@ -81,9 +81,9 @@ function isSameConversationSnapshot(
 		&& left.sessionId === right.sessionId;
 }
 
-export class ConversationBoundAnswer {
+export class ConversationBoundAnswer<Answer = string> {
 	private stored?: {
-		answer: string;
+		answer: Answer;
 		snapshot: ConversationSnapshot;
 	};
 
@@ -92,7 +92,7 @@ export class ConversationBoundAnswer {
 	}
 
 	store(
-		answer: string,
+		answer: Answer,
 		requestSnapshot: Readonly<ConversationSnapshot>,
 		currentSnapshot: Readonly<ConversationSnapshot> | undefined,
 	): boolean {
@@ -107,7 +107,7 @@ export class ConversationBoundAnswer {
 		return true;
 	}
 
-	read(currentSnapshot: Readonly<ConversationSnapshot> | undefined): string | undefined {
+	read(currentSnapshot: Readonly<ConversationSnapshot> | undefined): Answer | undefined {
 		return isSameConversationSnapshot(this.stored?.snapshot, currentSnapshot)
 			? this.stored!.answer
 			: undefined;

@@ -7,6 +7,7 @@ const testKeyButton = document.querySelector('#test-key-button');
 const deleteKeyButton = document.querySelector('#delete-key-button');
 const refreshConversationButton = document.querySelector('#refresh-conversation-button');
 const contextWindow = document.querySelector('#context-window');
+const webSearchMode = document.querySelector('#web-search-mode');
 const contextAvailability = document.querySelector('#context-availability');
 const contextItems = document.querySelector('#context-items');
 const newMessages = document.querySelector('#new-messages');
@@ -43,7 +44,7 @@ function shouldClearPrompt(state) {
 
 function answerForState(state) {
 	return state.conversation.status === 'ready'
-		? (state.request.answer ?? 'No answer yet.')
+		? (state.request.answer?.text ?? 'No answer yet.')
 		: 'No answer yet.';
 }
 
@@ -279,6 +280,7 @@ function render(state) {
 	renderedCaptureGeneration = state.conversation.captureGeneration;
 	renderMessageAnchor(state.anchor);
 	contextWindow.value = String(state.contextWindowSize);
+	webSearchMode.value = state.webSearchMode;
 	renderContextReview(state.review, isRequesting);
 	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
 		promptInput.value = state.invocation.prompt;
@@ -319,6 +321,7 @@ function render(state) {
 	mediaStatus.textContent = mediaStatusForState(state);
 	promptInput.disabled = isRequesting || isReviewLocked || !isConversationReady;
 	contextWindow.disabled = isRequesting || isContextCapturing || !isConversationReady;
+	webSearchMode.disabled = isRequesting || isReviewLocked || !isConversationReady;
 	refreshContextButton.disabled = isRequesting || isContextCapturing || !isConversationReady;
 	refreshContextButton.textContent = state.review?.newMessagesAvailable ? 'Refresh context — new messages available' : 'Refresh context';
 	askButton.textContent = isReviewLocked
@@ -364,6 +367,10 @@ refreshContextButton.addEventListener('click', async () => {
 
 contextWindow.addEventListener('change', async () => {
 	render(await window.caprineAiAssist.setContextWindow(Number(contextWindow.value)));
+});
+
+webSearchMode.addEventListener('change', async () => {
+	render(await window.caprineAiAssist.setWebSearchMode(webSearchMode.value));
 });
 
 mediaForm.addEventListener('submit', async event => {

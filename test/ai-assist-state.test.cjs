@@ -56,16 +56,25 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		conversation: {captureGeneration: 2, displayName: 'Derek', status: 'ready'},
 		contextCapturePending: false,
 		contextWindowSize: 10,
+		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
-		request: {answer: 'private'},
+		request: {
+			answer: {
+				text: 'private',
+				webSearch: {
+					citations: [], mode: 'off', ran: false, sources: [],
+				},
+			},
+		},
 		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
 	}), true);
 	assert.equal(isAiAssistPanelState({
 		conversation: {captureGeneration: 2, status: 'ready'},
 		contextCapturePending: false,
 		contextWindowSize: 10,
+		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
@@ -120,6 +129,8 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'refresh-context'}), true);
 	assert.equal(isAiAssistPanelCommand({requestedCount: 50, type: 'set-context-window'}), true);
 	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
+	assert.equal(isAiAssistPanelCommand({mode: 'always', type: 'set-web-search-mode'}), true);
+	assert.equal(isAiAssistPanelCommand({mode: 'sometimes', type: 'set-web-search-mode'}), false);
 	assert.equal(isAiAssistPanelCommand({
 		editedExcerpt: 'Redacted',
 		itemId: 'context-capture-1:0',
@@ -234,6 +245,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		conversation: {captureGeneration: 2, status: 'ready'},
 		contextCapturePending: false,
 		contextWindowSize: 20,
+		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {
@@ -254,6 +266,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelState(panelStateWithHandle), true);
 	assert.equal(isAiAssistPanelState({...panelStateWithHandle, contextCapturePending: 'yes'}), false);
 	assert.equal(isAiAssistPanelState({...panelStateWithHandle, contextWindowSize: 12}), false);
+	assert.equal(isAiAssistPanelState({...panelStateWithHandle, webSearchMode: 'sometimes'}), false);
 	assert.equal(isAiAssistPanelState({
 		...panelStateWithHandle,
 		invocation: {prompt: 'Exact inline question', sequence: 1},
@@ -444,6 +457,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	const elements = new Map();
 	let activeElement;
 	const reviewCommands = [];
+	const webSearchModeCommands = [];
 	const commandState = {current: undefined};
 	const element = id => {
 		if (!elements.has(id)) {
@@ -510,6 +524,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				async resolveMedia() {},
 				async saveApiKey() {},
 				async setContextWindow() {},
+				async setWebSearchMode(mode) {
+					webSearchModeCommands.push(mode);
+					return commandState.current;
+				},
 				async submitPrompt() {},
 				async testApiKey() {},
 			},
@@ -524,6 +542,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		conversation: {captureGeneration, status},
 		contextCapturePending: false,
 		contextWindowSize: 20,
+		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
 		enabled: true,
 		media: {candidates: []},
@@ -533,10 +552,23 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	renderState(state('ready', 1));
 	const prompt = element('prompt');
 	assert.equal(element('context-window').value, '20');
+	assert.equal(element('web-search-mode').value, 'always');
+	commandState.current = {...state('ready', 1), webSearchMode: 'auto'};
+	element('web-search-mode').value = 'auto';
+	await element('web-search-mode').listeners.get('change')();
+	assert.deepEqual(webSearchModeCommands, ['auto']);
+	assert.equal(element('web-search-mode').value, 'auto');
 	prompt.value = 'Question for A';
 	prompt.listeners.get('input')();
 
-	renderState(state('changed', 2, {answer: 'Stale answer for A'}));
+	renderState(state('changed', 2, {
+		answer: {
+			text: 'Stale answer for A',
+			webSearch: {
+				citations: [], mode: 'off', ran: false, sources: [],
+			},
+		},
+	}));
 	assert.equal(prompt.value, '');
 	assert.equal(element('answer-output').textContent, 'No answer yet.');
 
@@ -630,7 +662,14 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	renderState({
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},
-		request: {answer: 'Completed answer'},
+		request: {
+			answer: {
+				text: 'Completed answer',
+				webSearch: {
+					citations: [], mode: 'always', ran: true, sources: [],
+				},
+			},
+		},
 	});
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('ask-button').disabled, true);
@@ -691,4 +730,11 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	prompt.listeners.get('input')();
 	renderState(state('ready', 4));
 	assert.equal(prompt.value, '');
+});
+
+test('panel discloses web-search inputs and defaults the selector to Always', () => {
+	const html = readFileSync('static/ai-assist/index.html', 'utf8');
+	assert.match(html, /id="web-search-mode"/);
+	assert.match(html, /<option value="always">Always — require a search<\/option>/);
+	assert.match(html, /exact question and selected Messenger excerpts may be used to formulate web searches/);
 });

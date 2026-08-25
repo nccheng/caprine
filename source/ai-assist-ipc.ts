@@ -19,10 +19,13 @@ import {
 	ConversationContextItem,
 } from './messenger-context';
 import {
-	openAiAnswerCharacterLimit,
 	openAiErrorCodes,
+	isOpenAiAnswer,
+	OpenAiAnswer,
 	OpenAiErrorCode,
 	openAiPromptCharacterLimit,
+	WebSearchMode,
+	webSearchModes,
 } from './openai-client';
 import {
 	maximumMediaBytes,
@@ -46,6 +49,7 @@ export type AiAssistPanelState = {
 	conversation: ConversationBindingState;
 	contextCapturePending: boolean;
 	contextWindowSize: ContextWindowSize;
+	webSearchMode: WebSearchMode;
 	credentials: {
 		configured: boolean;
 		secureStorageAvailable: boolean;
@@ -69,7 +73,7 @@ export type AiAssistPanelState = {
 		sequence: number;
 	};
 	request: {
-		answer?: string;
+		answer?: OpenAiAnswer;
 		error?: {
 			code: OpenAiErrorCode;
 			message: string;
@@ -104,6 +108,7 @@ export type AiAssistPanelCommand =
 	| {type: 'resolve-media'; kind: MediaKind; messageId: string}
 	| {type: 'save-api-key'; apiKey: string}
 	| {requestedCount: ContextWindowSize; type: 'set-context-window'}
+	| {mode: WebSearchMode; type: 'set-web-search-mode'}
 	| {type: 'submit-prompt'; prompt: string}
 	| {type: 'test-api-key'};
 
@@ -421,6 +426,11 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 			&& contextWindowSizes.includes(value.requestedCount as never);
 	}
 
+	if (value.type === 'set-web-search-mode') {
+		return hasExactKeys(value, ['mode', 'type'])
+			&& webSearchModes.includes(value.mode as never);
+	}
+
 	if (value.type === 'remove-context-item') {
 		return hasExactKeys(value, ['itemId', 'reviewSequence', 'type'])
 			&& isBoundedString(value.itemId, 200)
@@ -493,7 +503,7 @@ function isRequestState(value: unknown): boolean {
 	}
 
 	return hasExactKeys(value, requestKeys)
-		&& (value.answer === undefined || (typeof value.answer === 'string' && value.answer.length <= openAiAnswerCharacterLimit))
+		&& (value.answer === undefined || isOpenAiAnswer(value.answer))
 		&& (value.notice === undefined || typeof value.notice === 'string')
 		&& (value.error === undefined || isRequestError(value.error));
 }
@@ -641,7 +651,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		return false;
 	}
 
-	const keys = ['contextCapturePending', 'contextWindowSize', 'conversation', 'credentials', 'enabled', 'media', 'request', 'session'];
+	const keys = ['contextCapturePending', 'contextWindowSize', 'conversation', 'credentials', 'enabled', 'media', 'request', 'session', 'webSearchMode'];
 	if (value.anchor !== undefined) {
 		keys.push('anchor');
 	}
@@ -657,6 +667,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 	return hasExactKeys(value, keys)
 		&& typeof value.contextCapturePending === 'boolean'
 		&& contextWindowSizes.includes(value.contextWindowSize as never)
+		&& webSearchModes.includes(value.webSearchMode as never)
 		&& isConversationState(value.conversation)
 		&& (value.anchor === undefined || (
 			isRecord(value.anchor)

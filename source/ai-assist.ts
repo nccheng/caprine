@@ -47,6 +47,7 @@ import {
 } from './media-resolver-ipc';
 import {
 	OpenAiClient,
+	OpenAiAnswer,
 	openAiPromptCharacterLimit,
 	OpenAiErrorCode,
 	OpenAiRequestError,
@@ -77,7 +78,7 @@ class AiAssistController {
 		snapshot: Readonly<ConversationSnapshot>;
 	};
 
-	private readonly answer = new ConversationBoundAnswer();
+	private readonly answer = new ConversationBoundAnswer<OpenAiAnswer>();
 	private readonly conversationBinding = new AiConversationBinding();
 	private readonly conversationLifecycle = new ConversationLifecycle();
 	private conversationReportCounter = 0;
@@ -169,6 +170,7 @@ class AiAssistController {
 			conversation: this.conversationBinding.panelState,
 			contextCapturePending: this.pendingContextCapture !== undefined,
 			contextWindowSize: config.get('aiAssistContextWindowSize'),
+			webSearchMode: config.get('aiAssistWebSearchMode'),
 			credentials: {
 				configured: this.hasApiKey,
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
@@ -316,6 +318,19 @@ class AiAssistController {
 					this.review?.snapshot.question ?? this.invocation?.prompt ?? '',
 					this.anchor?.snapshot.item.messageId,
 				);
+				break;
+			}
+
+			case 'set-web-search-mode': {
+				if (this.sessionState.snapshot.status === 'requesting' || this.review?.locked) {
+					break;
+				}
+
+				config.set('aiAssistWebSearchMode', value.mode);
+				this.answer.clear();
+				this.error = undefined;
+				this.notice = `Web search mode set to ${value.mode}.`;
+				this.broadcastState();
 				break;
 			}
 
@@ -1123,6 +1138,7 @@ class AiAssistController {
 	}
 
 	private async runOpenAiRequest(prompt: string, isConnectionTest: boolean): Promise<void> {
+		const searchMode = isConnectionTest ? 'off' : config.get('aiAssistWebSearchMode');
 		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
 		const reportedGeneration = await this.requestConversationState();
 		if (reportedGeneration === undefined) {
@@ -1177,7 +1193,7 @@ class AiAssistController {
 		this.broadcastState();
 
 		try {
-			const answer = await this.openAiClient.createResponse(apiKey, prompt, request.abortController.signal);
+			const answer = await this.openAiClient.createResponse(apiKey, prompt, searchMode, request.abortController.signal);
 			if (this.activeRequest?.id !== request.id) {
 				return;
 			}

@@ -43,6 +43,13 @@
 					<option value="20">20 messages</option>
 					<option value="50">50 messages</option>
 				</select>
+				<label for="web-search-mode">Web search</label>
+				<select id="web-search-mode" name="web-search-mode">
+					<option value="always">Always — require a search</option>
+					<option value="auto">Auto — let OpenAI decide</option>
+					<option value="off">Off — never search</option>
+				</select>
+				<p id="web-search-disclosure">Your exact question and selected Messenger excerpts may be used to formulate web searches when Always or Auto is selected.</p>
 				<p id="context-availability" class="context-availability">No context captured.</p>
 				<p id="new-messages" class="new-messages" role="status" hidden>New messages available. This frozen review has not changed.</p>
 				<button id="refresh-context-button" class="secondary" type="button">Refresh context</button>

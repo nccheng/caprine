@@ -6,3 +6,4 @@ mas.provisionprofile
 .vscode
 .DS_store
 /.devcontainer
+/.env.local
