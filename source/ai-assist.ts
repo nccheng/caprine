@@ -52,9 +52,11 @@ import {
 	OpenAiClient,
 	OpenAiAnswer,
 	openAiPromptCharacterLimit,
+	openAiResponseModel,
 	OpenAiErrorCode,
 	OpenAiRequestError,
 } from './openai-client';
+import {AiHistoryInteractionInput, AiHistoryStore} from './ai-history-store';
 import {
 	buildReviewedPrompt,
 	ContextReviewSnapshot,
@@ -94,6 +96,7 @@ class AiAssistController {
 	private draftInsertionRequestCounter = 0;
 	private readonly conversationBinding = new AiConversationBinding();
 	private readonly conversationLifecycle = new ConversationLifecycle();
+	private currentHistoryInteractionId?: string;
 	private conversationReportCounter = 0;
 	private readonly conversationReportGate = new ConversationReportGate();
 	private contextCaptureCounter = 0;
@@ -105,6 +108,8 @@ class AiAssistController {
 	private mediaResolution?: MessengerMediaResolution;
 	private readonly mediaCleanupReady: Promise<void>;
 	private readonly mediaResolver: MessengerMediaResolver;
+	private readonly historyStore?: AiHistoryStore;
+	private historyChat?: {chatId: string; conversationId: string; sessionId: string};
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
 	private readonly pendingConversationReports = new Map<string, (generation?: number) => void>();
@@ -149,6 +154,14 @@ class AiAssistController {
 	private panelWindow?: BrowserWindow;
 
 	constructor(private readonly messengerWindow: BrowserWindow) {
+		try {
+			this.historyStore = new AiHistoryStore({
+				databasePath: path.join(app.getPath('userData'), 'ai-assist-history.sqlite'),
+			});
+		} catch {
+			console.error('AI Assist local history is unavailable');
+		}
+
 		this.mediaResolver = new MessengerMediaResolver(
 			path.join(app.getPath('temp'), 'caprine-ai-assist-media'),
 			async (url, init) => messengerWindow.webContents.session.fetch(url, init),
@@ -1187,6 +1200,17 @@ class AiAssistController {
 		this.notice = result.status === 'inserted'
 			? 'Answer inserted into the Messenger draft. Review it there and press Send yourself.'
 			: this.draftInsertionFailureMessage(result.reason);
+		if (result.status === 'inserted' && this.currentHistoryInteractionId) {
+			try {
+				this.historyStore?.updateShareStatus(this.currentHistoryInteractionId, {
+					draftStatus: 'inserted',
+					shareStatus: 'private',
+				});
+			} catch {
+				this.notice = 'Answer inserted into the Messenger draft, but Caprine could not update its local history status.';
+			}
+		}
+
 		this.broadcastState();
 	}
 
@@ -1393,6 +1417,7 @@ class AiAssistController {
 		const request = {
 			abortController: new AbortController(),
 			id: ++this.requestCounter,
+			requestedAt: Date.now(),
 			snapshot: conversationSnapshot,
 		};
 		this.activeRequest = request;
@@ -1416,6 +1441,11 @@ class AiAssistController {
 				this.error = undefined;
 				this.notice = 'OpenAI API key works.';
 			} else {
+				const historyInteractionId = this.persistCompletedInteraction(
+					answer,
+					request.requestedAt,
+					request.snapshot,
+				);
 				if (!this.answer.store(
 					answer,
 					request.snapshot,
@@ -1425,6 +1455,8 @@ class AiAssistController {
 					this.broadcastState();
 					return;
 				}
+
+				this.currentHistoryInteractionId = historyInteractionId;
 
 				this.draftInsertionAuthorization.issue({
 					answerGeneration: ++this.answerGeneration,
@@ -1466,6 +1498,65 @@ class AiAssistController {
 			&& this.sessionState.snapshot.status !== 'closed'
 			&& this.sessionState.snapshot.status !== 'invalidated'
 			&& this.isRequestSnapshotCurrent(snapshot);
+	}
+
+	private persistCompletedInteraction(
+		answer: OpenAiAnswer,
+		requestedAt: number,
+		snapshot: Readonly<ConversationSnapshot>,
+	): string {
+		const review = this.review?.snapshot;
+		if (!review || review.question.length === 0 || !this.historyStore) {
+			throw new OpenAiRequestError('provider-unavailable', 'Caprine could not preserve the reviewed context. Nothing was shown.');
+		}
+
+		try {
+			const input: AiHistoryInteractionInput = {
+				answer: answer.text,
+				browsingMode: answer.webSearch.mode,
+				completedAt: Date.now(),
+				context: structuredClone({
+					actualCount: review.actualCount,
+					contextVersion: review.contextVersion,
+					items: review.items,
+					question: review.question,
+					requestedCount: review.requestedCount,
+				}),
+				model: openAiResponseModel,
+				outcome: 'completed',
+				provider: 'openai',
+				question: review.question,
+				requestedAt,
+				webSearch: {
+					citations: answer.webSearch.citations,
+					ran: answer.webSearch.ran,
+					sources: answer.webSearch.sources,
+				},
+			};
+			if (
+				!this.historyChat
+				|| this.historyChat.conversationId !== snapshot.conversationId
+				|| this.historyChat.sessionId !== snapshot.sessionId
+			) {
+				const result = this.historyStore.createChatWithCompletedInteraction(
+					snapshot.conversationId,
+					input,
+				);
+				this.historyChat = {
+					chatId: result.chatId,
+					conversationId: snapshot.conversationId,
+					sessionId: snapshot.sessionId,
+				};
+				return result.interactionId;
+			}
+
+			return this.historyStore.appendCompletedInteraction(this.historyChat.chatId, input);
+		} catch {
+			throw new OpenAiRequestError(
+				'provider-unavailable',
+				'OpenAI answered, but Caprine could not save the completed interaction. Nothing was shown.',
+			);
+		}
 	}
 
 	private isRequestSnapshotCurrent(snapshot: Readonly<ConversationSnapshot>): boolean {
@@ -1528,6 +1619,7 @@ class AiAssistController {
 
 	private clearAnswer(): void {
 		this.answer.clear();
+		this.currentHistoryInteractionId = undefined;
 		this.draftInsertionAuthorization.invalidate();
 	}
 
