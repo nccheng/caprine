@@ -56,7 +56,7 @@ import {
 	OpenAiErrorCode,
 	OpenAiRequestError,
 } from './openai-client';
-import {AiHistoryStore} from './ai-history-store';
+import {AiHistoryInteractionInput, AiHistoryStore} from './ai-history-store';
 import {
 	buildReviewedPrompt,
 	ContextReviewSnapshot,
@@ -1510,20 +1510,8 @@ class AiAssistController {
 			throw new OpenAiRequestError('provider-unavailable', 'Caprine could not preserve the reviewed context. Nothing was shown.');
 		}
 
-		if (
-			!this.historyChat
-			|| this.historyChat.conversationId !== snapshot.conversationId
-			|| this.historyChat.sessionId !== snapshot.sessionId
-		) {
-			this.historyChat = {
-				chatId: this.historyStore.createChat(snapshot.conversationId),
-				conversationId: snapshot.conversationId,
-				sessionId: snapshot.sessionId,
-			};
-		}
-
 		try {
-			return this.historyStore.appendCompletedInteraction(this.historyChat.chatId, {
+			const input: AiHistoryInteractionInput = {
 				answer: answer.text,
 				browsingMode: answer.webSearch.mode,
 				completedAt: Date.now(),
@@ -1544,7 +1532,25 @@ class AiAssistController {
 					ran: answer.webSearch.ran,
 					sources: answer.webSearch.sources,
 				},
-			});
+			};
+			if (
+				!this.historyChat
+				|| this.historyChat.conversationId !== snapshot.conversationId
+				|| this.historyChat.sessionId !== snapshot.sessionId
+			) {
+				const result = this.historyStore.createChatWithCompletedInteraction(
+					snapshot.conversationId,
+					input,
+				);
+				this.historyChat = {
+					chatId: result.chatId,
+					conversationId: snapshot.conversationId,
+					sessionId: snapshot.sessionId,
+				};
+				return result.interactionId;
+			}
+
+			return this.historyStore.appendCompletedInteraction(this.historyChat.chatId, input);
 		} catch {
 			throw new OpenAiRequestError(
 				'provider-unavailable',

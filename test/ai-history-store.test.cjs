@@ -140,6 +140,29 @@ test('injected transaction failure rolls back the interaction and both turns', (
 	database.close();
 });
 
+test('first-interaction failure rolls back its new chat as one atomic unit', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({
+		databasePath,
+		failAt(stage) {
+			if (stage === 'after-question-turn') {
+				throw new Error('injected first-interaction failure');
+			}
+		},
+		generateId: idGenerator(),
+	});
+	assert.throws(
+		() => store.createChatWithCompletedInteraction('thread:first-failure', interaction()),
+		/injected first-interaction failure/,
+	);
+	assert.deepEqual(store.loadConversation('thread:first-failure'), []);
+	store.close();
+
+	const reopened = new AiHistoryStore({databasePath});
+	assert.deepEqual(reopened.loadConversation('thread:first-failure'), []);
+	reopened.close();
+});
+
 test('failed and cancelled outcomes cannot be recorded as completed interactions', () => {
 	const databasePath = temporaryDatabasePath();
 	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});

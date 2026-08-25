@@ -119,60 +119,28 @@ export class AiHistoryStore {
 
 	createChat(conversationId: string): string {
 		requireIdentifier(conversationId, 'conversationId');
-		const id = requireIdentifier(this.generateId(), 'generated chat ID');
-		this.database.prepare(`
-			INSERT INTO ai_history_chats (id, conversation_id, created_at)
-			VALUES (?, ?, ?)
-		`).run(id, conversationId, this.now());
-		return id;
+		return this.insertChat(conversationId);
+	}
+
+	createChatWithCompletedInteraction(
+		conversationId: string,
+		input: AiHistoryInteractionInput,
+	): {chatId: string; interactionId: string} {
+		requireIdentifier(conversationId, 'conversationId');
+		this.validateInteraction(input);
+		return this.transaction(() => {
+			const chatId = this.insertChat(conversationId);
+			return {
+				chatId,
+				interactionId: this.insertCompletedInteraction(chatId, input),
+			};
+		});
 	}
 
 	appendCompletedInteraction(chatId: string, input: AiHistoryInteractionInput): string {
 		requireIdentifier(chatId, 'chatId');
 		this.validateInteraction(input);
-		const interactionId = requireIdentifier(this.generateId(), 'generated interaction ID');
-		const questionTurnId = requireIdentifier(this.generateId(), 'generated question turn ID');
-		const answerTurnId = requireIdentifier(this.generateId(), 'generated answer turn ID');
-
-		this.database.exec('BEGIN IMMEDIATE');
-		try {
-			this.database.prepare(`
-				INSERT INTO ai_history_interactions (
-					id, chat_id, requested_at, completed_at, context_json, provider, model,
-					browsing_mode, web_search_ran, web_search_citations_json,
-					web_search_sources_json, draft_status, share_status, artifact_references_json,
-					outcome
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not-inserted', 'private', ?, 'completed')
-			`).run(
-				interactionId,
-				chatId,
-				input.requestedAt,
-				input.completedAt,
-				JSON.stringify(input.context),
-				input.provider,
-				input.model,
-				input.browsingMode,
-				input.webSearch.ran ? 1 : 0,
-				JSON.stringify(input.webSearch.citations),
-				JSON.stringify(input.webSearch.sources),
-				JSON.stringify(input.artifactReferences ?? []),
-			);
-			this.failAt?.('after-interaction');
-			this.database.prepare(`
-				INSERT INTO ai_history_turns (id, interaction_id, role, content, created_at)
-				VALUES (?, ?, 'user', ?, ?)
-			`).run(questionTurnId, interactionId, input.question, input.requestedAt);
-			this.failAt?.('after-question-turn');
-			this.database.prepare(`
-				INSERT INTO ai_history_turns (id, interaction_id, role, content, created_at)
-				VALUES (?, ?, 'assistant', ?, ?)
-			`).run(answerTurnId, interactionId, input.answer, input.completedAt);
-			this.database.exec('COMMIT');
-			return interactionId;
-		} catch (error) {
-			this.database.exec('ROLLBACK');
-			throw error;
-		}
+		return this.transaction(() => this.insertCompletedInteraction(chatId, input));
 	}
 
 	updateShareStatus(
@@ -258,6 +226,65 @@ export class AiHistoryStore {
 
 	clearAll(): number {
 		return Number(this.database.prepare('DELETE FROM ai_history_chats').run().changes);
+	}
+
+	private insertChat(conversationId: string): string {
+		const id = requireIdentifier(this.generateId(), 'generated chat ID');
+		this.database.prepare(`
+			INSERT INTO ai_history_chats (id, conversation_id, created_at)
+			VALUES (?, ?, ?)
+		`).run(id, conversationId, this.now());
+		return id;
+	}
+
+	private insertCompletedInteraction(chatId: string, input: AiHistoryInteractionInput): string {
+		const interactionId = requireIdentifier(this.generateId(), 'generated interaction ID');
+		const questionTurnId = requireIdentifier(this.generateId(), 'generated question turn ID');
+		const answerTurnId = requireIdentifier(this.generateId(), 'generated answer turn ID');
+		this.database.prepare(`
+			INSERT INTO ai_history_interactions (
+				id, chat_id, requested_at, completed_at, context_json, provider, model,
+				browsing_mode, web_search_ran, web_search_citations_json,
+				web_search_sources_json, draft_status, share_status, artifact_references_json,
+				outcome
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not-inserted', 'private', ?, 'completed')
+		`).run(
+			interactionId,
+			chatId,
+			input.requestedAt,
+			input.completedAt,
+			JSON.stringify(input.context),
+			input.provider,
+			input.model,
+			input.browsingMode,
+			input.webSearch.ran ? 1 : 0,
+			JSON.stringify(input.webSearch.citations),
+			JSON.stringify(input.webSearch.sources),
+			JSON.stringify(input.artifactReferences ?? []),
+		);
+		this.failAt?.('after-interaction');
+		this.database.prepare(`
+			INSERT INTO ai_history_turns (id, interaction_id, role, content, created_at)
+			VALUES (?, ?, 'user', ?, ?)
+		`).run(questionTurnId, interactionId, input.question, input.requestedAt);
+		this.failAt?.('after-question-turn');
+		this.database.prepare(`
+			INSERT INTO ai_history_turns (id, interaction_id, role, content, created_at)
+			VALUES (?, ?, 'assistant', ?, ?)
+		`).run(answerTurnId, interactionId, input.answer, input.completedAt);
+		return interactionId;
+	}
+
+	private transaction<Result>(operation: () => Result): Result {
+		this.database.exec('BEGIN IMMEDIATE');
+		try {
+			const result = operation();
+			this.database.exec('COMMIT');
+			return result;
+		} catch (error) {
+			this.database.exec('ROLLBACK');
+			throw error;
+		}
 	}
 
 	private validateInteraction(input: AiHistoryInteractionInput): void {
