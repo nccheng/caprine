@@ -823,13 +823,14 @@ function isHistoryState(value: unknown): boolean {
 		&& Array.isArray(value.chats)
 		&& value.chats.length <= maximumHistoryChats
 		&& value.chats.every(chat => isRecord(chat)
-			&& hasExactKeys(chat, ['badges', 'contextCount', 'createdAt', 'id', 'interactions', 'lastActivityAt', 'preview', 'title'])
+			&& hasExactKeys(chat, ['badges', 'contextCount', 'createdAt', 'id', 'interactionCount', 'interactions', 'lastActivityAt', 'preview', 'title'])
 			&& Array.isArray(chat.badges)
 			&& chat.badges.length <= 4
 			&& chat.badges.every(badge => ['Audio', 'Image', 'Video', 'Web'].includes(badge as string))
 			&& Number.isSafeInteger(chat.contextCount)
 			&& Number.isSafeInteger(chat.createdAt)
 			&& isBoundedString(chat.id, 512)
+			&& Number.isSafeInteger(chat.interactionCount)
 			&& Array.isArray(chat.interactions)
 			&& chat.interactions.length <= maximumHistoryInteractionsPerChat
 			&& chat.interactions.every(interaction => isHistoryInteraction(interaction))

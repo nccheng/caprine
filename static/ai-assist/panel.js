@@ -289,6 +289,12 @@ function appendHistoryDetail(chat) {
 	const heading = document.createElement('h3');
 	heading.textContent = chat.title;
 	historyDetail.append(heading);
+	if (chat.interactions.length < chat.interactionCount) {
+		const boundedNotice = document.createElement('p');
+		boundedNotice.textContent = `Showing the ${chat.interactions.length} most recent of ${chat.interactionCount} interactions to keep the local panel responsive.`;
+		historyDetail.append(boundedNotice);
+	}
+
 	if (chat.interactions.length === 0) {
 		const empty = document.createElement('p');
 		empty.textContent = 'This new AI chat has no questions yet.';

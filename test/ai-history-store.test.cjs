@@ -133,15 +133,44 @@ test('conversation search matches turns, frozen context, and source titles witho
 				item: {confidence: 'high', sender: {role: 'incoming'}, text: 'Frozen meeting notes'},
 			}],
 		},
-		webSearch: {citations: [], ran: true, sources: [{title: 'Rare source title', url: 'https://example.com/rare'}]},
+		webSearch: {
+			citations: [{
+				contentIndex: 0,
+				endIndex: 4,
+				outputIndex: 0,
+				providerEndIndex: 4,
+				providerStartIndex: 0,
+				startIndex: 0,
+				title: 'Rare citation title',
+				url: 'https://example.com/citation',
+			}],
+			ran: true,
+			sources: [],
+		},
 	}));
 	store.appendCompletedInteraction(other, interaction({question: 'Unrelated question', context: {...interaction().context, question: 'Unrelated question'}}));
 	store.appendCompletedInteraction(duplicateName, interaction({answer: 'Answer with a distinctive phrase'}));
 	assert.deepEqual(store.searchConversation('thread:search', 'distinctive').map(chat => chat.id), [matching]);
 	assert.deepEqual(store.searchConversation('thread:search', 'meeting notes').map(chat => chat.id), [matching]);
-	assert.deepEqual(store.searchConversation('thread:search', 'rare source').map(chat => chat.id), [matching]);
+	assert.deepEqual(store.searchConversation('thread:search', 'rare citation').map(chat => chat.id), [matching]);
 	assert.deepEqual(store.searchConversation('thread:search', 'unrelated').map(chat => chat.id), [other]);
 	assert.deepEqual(store.searchConversation('thread:search', 'missing'), []);
+	store.close();
+});
+
+test('workspace summaries are bounded and ordered by latest activity', () => {
+	const databasePath = temporaryDatabasePath();
+	let now = 1;
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator(), now: () => now++});
+	const older = store.createChat('thread:activity');
+	const newer = store.createChat('thread:activity');
+	store.appendCompletedInteraction(newer, interaction({completedAt: 200, requestedAt: 190}));
+	store.appendCompletedInteraction(older, interaction({completedAt: 300, requestedAt: 290}));
+	const summaries = store.loadConversationSummaries('thread:activity');
+	assert.deepEqual(summaries.map(summary => summary.id), [older, newer]);
+	assert.equal(summaries[0].lastActivityAt, 300);
+	assert.equal(store.loadChat('thread:activity', newer, 1).interactions.length, 1);
+	assert.equal(store.loadChat('thread:other', newer, 1), undefined);
 	store.close();
 });
 

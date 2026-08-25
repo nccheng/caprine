@@ -261,12 +261,15 @@ class AiAssistController {
 		}
 
 		try {
-			const chats = buildAiHistoryChatViews(this.historyQuery
-				? this.historyStore.searchConversation(snapshot.conversationId, this.historyQuery)
-				: this.historyStore.loadConversation(snapshot.conversationId));
-			if (!chats.some(chat => chat.id === this.selectedHistoryChatId)) {
-				this.selectedHistoryChatId = chats[0]?.id;
+			const summaries = this.historyStore.loadConversationSummaries(snapshot.conversationId, this.historyQuery);
+			if (!summaries.some(chat => chat.id === this.selectedHistoryChatId)) {
+				this.selectedHistoryChatId = summaries[0]?.id;
 			}
+
+			const selectedChat = this.selectedHistoryChatId
+				? this.historyStore.loadChat(snapshot.conversationId, this.selectedHistoryChatId)
+				: undefined;
+			const chats = buildAiHistoryChatViews(summaries, selectedChat);
 
 			return {
 				chats,
@@ -1649,7 +1652,7 @@ class AiAssistController {
 		}
 
 		try {
-			if (!this.historyStore.loadConversation(snapshot.conversationId).some(chat => chat.id === chatId)) {
+			if (!this.historyStore.loadChat(snapshot.conversationId, chatId, 1)) {
 				return;
 			}
 

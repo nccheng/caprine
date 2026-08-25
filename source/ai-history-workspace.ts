@@ -1,7 +1,7 @@
-import {AiHistoryChat, AiHistoryInteraction} from './ai-history-store';
+import {AiHistoryChat, AiHistoryChatSummary, AiHistoryInteraction} from './ai-history-store';
 
 export const maximumHistoryChats = 100;
-export const maximumHistoryInteractionsPerChat = 100;
+export const maximumHistoryInteractionsPerChat = 25;
 
 export type AiHistoryBadge = 'Audio' | 'Image' | 'Video' | 'Web';
 
@@ -31,6 +31,7 @@ export type AiHistoryChatView = {
 	contextCount: number;
 	createdAt: number;
 	id: string;
+	interactionCount: number;
 	interactions: AiHistoryInteractionView[];
 	lastActivityAt: number;
 	preview: string;
@@ -77,14 +78,26 @@ function contextExcerpt(interaction: AiHistoryInteraction): AiHistoryContextItem
 }
 
 function interactionView(interaction: AiHistoryInteraction): AiHistoryInteractionView {
+	const citations = new Map<string, {title: string; url: string}>();
+	for (const citation of interaction.webSearch.citations) {
+		citations.set(citation.url, {
+			title: boundedText(citation.title ?? citation.url, 500),
+			url: boundedText(citation.url, 2048),
+		});
+	}
+
+	for (const source of interaction.webSearch.sources) {
+		citations.set(source.url, {
+			title: boundedText(source.title ?? source.url, 500),
+			url: boundedText(source.url, 2048),
+		});
+	}
+
 	return {
 		answer: boundedText(interaction.answer),
 		artifacts: (interaction.artifactReferences ?? []).slice(0, 100).map(({id, kind}) => ({id, kind})),
 		browsingMode: interaction.browsingMode,
-		citations: interaction.webSearch.sources.slice(0, 100).map(source => ({
-			title: boundedText(source.title ?? source.url, 500),
-			url: boundedText(source.url, 2048),
-		})),
+		citations: [...citations.values()].slice(0, 100),
 		completedAt: interaction.completedAt,
 		context: contextExcerpt(interaction),
 		draftStatus: interaction.draftStatus,
@@ -96,42 +109,24 @@ function interactionView(interaction: AiHistoryInteraction): AiHistoryInteractio
 	};
 }
 
-function chatBadges(chat: AiHistoryChat): AiHistoryBadge[] {
-	const badges = new Set<AiHistoryBadge>();
-	for (const interaction of chat.interactions) {
-		if (interaction.webSearch.ran) {
-			badges.add('Web');
-		}
-
-		for (const {item} of interaction.context.items) {
-			for (const attachment of item.attachments ?? []) {
-				const badge: Record<typeof attachment.kind, AiHistoryBadge> = {
-					audio: 'Audio',
-					image: 'Image',
-					video: 'Video',
-				};
-				badges.add(badge[attachment.kind]);
-			}
-		}
-	}
-
-	return [...badges];
-}
-
-export function buildAiHistoryChatViews(chats: AiHistoryChat[]): AiHistoryChatView[] {
-	return chats.slice(-maximumHistoryChats).reverse().map(chat => {
-		const interactions = chat.interactions.slice(-maximumHistoryInteractionsPerChat).map(interaction => interactionView(interaction));
-		const first = chat.interactions[0];
-		const last = chat.interactions.at(-1);
+export function buildAiHistoryChatViews(
+	summaries: AiHistoryChatSummary[],
+	selectedChat?: AiHistoryChat,
+): AiHistoryChatView[] {
+	return summaries.slice(0, maximumHistoryChats).map(summary => {
+		const interactions = summary.id === selectedChat?.id
+			? selectedChat.interactions.slice(-maximumHistoryInteractionsPerChat).map(interaction => interactionView(interaction))
+			: [];
 		return {
-			badges: chatBadges(chat),
-			contextCount: chat.interactions.reduce((total, interaction) => total + interaction.context.items.length, 0),
-			createdAt: chat.createdAt,
-			id: chat.id,
+			badges: summary.badges,
+			contextCount: summary.contextCount,
+			createdAt: summary.createdAt,
+			id: summary.id,
+			interactionCount: summary.interactionCount,
 			interactions,
-			lastActivityAt: last?.completedAt ?? chat.createdAt,
-			preview: boundedText(last?.answer ?? 'No answers yet.', 240),
-			title: boundedText(first?.question ?? 'New AI chat', 120),
+			lastActivityAt: summary.lastActivityAt,
+			preview: boundedText(summary.preview, 240),
+			title: boundedText(summary.title, 120),
 		};
 	});
 }

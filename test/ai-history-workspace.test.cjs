@@ -33,33 +33,56 @@ function interaction(overrides = {}) {
 }
 
 test('history workspace produces newest-first bounded renderer DTOs without local artifact paths', () => {
-	const chats = Array.from({length: maximumHistoryChats + 1}, (_, index) => ({
-		conversationId: 'messenger-thread:one',
+	const summaries = Array.from({length: maximumHistoryChats + 1}, (_, index) => ({
+		badges: index === 0 ? ['Web', 'Image'] : [],
+		contextCount: index === 0 ? 1 : 0,
 		createdAt: index,
 		id: `chat-${index}`,
-		interactions: index === maximumHistoryChats ? [interaction()] : [],
+		interactionCount: index === 0 ? 1 : 0,
+		lastActivityAt: maximumHistoryChats - index,
+		preview: index === 0 ? 'A'.repeat(300) : 'No answers yet.',
+		title: index === 0 ? 'First question' : 'New AI chat',
 	}));
-	const views = buildAiHistoryChatViews(chats);
+	const selectedChat = {
+		conversationId: 'messenger-thread:one',
+		createdAt: 0,
+		id: 'chat-0',
+		interactions: [interaction({
+			webSearch: {
+				citations: [{title: 'Citation only', url: 'https://example.com/citation'}],
+				ran: true,
+				sources: [],
+			},
+		})],
+	};
+	const views = buildAiHistoryChatViews(summaries, selectedChat);
 	assert.equal(views.length, maximumHistoryChats);
-	assert.equal(views[0].id, `chat-${maximumHistoryChats}`);
+	assert.equal(views[0].id, 'chat-0');
 	assert.equal(views[0].title, 'First question');
 	assert.equal(views[0].preview.length, 240);
 	assert.deepEqual(views[0].badges, ['Web', 'Image']);
 	assert.deepEqual(views[0].interactions[0].artifacts, [{id: 'transcript-1', kind: 'transcript'}]);
+	assert.deepEqual(views[0].interactions[0].citations, [{title: 'Citation only', url: 'https://example.com/citation'}]);
+	assert.equal(views[1].interactions.length, 0);
 	assert.equal(JSON.stringify(views).includes('/private/path'), false);
 });
 
 test('empty durable chats remain visible as new chats', () => {
 	assert.deepEqual(buildAiHistoryChatViews([{
-		conversationId: 'messenger-thread:one',
+		badges: [],
+		contextCount: 0,
 		createdAt: 50,
 		id: 'empty-chat',
-		interactions: [],
+		interactionCount: 0,
+		lastActivityAt: 50,
+		preview: 'No answers yet.',
+		title: 'New AI chat',
 	}])[0], {
 		badges: [],
 		contextCount: 0,
 		createdAt: 50,
 		id: 'empty-chat',
+		interactionCount: 0,
 		interactions: [],
 		lastActivityAt: 50,
 		preview: 'No answers yet.',
