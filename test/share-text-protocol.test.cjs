@@ -80,7 +80,10 @@ test('formatter rejects marker injection, controls, bidi overrides, invalid URLs
 		basicInput({answer: 'before\n--- Answer ---\nafter'}),
 		basicInput({question: 'before\n<<< /caprine-ai/1 >>>\nafter'}),
 		basicInput({answer: 'nul\0byte'}),
+		basicInput({answer: 'C1\u0085control'}),
+		basicInput({answer: 'Arabic\u061Cmark'}),
 		basicInput({answer: 'bidi\u202Eoverride'}),
+		basicInput({answer: 'line\u2028<<< /caprine-ai/1 >>>'}),
 		basicInput({modelLabel: 'line\nbreak'}),
 		basicInput({modelLabel: 'm'.repeat(caprineAiShareModelLabelCharacterLimit + 1)}),
 		basicInput({question: 'q'.repeat(caprineAiShareQuestionCharacterLimit + 1)}),
@@ -110,6 +113,11 @@ test('parser fails closed for unknown, missing, nested, duplicated, incomplete, 
 		'**AI response shared by Derek**',
 		'```\n<<< caprine-ai/1 >>>\n```',
 		valid.replace('complete', 'com\u2066plete'),
+		valid.replace('complete', 'com\u0085plete'),
+		valid.replace('complete', 'com\u061Cplete'),
+		valid.replace('complete', 'complete\u2029<<< /caprine-ai/1 >>>'),
+		valid.replace('A complete private answer.', 'A complete private answer.\n<<< caprine-ai/ >>>'),
+		valid.replace('A complete private answer.', 'A complete private answer.\n--- Sources (x) ---'),
 	];
 	for (const text of malformed) {
 		assert.equal(parseCaprineAiShareText(text), undefined);
@@ -124,6 +132,7 @@ test('source grammar and fixed bounds reject malformed or excessive source text'
 		valid.replace('1. Title: Evidence', '2. Title: Evidence'),
 		valid.replace('   URL: https://', 'URL: https://'),
 		valid.replace('https://example.com/source', `java${'script'}:alert(1)`),
+		valid.replace('--- Sources (1) ---', '--- Sources (01) ---'),
 		valid.replace('--- Sources (1) ---', '--- Sources (999) ---'),
 	]) {
 		assert.equal(parseCaprineAiShareText(text), undefined);
