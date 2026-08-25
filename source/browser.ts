@@ -34,10 +34,12 @@ import {maximumMediaBytes, MediaKind} from './media-contract';
 import {
 	captureLoadedMessengerMessageAnchor,
 	extractLoadedMessengerConversationContext,
+	extractLoadedMessengerConversationTail,
 	MessengerMessageAnchor,
 } from './messenger-context';
 import {
 	captureBoundedContext,
+	ContextCaptureCoordinator,
 	contextVersion,
 	restoredConversationScrollTop,
 	selectContextWindow,
@@ -82,6 +84,7 @@ let messageAnchorTarget: {
 	conversationId: string;
 	row: HTMLElement;
 } | undefined;
+const contextCaptureCoordinator = new ContextCaptureCoordinator();
 
 const selectedThreadSelectors = [
 	'a[aria-current="page"][href*="/messages/"]',
@@ -854,7 +857,7 @@ function reportConversationState(requestId?: string): void {
 	const event = {
 		...state,
 		...(state.status === 'available' ? {
-			contextVersion: contextVersion(extractLoadedMessengerConversationContext(document)),
+			contextVersion: contextVersion(extractLoadedMessengerConversationTail(document)),
 			mediaCandidates: extractLoadedMessengerMediaCandidates(document),
 		} : {}),
 		type: 'conversation-state',
@@ -880,6 +883,7 @@ function messengerConversationScrollContainer(): HTMLElement | undefined {
 
 async function captureMessengerContext(
 	command: Extract<AiAssistMessengerCommand, {type: 'capture-context'}>,
+	signal: AbortSignal,
 ): Promise<void> {
 	const initialConversationId = currentConversationId();
 	if (initialConversationId !== command.conversationId) {
@@ -897,31 +901,28 @@ async function captureMessengerContext(
 	const originalScrollHeight = scrollContainer?.scrollHeight ?? 0;
 	const initialContextVersion = contextVersion(extractLoadedMessengerConversationContext(document));
 	const capture = await captureBoundedContext({
-		async backfillOnce() {
+		async backfillOnce(captureSignal) {
 			if (!scrollContainer || scrollContainer.scrollTop <= 0) {
 				return 'no-more-history';
 			}
 
 			const previousScrollTop = scrollContainer.scrollTop;
 			scrollContainer.scrollTop = Math.max(0, previousScrollTop - Math.max(240, scrollContainer.clientHeight * 0.8));
-			await new Promise(resolve => {
-				setTimeout(resolve, 120);
-			});
+			await waitForContextBackfill(captureSignal);
 			return scrollContainer.scrollTop < previousScrollTop ? 'moved' : 'no-more-history';
 		},
 		isComplete(items) {
-			if (!command.anchorMessageId) {
-				return items.length >= command.requestedCount;
-			}
-
-			const anchorIndex = items.findIndex(item => item.messageId === command.anchorMessageId);
-			return anchorIndex >= Math.floor((command.requestedCount - 1) / 2);
+			return selectContextWindow(items, command.requestedCount, command.anchorMessageId).length === command.requestedCount;
 		},
 		isConversationCurrent: () => currentConversationId() === command.conversationId,
 		readPage: () => extractLoadedMessengerConversationContext(document),
 		requestedCount: command.requestedCount,
 		restore() {
-			if (scrollContainer?.isConnected) {
+			if (
+				scrollContainer?.isConnected
+				&& currentConversationId() === command.conversationId
+				&& messengerConversationScrollContainer() === scrollContainer
+			) {
 				scrollContainer.scrollTop = restoredConversationScrollTop(
 					originalScrollTop,
 					originalScrollHeight,
@@ -929,7 +930,12 @@ async function captureMessengerContext(
 				);
 			}
 		},
+		signal,
 	});
+	if (capture.stopReason === 'cancelled') {
+		return;
+	}
+
 	if (capture.stopReason === 'conversation-changed' || currentConversationId() !== command.conversationId) {
 		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
 			reason: 'conversation-changed',
@@ -960,6 +966,23 @@ async function captureMessengerContext(
 		status: 'available',
 		stopReason: capture.stopReason,
 		type: 'context-capture',
+	});
+}
+
+async function waitForContextBackfill(signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) {
+		return;
+	}
+
+	await new Promise<void>(resolve => {
+		const finish = (): void => {
+			clearTimeout(timeout);
+			signal?.removeEventListener('abort', finish);
+			resolve();
+		};
+
+		const timeout = setTimeout(finish, 120);
+		signal?.addEventListener('abort', finish, {once: true});
 	});
 }
 
@@ -1168,7 +1191,15 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 	}
 
 	if (value.type === 'capture-context') {
-		void captureMessengerContext(value);
+		contextCaptureCoordinator.enqueue(
+			value.requestId,
+			async signal => captureMessengerContext(value, signal),
+		);
+		return;
+	}
+
+	if (value.type === 'cancel-context-capture') {
+		contextCaptureCoordinator.cancel(value.requestId);
 		return;
 	}
 

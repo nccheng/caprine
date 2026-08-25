@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 	deleteApiKey: async () => sendCommand({type: 'delete-api-key'}),
 	editContextItem: async (index: number, editedExcerpt: string) => sendCommand({editedExcerpt, index, type: 'edit-context-item'}),
 	getState: async () => sendCommand({type: 'get-state'}),
+	refreshContext: async () => sendCommand({type: 'refresh-context'}),
 	refreshConversation: async () => sendCommand({type: 'refresh-conversation'}),
 	removeContextItem: async (index: number) => sendCommand({index, type: 'remove-context-item'}),
 	resolveMedia: async (messageId: string, kind: 'audio' | 'video') => sendCommand({type: 'resolve-media', kind, messageId}),

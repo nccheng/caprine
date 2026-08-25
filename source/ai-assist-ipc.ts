@@ -44,6 +44,7 @@ export const aiAssistIpcChannels = {
 export type AiAssistPanelState = {
 	anchor?: MessageAnchorData & {sequence: number};
 	conversation: ConversationBindingState;
+	contextCapturePending: boolean;
 	contextWindowSize: ContextWindowSize;
 	credentials: {
 		configured: boolean;
@@ -97,6 +98,7 @@ export type AiAssistPanelCommand =
 	| {editedExcerpt: string; index: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
 	| {index: number; type: 'remove-context-item'}
+	| {type: 'refresh-context'}
 	| {type: 'refresh-conversation'}
 	| {type: 'resolve-media'; kind: MediaKind; messageId: string}
 	| {type: 'save-api-key'; apiKey: string}
@@ -105,6 +107,7 @@ export type AiAssistPanelCommand =
 	| {type: 'test-api-key'};
 
 export type AiAssistMessengerCommand =
+	| {requestId: string; type: 'cancel-context-capture'}
 	| {
 		anchorMessageId?: string;
 		conversationId: string;
@@ -395,7 +398,7 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 		return false;
 	}
 
-	if (['cancel', 'close', 'delete-api-key', 'get-state', 'refresh-conversation', 'test-api-key'].includes(value.type)) {
+	if (['cancel', 'close', 'delete-api-key', 'get-state', 'refresh-context', 'refresh-conversation', 'test-api-key'].includes(value.type)) {
 		return hasExactKeys(value, ['type']);
 	}
 
@@ -508,12 +511,13 @@ function isReviewedContextItem(value: unknown): boolean {
 		return false;
 	}
 
-	const keys = ['item'];
+	const keys = ['id', 'item'];
 	if (value.editedExcerpt !== undefined) {
 		keys.push('editedExcerpt');
 	}
 
 	return hasExactKeys(value, keys)
+		&& isBoundedString(value.id, 200)
 		&& isContextItem(value.item)
 		&& (value.editedExcerpt === undefined || isBoundedString(value.editedExcerpt, 20_000));
 }
@@ -635,7 +639,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		return false;
 	}
 
-	const keys = ['contextWindowSize', 'conversation', 'credentials', 'enabled', 'media', 'request', 'session'];
+	const keys = ['contextCapturePending', 'contextWindowSize', 'conversation', 'credentials', 'enabled', 'media', 'request', 'session'];
 	if (value.anchor !== undefined) {
 		keys.push('anchor');
 	}
@@ -649,6 +653,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 	}
 
 	return hasExactKeys(value, keys)
+		&& typeof value.contextCapturePending === 'boolean'
 		&& contextWindowSizes.includes(value.contextWindowSize as never)
 		&& isConversationState(value.conversation)
 		&& (value.anchor === undefined || (
@@ -689,6 +694,11 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 			&& /^context-capture-\d+$/.test(value.requestId as string)
 			&& contextWindowSizes.includes(value.requestedCount as never)
 			&& (value.anchorMessageId === undefined || isMessageId(value.anchorMessageId));
+	}
+
+	if (value.type === 'cancel-context-capture') {
+		return hasExactKeys(value, ['requestId', 'type'])
+			&& /^context-capture-\d+$/.test(value.requestId as string);
 	}
 
 	if (value.type === 'report-conversation') {

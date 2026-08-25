@@ -638,6 +638,31 @@ export function extractLoadedMessengerConversationContext(root: ParentNode = doc
 	}
 }
 
+export function extractLoadedMessengerConversationTail(root: ParentNode = document): ConversationContextItem | undefined {
+	try {
+		const conversation = root.querySelector(messengerContextSelectors.conversation);
+		if (!conversation) {
+			return;
+		}
+
+		const rows = conversation.querySelectorAll(messengerContextSelectors.message);
+		for (let index = rows.length - 1; index >= 0; index -= 1) {
+			const row = rows[index];
+			if (!visibleElement(row) || row.querySelector(messengerContextSelectors.message)) {
+				continue;
+			}
+
+			try {
+				return extractConversationContextCandidates([candidateFromElement(row, 0)])[0];
+			} catch {
+				return extractConversationContextCandidates([{domOrder: 0, malformed: true}])[0];
+			}
+		}
+	} catch {}
+
+	return undefined;
+}
+
 export function captureLoadedMessengerMessageAnchor(
 	target: Element,
 	root: ParentNode = document,

@@ -4,6 +4,7 @@ const {
 	captureMessengerMessageAnchor,
 	extractConversationContextCandidates,
 	extractLoadedMessengerConversationContext,
+	extractLoadedMessengerConversationTail,
 	maximumMessengerDomExtractionItems,
 	messengerContextSelectors,
 } = require('../dist-js/messenger-context.js');
@@ -85,6 +86,35 @@ test('context fixtures preserve chronological incoming and outgoing multiline te
 			timestamp: '2026-08-23T13:00:02-07:00',
 		},
 	]);
+});
+
+test('tail extraction inspects only the newest logical row', () => {
+	const older = new FixtureElement();
+	older.querySelector = () => {
+		throw new Error('older row must not be inspected');
+	};
+
+	const text = new FixtureElement({text: 'Newest message'});
+	const newest = new FixtureElement({
+		attributes: {'aria-label': 'Alex sent a message', 'data-message-id': 'message-newest'},
+		children: {
+			[messengerContextSelectors.message]: [],
+			[messengerContextSelectors.messageText]: [text],
+		},
+	});
+	const conversation = new FixtureElement({
+		children: {[messengerContextSelectors.message]: [older, newest]},
+	});
+	const root = new FixtureElement({
+		children: {[messengerContextSelectors.conversation]: [conversation]},
+	});
+
+	assert.deepEqual(extractLoadedMessengerConversationTail(root), {
+		confidence: 'high',
+		messageId: 'message-newest',
+		sender: {displayName: 'Alex', role: 'incoming'},
+		text: 'Newest message',
+	});
 });
 
 test('message anchors capture one immutable-order logical message with visible sender semantics', () => {

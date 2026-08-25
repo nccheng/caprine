@@ -4,6 +4,8 @@ const {
 	buildReviewedPrompt,
 	captureBoundedContext,
 	captureContextReviewSnapshot,
+	ContextCaptureCoordinator,
+	contextVersion,
 	mergeContextPages,
 	restoredConversationScrollTop,
 	selectContextWindow,
@@ -31,19 +33,30 @@ test('latest and anchor-aware windows select deterministic 10/20/50 ranges', () 
 	assert.equal(selectContextWindow(items, 50).length, 50);
 });
 
-test('backfill merging preserves repeated anonymous omissions while removing page overlap', () => {
+test('page merging reconciles only demonstrable contiguous overlap and preserves chronology', () => {
 	const omission = {confidence: 'low', omittedReason: 'virtualized-placeholder', sender: {role: 'unknown'}};
-	const merged = mergeContextPages(
-		[omission, omission, ...messages(2)],
-		[...messages(2).slice(-1), ...messages(3).slice(-1)],
+	const anonymous = text => ({confidence: 'medium', sender: {role: 'incoming'}, text});
+	assert.deepEqual(
+		mergeContextPages([anonymous('Older'), anonymous('Overlap')], [anonymous('Overlap'), anonymous('Newer')])
+			.map(item => item.text),
+		['Older', 'Overlap', 'Newer'],
 	);
-	assert.equal(merged.filter(item => item.omittedReason).length, 2);
-	assert.deepEqual(merged.filter(item => item.messageId).map(item => item.messageId), [
+	assert.deepEqual(
+		mergeContextPages([anonymous('Again'), anonymous('Again')], [anonymous('Newer')])
+			.map(item => item.text),
+		['Again', 'Again', 'Newer'],
+	);
+	assert.equal(mergeContextPages([omission], [omission]).length, 2);
+	const mixed = mergeContextPages(
+		[messages(3)[0], anonymous('Anonymous overlap'), messages(3)[1]],
+		[anonymous('Anonymous overlap'), messages(3)[1], messages(3)[2]],
+	);
+	assert.deepEqual(mixed.map(item => item.messageId ?? item.text), [
 		'message-1',
+		'Anonymous overlap',
 		'message-2',
 		'message-3',
 	]);
-	assert.equal(mergeContextPages([omission], [omission]).length, 2);
 });
 
 test('anchor backfill continues until enough older messages can center the window', async () => {
@@ -68,6 +81,52 @@ test('anchor backfill continues until enough older messages can center the windo
 	assert.equal(attempts, 1);
 	assert.deepEqual(selectContextWindow(capture.items, 10, 'message-11').map(item => item.messageId),
 		messages(20).slice(6, 16).map(item => item.messageId));
+});
+
+test('newest anchor backfills a full 50-message window from the older side', async () => {
+	const all = messages(75);
+	let page = all.slice(-25);
+	let attempts = 0;
+	const capture = await captureBoundedContext({
+		async backfillOnce() {
+			attempts += 1;
+			page = all.slice(-60);
+			return 'moved';
+		},
+		isComplete(items) {
+			return selectContextWindow(items, 50, 'message-75').length === 50;
+		},
+		isConversationCurrent: () => true,
+		readPage: () => page,
+		requestedCount: 50,
+		restore() {},
+	});
+	const selected = selectContextWindow(capture.items, 50, 'message-75');
+	assert.equal(capture.stopReason, 'complete');
+	assert.equal(attempts, 1);
+	assert.equal(selected.length, 50);
+	assert.equal(selected.at(-1).messageId, 'message-75');
+});
+
+test('anchor windows fill from either boundary and remain partial only at a justified stop', async () => {
+	const items = messages(60);
+	assert.deepEqual(selectContextWindow(items, 10, 'message-1').map(item => item.messageId),
+		items.slice(0, 10).map(item => item.messageId));
+	assert.deepEqual(selectContextWindow(items, 10, 'message-60').map(item => item.messageId),
+		items.slice(-10).map(item => item.messageId));
+	assert.deepEqual(selectContextWindow(items.slice(0, 18), 10, 'message-17').map(item => item.messageId),
+		items.slice(8, 18).map(item => item.messageId));
+
+	const missingAnchor = await captureBoundedContext({
+		backfillOnce: async () => 'no-more-history',
+		isComplete: page => selectContextWindow(page, 10, 'missing').length === 10,
+		isConversationCurrent: () => true,
+		readPage: () => items.slice(-20),
+		requestedCount: 10,
+		restore() {},
+	});
+	assert.equal(missingAnchor.stopReason, 'no-more-history');
+	assert.equal(selectContextWindow(missingAnchor.items, 10, 'missing').length, 0);
 });
 
 test('bounded backfill reports partial history and always restores scroll state', async () => {
@@ -128,11 +187,84 @@ test('bounded backfill stops on timeout and conversation changes', async () => {
 	assert.equal(restored, 2);
 });
 
+test('rapid 10 to 20 to 50 capture changes restore before the latest capture starts', async () => {
+	const events = [];
+	let finishRestore;
+	const restoreGate = new Promise(resolve => {
+		finishRestore = resolve;
+	});
+	const coordinator = new ContextCaptureCoordinator();
+	const run = requestId => async signal => {
+		events.push(`start:${requestId}`);
+		if (requestId === 'context-capture-1') {
+			await new Promise(resolve => {
+				signal.addEventListener('abort', resolve, {once: true});
+			});
+			events.push('restore:start');
+			await restoreGate;
+			events.push('restore:end');
+		}
+
+		events.push(`finish:${requestId}`);
+	};
+
+	coordinator.enqueue('context-capture-1', run('context-capture-1'));
+	await new Promise(resolve => {
+		setImmediate(resolve);
+	});
+	coordinator.enqueue('context-capture-2', run('context-capture-2'));
+	coordinator.enqueue('context-capture-3', run('context-capture-3'));
+	await new Promise(resolve => {
+		setImmediate(resolve);
+	});
+	assert.deepEqual(events, ['start:context-capture-1', 'restore:start']);
+	finishRestore();
+	await coordinator.waitForIdle();
+	assert.deepEqual(events, [
+		'start:context-capture-1',
+		'restore:start',
+		'restore:end',
+		'finish:context-capture-1',
+		'start:context-capture-3',
+		'finish:context-capture-3',
+	]);
+});
+
+test('cancelled backfill stops and restores exactly once', async () => {
+	const abortController = new AbortController();
+	let restored = 0;
+	const result = await captureBoundedContext({
+		async backfillOnce() {
+			abortController.abort();
+			return 'moved';
+		},
+		isConversationCurrent: () => true,
+		readPage: () => messages(1),
+		requestedCount: 10,
+		restore() {
+			restored += 1;
+		},
+		signal: abortController.signal,
+	});
+	assert.equal(result.stopReason, 'cancelled');
+	assert.equal(restored, 1);
+});
+
+test('tail context versions are stable and change only with tail evidence', () => {
+	const first = messages(2)[1];
+	assert.equal(contextVersion(first), contextVersion(structuredClone(first)));
+	assert.notEqual(contextVersion(first), contextVersion({...first, messageId: 'message-3'}));
+	const anonymous = {...first};
+	delete anonymous.messageId;
+	assert.notEqual(contextVersion(anonymous), contextVersion({...anonymous, text: 'Changed tail'}));
+	assert.notEqual(contextVersion(undefined), contextVersion(first));
+});
+
 test('review snapshots freeze context and expose edits without reviving raw changes', () => {
 	const source = messages(2);
 	const review = captureContextReviewSnapshot({
 		contextVersion: '2:message-2',
-		items: source.map(item => ({item})),
+		items: source.map((item, index) => ({id: `item-${index}`, item})),
 		question: 'What happened?',
 		requestedCount: 10,
 		snapshot: {
@@ -146,10 +278,38 @@ test('review snapshots freeze context and expose edits without reviving raw chan
 	assert.equal(review.items[0].item.text, 'Message 1');
 	assert.equal(Object.isFrozen(review.items[0].item), true);
 	const edited = updateContextReview(review, {
-		items: [{editedExcerpt: 'Redacted excerpt', item: review.items[0].item}],
+		items: [{editedExcerpt: 'Redacted excerpt', id: review.items[0].id, item: review.items[0].item}],
 		newMessagesAvailable: true,
 	});
 	assert.equal(edited.newMessagesAvailable, true);
 	assert.match(buildReviewedPrompt(edited), /Redacted excerpt/);
 	assert.doesNotMatch(buildReviewedPrompt(edited), /Message 1/);
+});
+
+test('reviewed prompts include only frozen selected sendable items', () => {
+	const supported = messages(1)[0];
+	const omitted = {
+		confidence: 'low',
+		omittedReason: 'unsupported-message',
+		sender: {role: 'unknown'},
+	};
+	const review = captureContextReviewSnapshot({
+		contextVersion: 'message:message-1',
+		items: [
+			{editedExcerpt: 'Only this reviewed excerpt', id: 'item-1', item: supported},
+			{id: 'item-2', item: omitted},
+		],
+		question: 'Use reviewed context?',
+		requestedCount: 10,
+		snapshot: {
+			captureGeneration: 1,
+			conversationId: 'messenger-thread:123',
+			messengerWebContentsId: 2,
+			sessionId: 'ai-session-1',
+		},
+	});
+	const prompt = buildReviewedPrompt(review);
+	assert.match(prompt, /Only this reviewed excerpt/);
+	assert.doesNotMatch(prompt, /unsupported-message/);
+	assert.doesNotMatch(prompt, /Message 1/);
 });

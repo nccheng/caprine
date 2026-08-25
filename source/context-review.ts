@@ -6,6 +6,7 @@ export type ContextWindowSize = typeof contextWindowSizes[number];
 
 export type ReviewedContextItem = {
 	editedExcerpt?: string;
+	id: string;
 	item: ConversationContextItem;
 };
 
@@ -19,18 +20,24 @@ export type ContextReviewSnapshot = {
 	snapshot: Readonly<ConversationSnapshot>;
 };
 
-export type ContextBackfillStopReason = 'complete' | 'conversation-changed' | 'no-more-history' | 'timeout';
+export type ContextBackfillStopReason = 'cancelled' | 'complete' | 'conversation-changed' | 'no-more-history' | 'timeout';
 
 type ContextBackfillOptions = {
-	backfillOnce: () => Promise<'moved' | 'no-more-history'>;
+	backfillOnce: (signal?: AbortSignal) => Promise<'moved' | 'no-more-history'>;
 	isComplete?: (items: readonly ConversationContextItem[]) => boolean;
 	isConversationCurrent: () => boolean;
 	maximumAttempts?: number;
 	now?: () => number;
 	readPage: () => readonly ConversationContextItem[];
 	requestedCount: ContextWindowSize;
-	restore: () => void;
+	restore: () => Promise<void> | void;
+	signal?: AbortSignal;
 	timeoutMilliseconds?: number;
+};
+
+type ContextCaptureRequest = {
+	requestId: string;
+	run: (signal: AbortSignal) => Promise<void>;
 };
 
 function freezePlainValue(value: unknown): void {
@@ -49,12 +56,115 @@ export function mergeContextPages(
 	olderPage: readonly ConversationContextItem[],
 	newerItems: readonly ConversationContextItem[],
 ): ConversationContextItem[] {
-	const olderMessageIds = new Set(olderPage.flatMap(item => item.messageId ? [item.messageId] : []));
-	const latestByMessageId = new Map(newerItems.flatMap(item => item.messageId ? [[item.messageId, item] as const] : []));
-	return [
-		...olderPage.map(item => item.messageId ? (latestByMessageId.get(item.messageId) ?? item) : item),
-		...newerItems.filter(item => !item.messageId || !olderMessageIds.has(item.messageId)),
-	];
+	const structuralSignature = (item: Readonly<ConversationContextItem>): string => JSON.stringify({
+		attachments: item.attachments,
+		confidence: item.confidence,
+		linkPreview: item.linkPreview,
+		reactions: item.reactions,
+		reply: item.reply,
+		sender: item.sender,
+		text: item.text,
+		timestamp: item.timestamp,
+	});
+	const sameBoundaryItem = (
+		older: Readonly<ConversationContextItem>,
+		newer: Readonly<ConversationContextItem>,
+	): boolean => {
+		if (older.messageId !== undefined || newer.messageId !== undefined) {
+			return Boolean(older.messageId && older.messageId === newer.messageId);
+		}
+
+		return older.omittedReason === undefined
+			&& newer.omittedReason === undefined
+			&& structuralSignature(older) === structuralSignature(newer);
+	};
+
+	let overlap = 0;
+	for (let size = Math.min(olderPage.length, newerItems.length); size > 0; size -= 1) {
+		if (olderPage.slice(-size).every((item, index) => sameBoundaryItem(item, newerItems[index]))) {
+			overlap = size;
+			break;
+		}
+	}
+
+	const combined = [...olderPage.slice(0, olderPage.length - overlap), ...newerItems];
+	const merged: ConversationContextItem[] = [];
+	const messageIdIndexes = new Map<string, number>();
+	for (const item of combined) {
+		if (!item.messageId) {
+			merged.push(item);
+			continue;
+		}
+
+		const previousIndex = messageIdIndexes.get(item.messageId);
+		if (previousIndex === undefined) {
+			messageIdIndexes.set(item.messageId, merged.length);
+			merged.push(item);
+		} else {
+			merged[previousIndex] = item;
+		}
+	}
+
+	return merged;
+}
+
+export class ContextCaptureCoordinator {
+	private active?: {abortController: AbortController; requestId: string};
+	private drainPromise?: Promise<void>;
+	private queued?: ContextCaptureRequest;
+
+	enqueue(requestId: string, run: (signal: AbortSignal) => Promise<void>): void {
+		this.queued = {requestId, run};
+		this.active?.abortController.abort();
+		this.startDrain();
+	}
+
+	cancel(requestId: string): void {
+		if (this.queued?.requestId === requestId) {
+			this.queued = undefined;
+		}
+
+		if (this.active?.requestId === requestId) {
+			this.active.abortController.abort();
+		}
+	}
+
+	async waitForIdle(): Promise<void> {
+		while (this.drainPromise) {
+			// eslint-disable-next-line no-await-in-loop
+			await this.drainPromise;
+		}
+	}
+
+	private startDrain(): void {
+		if (this.drainPromise) {
+			return;
+		}
+
+		this.drainPromise = this.drain().finally(() => {
+			this.drainPromise = undefined;
+			if (this.queued) {
+				this.startDrain();
+			}
+		});
+	}
+
+	private async drain(): Promise<void> {
+		while (this.queued) {
+			const request = this.queued;
+			this.queued = undefined;
+			const abortController = new AbortController();
+			this.active = {abortController, requestId: request.requestId};
+			try {
+				// eslint-disable-next-line no-await-in-loop
+				await request.run(abortController.signal);
+			} catch {} finally {
+				if (this.active?.abortController === abortController) {
+					this.active = undefined;
+				}
+			}
+		}
+	}
 }
 
 export function selectContextWindow(
@@ -98,6 +208,11 @@ export async function captureBoundedContext(
 
 	try {
 		for (; !isComplete(items) && attempts < maximumAttempts; attempts += 1) {
+			if (options.signal?.aborted) {
+				stopReason = 'cancelled';
+				break;
+			}
+
 			if (!options.isConversationCurrent()) {
 				stopReason = 'conversation-changed';
 				break;
@@ -109,7 +224,12 @@ export async function captureBoundedContext(
 			}
 
 			// eslint-disable-next-line no-await-in-loop
-			const result = await options.backfillOnce();
+			const result = await options.backfillOnce(options.signal);
+			if (options.signal?.aborted) {
+				stopReason = 'cancelled';
+				break;
+			}
+
 			if (result === 'no-more-history') {
 				stopReason = 'no-more-history';
 				break;
@@ -123,14 +243,16 @@ export async function captureBoundedContext(
 			stopReason = 'timeout';
 		}
 	} finally {
-		options.restore();
+		await options.restore();
 	}
 
 	return {items, stopReason};
 }
 
-export function contextVersion(items: readonly ConversationContextItem[]): string {
-	const last = items.at(-1);
+export function contextVersion(
+	items: readonly ConversationContextItem[] | Readonly<ConversationContextItem> | undefined,
+): string {
+	const last = Array.isArray(items) ? items.at(-1) : items;
 	if (!last) {
 		return 'empty';
 	}

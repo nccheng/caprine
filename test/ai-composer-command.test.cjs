@@ -1633,6 +1633,46 @@ test('thrown panel-open failures restore the recoverable draft', async () => {
 	assert.equal(draft, '/ai recover');
 });
 
+test('accepted local transfer stays removed when later context capture fails', async () => {
+	const command = parseAiComposerCommand('/ai hello');
+	let draft = command.draftText;
+	let rejectCapture;
+	const capture = new Promise((_resolve, reject) => {
+		rejectCapture = reject;
+	});
+	const outcome = await consumeAiComposerCommand(command, {
+		clear() {
+			draft = '';
+		},
+		isCurrent: () => draft === command.draftText,
+		async openPanel() {
+			capture.catch(() => undefined);
+			return true;
+		},
+		restore(original) {
+			draft = original;
+		},
+	});
+	assert.equal(outcome, 'accepted');
+	rejectCapture(new Error('context unavailable'));
+	await capture.catch(() => undefined);
+	assert.equal(draft, '');
+
+	const nextCommand = parseAiComposerCommand('/ai fresh');
+	draft = nextCommand.draftText;
+	assert.equal(await consumeAiComposerCommand(nextCommand, {
+		clear() {
+			draft = '';
+		},
+		isCurrent: () => draft === nextCommand.draftText,
+		openPanel: async () => true,
+		restore(original) {
+			draft = original;
+		},
+	}), 'accepted');
+	assert.equal(draft, '');
+});
+
 test('panel rejection does not overwrite text entered after the command was cleared', async () => {
 	const command = parseAiComposerCommand('/ai recover safely');
 	let draft = command.draftText;
