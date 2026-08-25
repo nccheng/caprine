@@ -10,7 +10,10 @@ const {
 	messengerContextSelectors,
 } = require('../dist-js/messenger-context.js');
 const {contextVersion} = require('../dist-js/context-review.js');
-const {loadMessengerContextFixture} = require('./helpers/messenger-context-fixture.cjs');
+const {
+	loadMessengerContextFixture,
+	MessengerContextFixtureElement,
+} = require('./helpers/messenger-context-fixture.cjs');
 
 const sanitizedFixtureFilenames = [
 	'edge-cases.json',
@@ -26,6 +29,14 @@ test('Messenger context fixtures contain no recognizable authenticated or accoun
 			/access_token|c_user|facebook\.com\/messages\/t\/\d|set-cookie|\bxs=/i,
 		);
 	}
+});
+
+test('fixture selector matching fails closed for syntax outside its supported subset', () => {
+	const row = new MessengerContextFixtureElement({attributes: {role: 'row'}});
+
+	assert.equal(row.matches('[role="row"]'), true);
+	assert.equal(row.matches('.required-class[role="row"]'), false);
+	assert.equal(row.matches('[role="row"]:last-child'), false);
 });
 
 for (const filename of ['supported-messages.json', 'edge-cases.json']) {

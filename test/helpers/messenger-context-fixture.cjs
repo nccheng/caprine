@@ -3,11 +3,20 @@ const path = require('node:path');
 
 function matchesSimpleSelector(element, selector) {
 	const tagName = selector.match(/^[a-z]+/i)?.[0]?.toLowerCase();
+	const attributeMatches = [...selector.matchAll(/\[([^\]]+)]/g)];
+	const unparsed = selector
+		.replace(/^[a-z]+/i, '')
+		.replaceAll(/\[[^\]]+]/g, '')
+		.trim();
+	if (unparsed || (!tagName && attributeMatches.length === 0)) {
+		return false;
+	}
+
 	if (tagName && element.localName !== tagName) {
 		return false;
 	}
 
-	for (const match of selector.matchAll(/\[([^\]]+)]/g)) {
+	for (const match of attributeMatches) {
 		const expression = match[1];
 		const contains = expression.match(/^([^=*\s]+)\*="([^"]*)"\s+i$/i);
 		if (contains) {
@@ -155,4 +164,4 @@ function loadMessengerContextFixture(filename) {
 	};
 }
 
-module.exports = {loadMessengerContextFixture};
+module.exports = {loadMessengerContextFixture, MessengerContextFixtureElement};
