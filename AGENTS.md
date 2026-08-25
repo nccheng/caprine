@@ -15,8 +15,8 @@
   multi-provider, plugin, enterprise, or generalized orchestration layers.
 
 The current Linear `Caprine AI Assist` project and its attached product contract
-define the MVP behavior and delivery dependencies. An active issue may narrow
-that contract but must not silently expand it.
+define MVP behavior and delivery dependencies. An active issue may narrow that
+contract but must not silently expand or remove it.
 
 ## Authority and bare-link routing
 
@@ -24,7 +24,8 @@ Use authority in this order:
 
 1. Derek's explicit instruction in the current task.
 2. This `AGENTS.md`, which is the sole executable implementation, review,
-   approval, and merge workflow for this repository.
+   approval, decomposition, merge, and stop-condition workflow for this
+   repository.
 3. The active Linear issue or pull request supplied for the task.
 4. The `Caprine AI Assist MVP Contract and Delivery Map`.
 5. Current code, executable checks, and user-facing documentation.
@@ -46,7 +47,7 @@ A bare active Linear issue URL from the `Caprine AI Assist` project is a direct
 implementation request. Fetch the full issue, project, product contract,
 attachments, and `blockedBy` relations; inspect current code and checks; then
 begin without requiring a label, ADR, separate approval, repo-local issue spec,
-or pre-approved Review Contract wording.
+pre-approved Review Contract wording, or pre-approved mechanical decomposition.
 
 Done, Canceled, Duplicate, and other terminal issues are read-only unless Derek
 explicitly authorizes an administrative correction. An issue outside this
@@ -59,8 +60,8 @@ not authorize work outside the linked issue and validated review findings.
 
 ## Personal-project autonomy and approval policy
 
-A bare active project issue authorizes implementation and routine issue or PR
-specification maintenance within the issue's existing product scope.
+A bare active project issue authorizes implementation and routine issue, PR,
+and dependency maintenance within the issue's existing product scope.
 
 Codex is pre-authorized, without separate approval, to:
 
@@ -71,6 +72,8 @@ Codex is pre-authorized, without separate approval, to:
 - separate executable acceptance from manual-only acceptance;
 - choose the smallest reversible implementation detail, schema shape, file
   structure, dependency, and deterministic test seam;
+- mechanically decompose an issue and rewire Linear dependencies under the
+  autonomous decomposition policy below;
 - record reasonable implementation assumptions and continue in the same run.
 
 A missing, incomplete, duplicated, or overly verbose Review Contract is not a
@@ -78,28 +81,30 @@ stop condition. The reviewability gate evaluates whether the underlying product
 outcome and material risk boundaries are clear, not whether prescribed headings
 or governance prose already exist.
 
-Do not ask Derek to approve documentation-only changes that preserve existing
-user-visible behavior, privacy posture, persisted-data boundaries, destructive
-scope, dependencies, and milestone outcome. For reversible ambiguity, choose
-the smallest direct macOS-only implementation, record the assumption, and
-proceed.
+Do not ask Derek to approve documentation-only or planning-only changes that
+preserve existing user-visible behavior, privacy posture, persisted-data
+boundaries, destructive scope, dependencies' product meaning, and milestone
+outcome. For reversible ambiguity, choose the smallest direct macOS-only
+implementation, record the assumption, and proceed.
 
 Return `NEEDS_USER` only when at least one of these conditions is true:
 
 1. Canonical requirements conflict in a way that changes implementation or
    user-visible behavior.
 2. Multiple materially different user-visible behaviors remain plausible.
-3. Proceeding would newly broaden sensitive-data retention or transmission,
-   permissions, automatic external side effects, destructive behavior, project
-   scope, or milestone scope.
+3. Proceeding would newly broaden or reduce sensitive-data retention or
+   transmission, permissions, automatic external side effects, destructive
+   behavior, project scope, milestone scope, or an MVP commitment.
 4. Required owner-provided private evidence, credentials, or real-device action
    is unavailable.
-5. The dependency graph is cyclic or materially ambiguous.
+5. The dependency graph is cyclic or materially ambiguous because multiple
+   orderings have materially different product consequences.
 6. The bounded targeted verifier still fails after its allowed repair.
 
 Missing process prose, incomplete manual-only evidence, naming, internal
-architecture preferences, optional refactors, and reversible implementation
-choices must not trigger `NEEDS_USER`.
+architecture preferences, optional refactors, reversible implementation
+choices, and mechanically derived dependency changes must not trigger
+`NEEDS_USER`.
 
 ## Derive-and-continue reviewability gate
 
@@ -107,7 +112,8 @@ Before coding a new issue, evaluate the underlying product work rather than the
 presence of a particular template. The issue is reviewable when its existing
 sources make these points materially clear:
 
-- one independently testable product outcome;
+- one or more independently testable product outcomes whose union is already
+  defined by the issue;
 - the privacy, security, wrong-conversation, data-loss, auto-send, secret, or
   destructive-operation invariants relevant to the change;
 - executable acceptance that can be proven by tests, builds, static checks, or
@@ -127,15 +133,74 @@ persistence and migrations, destructive operations, wrong-conversation state,
 automatic external side effects, media privacy, and cross-process
 authorization. Keep them concise and non-duplicative.
 
-Split before implementation only when the issue combines multiple independently
-testable high-risk product outcomes whose separation changes product scope or
-delivery dependencies. Do not split mechanically by file or layer. Keep one
-issue when its parts form one inseparable user-visible invariant and splitting
-would create speculative interfaces or unusable half-features.
+When one issue contains independently testable outcomes or materially distinct
+risk boundaries that would make one PR unnecessarily broad, apply the
+autonomous decomposition policy. Do not split mechanically by file or layer.
+Keep one issue when the parts form one inseparable user-visible invariant and
+splitting would create speculative interfaces or unusable half-features.
 
-If decomposition requires a material product choice, return `NEEDS_USER` with a
-specific proposed Linear split. Missing headings or contract wording alone
-never require decomposition or approval.
+Do not stop merely because an issue should be decomposed. Stop for decomposition
+only when the split itself requires an unresolved product decision under the
+`NEEDS_USER` conditions above.
+
+## Autonomous decomposition policy
+
+Issue decomposition is normally an implementation-planning operation, not an
+owner approval gate.
+
+Codex is pre-authorized to decompose an active issue and update Linear
+relationships without Derek's approval when all of the following are true:
+
+1. Every resulting issue is a strict subset of behavior already required by the
+   original issue or project contract.
+2. No user-visible behavior, privacy boundary, data-retention policy,
+   destructive scope, milestone scope, or MVP commitment is added, removed,
+   deferred, or changed.
+3. The split only separates independently testable implementation outcomes or
+   materially different risk boundaries.
+4. Dependencies follow from concrete implementation prerequisites rather than
+   a product preference.
+5. The original delivery outcome remains completely represented by the union of
+   the resulting issues.
+
+Use this reconstruction test:
+
+> If unioning the resulting issues recreates the original issue's required
+> behavior without changing product semantics, the decomposition is mechanical.
+
+For a mechanical decomposition, Codex must:
+
+1. Choose the smallest useful split. Prefer two or three coherent slices; avoid
+   one issue per UI control, layer, file, or test category.
+2. Avoid umbrella, coordination, approval, or governance issues unless they own
+   real implementation work.
+3. Keep the original issue as a concrete implementation slice when practical;
+   do not turn it into a status-only parent unnecessarily.
+4. Create or update the minimum Linear issues needed, preserve project,
+   milestone, priority, labels, and owner intent, and use `blockedBy` / `blocks`
+   as the actual work-order graph.
+5. Attach each downstream dependency to the smallest slice or set of slices
+   whose completion actually satisfies that prerequisite. Remove obsolete or
+   redundant direct edges when safe.
+6. Record the decomposition and assumptions in Linear.
+7. Immediately continue with the highest-priority unblocked resulting slice in
+   the same run. Mechanical decomposition is not completion of the run and is
+   not a stop condition.
+
+Do not return `NEEDS_USER` merely because decomposition creates issues or
+changes the Linear dependency graph. Those updates are authorized implementation
+planning when they follow mechanically from existing requirements.
+
+Return `NEEDS_USER` for decomposition only when at least one material product
+decision remains unresolved, including:
+
+- choosing between materially different user-visible behaviors;
+- adding, removing, or deferring required MVP scope;
+- changing privacy, security, retention, destructive-operation, or automatic
+  external-side-effect behavior;
+- moving work across milestones in a way that changes delivery semantics;
+- selecting between multiple dependency orderings with materially different
+  product consequences.
 
 ## Dependency-aware work selection
 
@@ -150,10 +215,12 @@ The daily worker resumes durable active lineage before starting new work:
 4. The deepest unfinished in-project blocker required by a blocked issue.
 
 At the same dependency level, order by Linear priority, creation time ascending,
-then numeric issue identifier ascending. Detect dependency cycles and stop
+then numeric issue identifier ascending. Detect true dependency cycles and stop
 rather than guessing. Never autonomously implement an out-of-project blocker.
 
-Start at most one new issue per run. One issue maps to one writer, one
+Start at most one new implementation issue per run. A mechanical decomposition
+may create multiple issue records, but the worker implements at most one
+resulting slice. One implementation issue maps to one writer, one
 branch/worktree, and one primary PR. Refresh Linear, GitHub, branches, and
 worktrees before selection. Preserve unknown or user-owned changes; do not
 reset, stash, delete, or force-push them.
@@ -168,8 +235,11 @@ credential-dependent, mobile-client, or logged-in Messenger results.
 
 For the selected issue:
 
-1. Revalidate that it is active, in-project, reviewable, and unblocked; derive or
-   normalize its review packet when necessary; then set it to `In Progress`.
+1. Revalidate that it is active, in-project, and unblocked. Derive or normalize
+   its review packet and perform any authorized mechanical decomposition needed
+   for reviewability. If decomposed, select the highest-priority unblocked slice
+   and continue in the same run. Then set the implementation slice to
+   `In Progress`.
 2. Implement the smallest complete solution and focused deterministic tests.
 3. Run relevant checks, inspect the complete diff, commit, push, and open or
    update the one primary PR.
@@ -265,7 +335,9 @@ The single scheduled workflow is `Caprine AI Assist Autonomous Worker`:
 - Schedule: every day at 11:00 AM `America/Los_Angeles`.
 - Default model: GPT 5.6 Sol with High reasoning.
 - Runtime: `/Users/nccheng/Documents/GitHub/caprine`.
-- Per run: resume active lineage first and start at most one new issue.
+- Per run: resume active lineage first and start at most one new implementation
+  issue. Authorized mechanical decomposition may create issue records and must
+  then continue with one eligible slice in the same run.
 - Review: one unrestricted Discovery review, one bounded Closure review after
   validated fixes, and at most one targeted repair/verifier escape hatch.
 - Success: green required checks and no validated blocker may squash-merge and
