@@ -199,35 +199,77 @@ const supportedMedia = {
 function request(overrides = {}) {
 	return {
 		consent: 'transcribe-and-review',
-		handleId: 'handle-1',
-		itemCount: 1,
-		messageId: 'message-voice',
+		items: [{handleId: 'handle-1', messageId: 'message-voice'}],
 		snapshot,
 		...overrides,
 	};
 }
 
-test('media transcription rejects consent, item, size, duration, type, and stale snapshot before upload and releases the handle', async () => {
+test('media transcription rejects consent, batch, size, type, and stale snapshot before upload and releases requested handles', async () => {
 	for (const [overrides, media, currentSnapshot, code] of [
 		[{consent: 'not-consented'}, supportedMedia, snapshot, 'invalid-consent'],
-		[{itemCount: 3}, supportedMedia, snapshot, 'item-limit'],
+		[{items: []}, supportedMedia, snapshot, 'item-limit'],
+		[{
+			items: [
+				{handleId: 'handle-1', messageId: 'message-voice'},
+				{handleId: 'handle-2', messageId: 'message-voice-2'},
+				{handleId: 'handle-3', messageId: 'message-voice-3'},
+			],
+		}, supportedMedia, snapshot, 'item-limit'],
+		[{
+			items: [
+				{handleId: 'handle-1', messageId: 'message-voice'},
+				{handleId: 'handle-1', messageId: 'message-voice'},
+			],
+		}, supportedMedia, snapshot, 'item-limit'],
 		[{}, {...supportedMedia, byteLength: maximumTranscriptionBytes + 1}, snapshot, 'oversized'],
-		[{}, {...supportedMedia, durationSeconds: 301}, snapshot, 'duration-exceeded'],
-		[{}, {...supportedMedia, durationSeconds: undefined}, snapshot, 'unsupported-media'],
 		[{}, {...supportedMedia, kind: 'video', mimeType: 'video/mp4'}, snapshot, 'unsupported-media'],
 		[{}, supportedMedia, {...snapshot, conversationId: 'messenger-thread:other'}, 'stale-media'],
 	]) {
 		const handles = fakeHandles(media);
+		let providerCalls = 0;
 		const service = new MediaTranscriptionService(handles, {
 			async transcribe() {
+				providerCalls += 1;
 				throw new Error('unexpected provider call');
 			},
-		}, () => currentSnapshot);
+		}, () => currentSnapshot, async () => 2.5);
 		// eslint-disable-next-line no-await-in-loop
-		await expectCode(service.transcribe('sk-private', request(overrides)), code);
+		await expectCode(service.transcribeBatch('sk-private', request(overrides)), code);
 		assert.equal(handles.handoffs, 0);
-		assert.equal(handles.releases, 1);
+		assert.equal(providerCalls, 0);
+		assert.equal(handles.releases, request(overrides).items.length);
 	}
+});
+
+test('media transcription derives the duration locally before upload instead of trusting renderer metadata', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const media = await resolver.resolveBlob(
+		new Uint8Array([1, 2, 3]).buffer,
+		'audio/wav',
+		'audio',
+		'message-voice',
+		snapshot,
+		299,
+	);
+	let providerCalls = 0;
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe() {
+			providerCalls += 1;
+			throw new Error('unexpected provider call');
+		},
+	}, () => snapshot, async () => 301);
+
+	await expectCode(
+		service.transcribeBatch('sk-private', request({items: [{handleId: media.handleId, messageId: media.messageId}]})),
+		'duration-exceeded',
+	);
+	assert.equal(providerCalls, 0);
+	assert.deepEqual(await readdir(directory), []);
 });
 
 test('media transcription binds provider work to the current handle and releases bytes after success', async () => {
@@ -247,9 +289,12 @@ test('media transcription binds provider work to the current handle and releases
 				segments: [{endSeconds: 2.5, startSeconds: 0, text: 'Synthetic transcript'}],
 			};
 		},
-	}, () => snapshot);
+	}, () => snapshot, async () => 2.5);
 
-	const transcript = await service.transcribe('sk-private', request({handleId: media.handleId}));
+	const [transcript] = await service.transcribeBatch(
+		'sk-private',
+		request({items: [{handleId: media.handleId, messageId: media.messageId}]}),
+	);
 	assert.deepEqual(providerInput, {apiKey: 'sk-private', bytes: [4, 5, 6], mimeType: 'audio/ogg'});
 	assert.deepEqual(transcript, {
 		mediaSha256: createHash('sha256').update(bytes).digest('hex'),
@@ -271,8 +316,8 @@ test('media transcription binds provider work to the current handle and releases
 	assert.equal(serialized.includes('bytes'), false);
 });
 
-test('media transcription discards stale completions and releases bytes after provider failure or cancellation', async () => {
-	await Promise.all(['stale', 'failure', 'cancelled'].map(async scenario => {
+test('media transcription discards stale completions and releases bytes after provider failure, cancellation, or handle release', async () => {
+	await Promise.all(['stale', 'failure', 'cancelled', 'released'].map(async scenario => {
 		const directory = await fixtureDirectory();
 		const resolver = new MessengerMediaResolver(directory, async () => {
 			throw new Error('unexpected Messenger fetch');
@@ -295,6 +340,11 @@ test('media transcription discards stale completions and releases bytes after pr
 					return {model: openAiTranscriptionModel, segments: [{endSeconds: 2, startSeconds: 0, text: 'late'}]};
 				}
 
+				if (scenario === 'released') {
+					await resolver.releaseHandle(media.handleId);
+					return {model: openAiTranscriptionModel, segments: [{endSeconds: 2, startSeconds: 0, text: 'released'}]};
+				}
+
 				if (scenario === 'cancelled') {
 					cancellation.abort();
 					throw new TranscriptionError('cancelled', 'Transcription cancelled.');
@@ -302,16 +352,80 @@ test('media transcription discards stale completions and releases bytes after pr
 
 				throw new TranscriptionError('provider-unavailable', 'Provider failed.');
 			},
-		}, () => current);
+		}, () => current, async () => 2);
 		const expectedCodes = {
 			cancelled: 'cancelled',
 			failure: 'provider-unavailable',
+			released: 'stale-media',
 			stale: 'stale-media',
 		};
 		await expectCode(
-			service.transcribe('sk-private', request({handleId: media.handleId}), cancellation.signal),
+			service.transcribeBatch(
+				'sk-private',
+				request({items: [{handleId: media.handleId, messageId: media.messageId}]}),
+				cancellation.signal,
+			),
 			expectedCodes[scenario],
 		);
 		assert.deepEqual(await readdir(directory), []);
 	}));
+});
+
+test('media transcription processes one authoritative two-item batch and releases both handles', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const first = await resolver.resolveBlob(
+		new Uint8Array([10, 11]).buffer,
+		'audio/wav',
+		'audio',
+		'message-one',
+		snapshot,
+		1,
+	);
+	const second = await resolver.resolveBlob(
+		new Uint8Array([12, 13, 14]).buffer,
+		'audio/ogg',
+		'audio',
+		'message-two',
+		snapshot,
+		1.5,
+	);
+	const providerMessageSizes = [];
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe(_apiKey, bytes) {
+			providerMessageSizes.push(bytes.byteLength);
+			return {
+				model: openAiTranscriptionModel,
+				segments: [{endSeconds: 1, startSeconds: 0, text: `Transcript ${bytes.byteLength}`}],
+			};
+		},
+	}, () => snapshot, async filePath => filePath.endsWith('.wav') ? 1 : 1.5);
+
+	const transcripts = await service.transcribeBatch('sk-private', request({
+		items: [
+			{handleId: first.handleId, messageId: first.messageId},
+			{handleId: second.handleId, messageId: second.messageId},
+		],
+	}));
+	assert.deepEqual(providerMessageSizes, [2, 3]);
+	assert.deepEqual(transcripts.map(transcript => transcript.source), [
+		{
+			byteLength: 2,
+			durationSeconds: 1,
+			kind: 'audio',
+			messageId: 'message-one',
+			mimeType: 'audio/wav',
+		},
+		{
+			byteLength: 3,
+			durationSeconds: 1.5,
+			kind: 'audio',
+			messageId: 'message-two',
+			mimeType: 'audio/ogg',
+		},
+	]);
+	assert.deepEqual(await readdir(directory), []);
 });

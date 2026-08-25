@@ -1,5 +1,7 @@
 import {createHash} from 'node:crypto';
+import {execFile} from 'node:child_process';
 import {readFile} from 'node:fs/promises';
+import {promisify} from 'node:util';
 import {ConversationSnapshot} from './ai-assist-state';
 import {ResolvedMedia, MessengerMediaResolver, MediaResolverError} from './media-resolver';
 
@@ -75,13 +77,30 @@ type OpenAiTranscriptionClientOptions = {
 
 export type MediaTranscriptionRequest = {
 	consent: 'transcribe-and-review';
-	handleId: string;
-	itemCount: number;
-	messageId: string;
+	items: ReadonlyArray<{
+		handleId: string;
+		messageId: string;
+	}>;
 	snapshot: Readonly<ConversationSnapshot>;
 };
 
 type MediaHandleStore = Pick<MessengerMediaResolver, 'describeHandle' | 'releaseHandle' | 'withFile'>;
+type MediaDurationInspector = (filePath: string) => Promise<number>;
+type ResolvedMediaFile = {
+	bytes: Uint8Array;
+	durationSeconds: number;
+	media: ResolvedMedia & {kind: 'audio'};
+};
+type MediaFilesContext<T> = {
+	callback: (files: ResolvedMediaFile[]) => Promise<T>;
+	files: ResolvedMediaFile[];
+	index: number;
+	inspectDuration: MediaDurationInspector;
+	mediaHandles: MediaHandleStore;
+	request: Readonly<MediaTranscriptionRequest>;
+};
+
+const execFileAsync = promisify(execFile);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null;
@@ -353,11 +372,7 @@ export class OpenAiTranscriptionClient {
 	}
 }
 
-function validateMedia(media: ResolvedMedia, itemCount: number): asserts media is ResolvedMedia & {durationSeconds: number; kind: 'audio'} {
-	if (!Number.isSafeInteger(itemCount) || itemCount < 1 || itemCount > maximumTranscriptionItems) {
-		throw new TranscriptionError('item-limit', `At most ${maximumTranscriptionItems} audio or video items can be transcribed in one AI request.`);
-	}
-
+function validateMedia(media: ResolvedMedia): asserts media is ResolvedMedia & {kind: 'audio'} {
 	if (media.kind !== 'audio' || !transcriptionFileExtension(media.mimeType)) {
 		throw new TranscriptionError('unsupported-media', 'This media item is not a supported voice message.');
 	}
@@ -365,14 +380,57 @@ function validateMedia(media: ResolvedMedia, itemCount: number): asserts media i
 	if (media.byteLength <= 0 || media.byteLength > maximumTranscriptionBytes) {
 		throw new TranscriptionError('oversized', 'Audio exceeds the 20 MB transcription limit.');
 	}
+}
 
-	if (media.durationSeconds === undefined || !Number.isFinite(media.durationSeconds) || media.durationSeconds <= 0) {
-		throw new TranscriptionError('unsupported-media', 'Voice-message duration is unavailable.');
+async function inspectAudioDuration(filePath: string): Promise<number> {
+	try {
+		const {stdout} = await execFileAsync('/usr/bin/afinfo', [filePath], {
+			encoding: 'utf8',
+			maxBuffer: 100_000,
+			timeout: 10_000,
+		});
+		const match = /^estimated duration:\s*([0-9]+(?:\.[0-9]+)?)\s*sec\s*$/imu.exec(stdout);
+		const durationSeconds = Number(match?.[1]);
+		if (Number.isFinite(durationSeconds) && durationSeconds > 0) {
+			return durationSeconds;
+		}
+	} catch {}
+
+	throw new TranscriptionError('unsupported-media', 'Voice-message duration could not be verified locally.');
+}
+
+function validateDuration(durationSeconds: number): void {
+	if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+		throw new TranscriptionError('unsupported-media', 'Voice-message duration could not be verified locally.');
 	}
 
-	if (media.durationSeconds > maximumTranscriptionDurationSeconds) {
+	if (durationSeconds > maximumTranscriptionDurationSeconds) {
 		throw new TranscriptionError('duration-exceeded', 'Audio exceeds the 5 minute transcription limit.');
 	}
+}
+
+async function withMediaFiles<T>(context: MediaFilesContext<T>): Promise<T> {
+	const {callback, files, index, inspectDuration, mediaHandles, request} = context;
+	if (index === request.items.length) {
+		return callback(files);
+	}
+
+	const item = request.items[index];
+	return mediaHandles.withFile(item.handleId, item.messageId, request.snapshot, async (filePath, media) => {
+		validateMedia(media);
+		const [fileBytes, durationSeconds] = await Promise.all([
+			readFile(filePath),
+			inspectDuration(filePath),
+		]);
+		const bytes = new Uint8Array(fileBytes);
+		if (bytes.byteLength !== media.byteLength || bytes.byteLength > maximumTranscriptionBytes) {
+			throw new TranscriptionError('stale-media', 'The selected media changed before transcription.');
+		}
+
+		validateDuration(durationSeconds);
+		files.push({bytes, durationSeconds, media});
+		return withMediaFiles({...context, index: index + 1});
+	});
 }
 
 function mapResolverError(error: unknown): never {
@@ -400,16 +458,26 @@ export class MediaTranscriptionService {
 		private readonly mediaHandles: MediaHandleStore,
 		private readonly client: OpenAiTranscriptionClient,
 		private readonly currentSnapshot: () => Readonly<ConversationSnapshot> | undefined,
+		private readonly inspectDuration: MediaDurationInspector = inspectAudioDuration,
 	) {}
 
-	async transcribe(
+	async transcribeBatch(
 		apiKey: string,
 		request: Readonly<MediaTranscriptionRequest>,
 		signal?: AbortSignal,
-	): Promise<MediaTranscription> {
+	): Promise<MediaTranscription[]> {
 		try {
 			if (request.consent !== 'transcribe-and-review') {
 				throw new TranscriptionError('invalid-consent', 'Choose Transcribe and review before sending media to OpenAI.');
+			}
+
+			if (request.items.length === 0 || request.items.length > maximumTranscriptionItems) {
+				throw new TranscriptionError('item-limit', `At most ${maximumTranscriptionItems} audio or video items can be transcribed in one AI request.`);
+			}
+
+			const uniqueHandles = new Set(request.items.map(item => item.handleId));
+			if (uniqueHandles.size !== request.items.length) {
+				throw new TranscriptionError('item-limit', 'Each selected media item can be transcribed only once per AI request.');
 			}
 
 			if (!sameSnapshot(request.snapshot, this.currentSnapshot())) {
@@ -420,39 +488,57 @@ export class MediaTranscriptionService {
 				throw new TranscriptionError('cancelled', 'Transcription cancelled.');
 			}
 
-			const media = this.mediaHandles.describeHandle(request.handleId, request.messageId, request.snapshot);
-			validateMedia(media, request.itemCount);
-			return await this.mediaHandles.withFile(request.handleId, request.messageId, request.snapshot, async filePath => {
-				if (!sameSnapshot(request.snapshot, this.currentSnapshot())) {
-					throw new TranscriptionError('stale-media', 'The selected media no longer belongs to this conversation.');
-				}
+			for (const item of request.items) {
+				const media = this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
+				validateMedia(media);
+			}
 
-				const bytes = new Uint8Array(await readFile(filePath));
-				if (bytes.byteLength !== media.byteLength || bytes.byteLength > maximumTranscriptionBytes) {
-					throw new TranscriptionError('stale-media', 'The selected media changed before transcription.');
-				}
+			return await withMediaFiles({
+				callback: async files => {
+					if (!sameSnapshot(request.snapshot, this.currentSnapshot())) {
+						throw new TranscriptionError('stale-media', 'The selected media no longer belongs to this conversation.');
+					}
 
-				const transcript = await this.client.transcribe(apiKey, bytes, media.mimeType, signal);
-				if (!sameSnapshot(request.snapshot, this.currentSnapshot())) {
-					throw new TranscriptionError('stale-media', 'The conversation changed before transcription completed.');
-				}
+					for (const item of request.items) {
+						this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
+					}
 
-				return {
-					...transcript,
-					mediaSha256: createHash('sha256').update(bytes).digest('hex'),
-					source: {
-						byteLength: media.byteLength,
-						durationSeconds: media.durationSeconds,
-						kind: 'audio',
-						messageId: media.messageId,
-						mimeType: media.mimeType,
-					},
-				};
+					const transcriptions: MediaTranscription[] = [];
+					for (const [index, file] of files.entries()) {
+						const item = request.items[index];
+						this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
+						// eslint-disable-next-line no-await-in-loop
+						const transcript = await this.client.transcribe(apiKey, file.bytes, file.media.mimeType, signal);
+						if (!sameSnapshot(request.snapshot, this.currentSnapshot())) {
+							throw new TranscriptionError('stale-media', 'The conversation changed before transcription completed.');
+						}
+
+						this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
+						transcriptions.push({
+							...transcript,
+							mediaSha256: createHash('sha256').update(file.bytes).digest('hex'),
+							source: {
+								byteLength: file.media.byteLength,
+								durationSeconds: file.durationSeconds,
+								kind: 'audio',
+								messageId: file.media.messageId,
+								mimeType: file.media.mimeType,
+							},
+						});
+					}
+
+					return transcriptions;
+				},
+				files: [],
+				index: 0,
+				inspectDuration: this.inspectDuration,
+				mediaHandles: this.mediaHandles,
+				request,
 			});
 		} catch (error) {
 			mapResolverError(error);
 		} finally {
-			await this.mediaHandles.releaseHandle(request.handleId).catch(() => undefined);
+			await Promise.all(request.items.map(async item => this.mediaHandles.releaseHandle(item.handleId).catch(() => undefined)));
 		}
 	}
 }
