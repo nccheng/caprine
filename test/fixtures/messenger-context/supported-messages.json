@@ -48,7 +48,11 @@
                   {"attributes": {"datetime": "2026-08-25T12:00:00Z"}, "tag": "time"},
                   {"tag": "audio"},
                   {"tag": "video"},
-                  {"attributes": {"alt": "Photo"}, "tag": "img"}
+                  {
+                    "attributes": {"alt": "Photo"},
+                    "rectangle": {"height": 180, "width": 320, "x": 40, "y": 80},
+                    "tag": "img"
+                  }
                 ]
               }
             ]

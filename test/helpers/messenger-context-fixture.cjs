@@ -71,10 +71,15 @@ function matchesSelectorPart(element, selector) {
 class MessengerContextFixtureElement {
 	constructor(fixture = {}, parentElement = null) {
 		this.attributes = fixture.attributes ?? {};
+		this.hidden = fixture.hidden ?? false;
 		this.href = fixture.href;
+		this.isConnected = fixture.isConnected ?? true;
 		this.localName = fixture.tag ?? 'div';
 		this.ownText = fixture.text ?? '';
 		this.parentElement = parentElement;
+		this.rectangle = fixture.rectangle ?? {
+			height: 0, width: 0, x: 0, y: 0,
+		};
 		this.throwOnSelectors = fixture.throwOnSelectors ?? [];
 		this.dataset = {
 			messageId: this.attributes['data-message-id'],
@@ -105,6 +110,16 @@ class MessengerContextFixtureElement {
 
 	getAttribute(name) {
 		return this.attributes[name] ?? null;
+	}
+
+	getBoundingClientRect() {
+		return {...this.rectangle};
+	}
+
+	getClientRects() {
+		return this.hidden || this.rectangle.width <= 0 || this.rectangle.height <= 0
+			? []
+			: [{...this.rectangle}];
 	}
 
 	matches(selector) {
