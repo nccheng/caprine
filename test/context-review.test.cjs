@@ -6,7 +6,10 @@ const {
 	captureContextReviewSnapshot,
 	ContextCaptureCoordinator,
 	contextVersion,
+	editContextReviewItem,
+	isContextWindowComplete,
 	mergeContextPages,
+	removeContextReviewItem,
 	restoredConversationScrollTop,
 	selectContextWindow,
 	updateContextReview,
@@ -68,10 +71,7 @@ test('anchor backfill continues until enough older messages can center the windo
 			page = messages(20).slice(Math.max(0, 10 - (attempts * 5)));
 			return 'moved';
 		},
-		isComplete(items) {
-			const anchorIndex = items.findIndex(item => item.messageId === 'message-11');
-			return anchorIndex >= 4;
-		},
+		isComplete: items => isContextWindowComplete(items, 10, 'message-11'),
 		isConversationCurrent: () => true,
 		readPage: () => page,
 		requestedCount: 10,
@@ -93,9 +93,7 @@ test('newest anchor backfills a full 50-message window from the older side', asy
 			page = all.slice(-60);
 			return 'moved';
 		},
-		isComplete(items) {
-			return selectContextWindow(items, 50, 'message-75').length === 50;
-		},
+		isComplete: items => isContextWindowComplete(items, 50, 'message-75'),
 		isConversationCurrent: () => true,
 		readPage: () => page,
 		requestedCount: 50,
@@ -108,6 +106,32 @@ test('newest anchor backfills a full 50-message window from the older side', asy
 	assert.equal(selected.at(-1).messageId, 'message-75');
 });
 
+test('anchor completion backfills toward a centered window even when N loaded items can be selected', async () => {
+	const all = messages(80);
+	let page = all.slice(30);
+	let attempts = 0;
+	const capture = await captureBoundedContext({
+		async backfillOnce() {
+			attempts += 1;
+			page = all;
+			return 'moved';
+		},
+		isComplete: items => isContextWindowComplete(items, 50, 'message-32'),
+		isConversationCurrent: () => true,
+		readPage: () => page,
+		requestedCount: 50,
+		restore() {},
+	});
+	assert.equal(selectContextWindow(all.slice(30), 50, 'message-32').length, 50);
+	assert.equal(isContextWindowComplete(all.slice(30), 50, 'message-32'), false);
+	assert.equal(capture.stopReason, 'complete');
+	assert.equal(attempts, 1);
+	assert.deepEqual(
+		selectContextWindow(capture.items, 50, 'message-32').map(item => item.messageId),
+		all.slice(7, 57).map(item => item.messageId),
+	);
+});
+
 test('anchor windows fill from either boundary and remain partial only at a justified stop', async () => {
 	const items = messages(60);
 	assert.deepEqual(selectContextWindow(items, 10, 'message-1').map(item => item.messageId),
@@ -116,6 +140,21 @@ test('anchor windows fill from either boundary and remain partial only at a just
 		items.slice(-10).map(item => item.messageId));
 	assert.deepEqual(selectContextWindow(items.slice(0, 18), 10, 'message-17').map(item => item.messageId),
 		items.slice(8, 18).map(item => item.messageId));
+	let oldestAttempts = 0;
+	const oldest = await captureBoundedContext({
+		async backfillOnce() {
+			oldestAttempts += 1;
+			return 'no-more-history';
+		},
+		isComplete: page => isContextWindowComplete(page, 10, 'message-1'),
+		isConversationCurrent: () => true,
+		readPage: () => items,
+		requestedCount: 10,
+		restore() {},
+	});
+	assert.equal(oldest.stopReason, 'no-more-history');
+	assert.equal(oldestAttempts, 1);
+	assert.equal(selectContextWindow(oldest.items, 10, 'message-1').length, 10);
 
 	const missingAnchor = await captureBoundedContext({
 		backfillOnce: async () => 'no-more-history',
@@ -284,6 +323,29 @@ test('review snapshots freeze context and expose edits without reviving raw chan
 	assert.equal(edited.newMessagesAvailable, true);
 	assert.match(buildReviewedPrompt(edited), /Redacted excerpt/);
 	assert.doesNotMatch(buildReviewedPrompt(edited), /Message 1/);
+});
+
+test('review mutations target immutable item IDs across removals and reject stale IDs', () => {
+	const review = captureContextReviewSnapshot({
+		contextVersion: '2:message-2',
+		items: messages(2).map((item, index) => ({id: `item-${index + 1}`, item})),
+		question: 'What happened?',
+		requestedCount: 10,
+		snapshot: {
+			captureGeneration: 1,
+			conversationId: 'messenger-thread:123',
+			messengerWebContentsId: 2,
+			sessionId: 'ai-session-1',
+		},
+	});
+	const afterRemoval = removeContextReviewItem(review, 'item-1');
+	assert.ok(afterRemoval);
+	const afterEdit = editContextReviewItem(afterRemoval, 'item-2', 'Redacted second message');
+	assert.ok(afterEdit);
+	assert.deepEqual(afterEdit.items.map(item => item.id), ['item-2']);
+	assert.equal(afterEdit.items[0].editedExcerpt, 'Redacted second message');
+	assert.equal(removeContextReviewItem(afterEdit, 'item-1'), undefined);
+	assert.equal(editContextReviewItem(afterEdit, 'item-1', 'Wrong target'), undefined);
 });
 
 test('reviewed prompts include only frozen selected sendable items', () => {

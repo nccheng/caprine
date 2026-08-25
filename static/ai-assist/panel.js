@@ -135,9 +135,12 @@ function contextExcerpt(item) {
 	return parts.join('\n');
 }
 
-function updateContextReviewRow(row, reviewed, index) {
+function updateContextReviewRow(row, reviewed, index, reviewState) {
+	const {locked, reviewSequence} = reviewState;
 	const {item} = reviewed;
-	row.index = index;
+	row.itemId = reviewed.id;
+	row.reviewSequence = reviewSequence;
+	row.remove.disabled = locked;
 	if (item.sender.role === 'outgoing') {
 		row.heading.textContent = `Message ${index + 1} · sent by you`;
 	} else if (item.sender.role === 'incoming') {
@@ -152,6 +155,8 @@ function updateContextReviewRow(row, reviewed, index) {
 		item.omittedReason ? `Omitted: ${item.omittedReason} · Not sent to OpenAI` : 'Included in the reviewed prompt',
 	].filter(Boolean).join(' · ');
 	if (row.editor) {
+		row.editor.disabled = locked;
+		row.save.disabled = locked;
 		const renderedValue = reviewed.editedExcerpt ?? contextExcerpt(item);
 		if (row.editor.value === row.renderedValue) {
 			row.editor.value = renderedValue;
@@ -165,7 +170,7 @@ function updateContextReviewRow(row, reviewed, index) {
 	}
 }
 
-function createContextReviewRow(reviewed, index) {
+function createContextReviewRow(reviewed, index, reviewSequence, locked) {
 	const article = document.createElement('article');
 	article.className = 'context-item';
 	const heading = document.createElement('h3');
@@ -179,11 +184,13 @@ function createContextReviewRow(reviewed, index) {
 	const row = {
 		article,
 		heading,
-		index,
+		itemId: reviewed.id,
 		metadata,
+		remove,
+		reviewSequence,
 	};
 	remove.addEventListener('click', async () => {
-		render(await window.caprineAiAssist.removeContextItem(row.index));
+		render(await window.caprineAiAssist.removeContextItem(row.reviewSequence, row.itemId));
 	});
 	buttons.append(remove);
 	if (reviewed.item.omittedReason) {
@@ -203,21 +210,22 @@ function createContextReviewRow(reviewed, index) {
 		row.editor = editor;
 		row.marker = marker;
 		row.renderedValue = reviewed.editedExcerpt ?? contextExcerpt(reviewed.item);
+		row.save = save;
 		editor.value = row.renderedValue;
 		save.addEventListener('click', async () => {
 			if (editor.value.trim()) {
-				render(await window.caprineAiAssist.editContextItem(row.index, editor.value));
+				render(await window.caprineAiAssist.editContextItem(row.reviewSequence, row.itemId, editor.value));
 			}
 		});
 		buttons.prepend(save);
 		article.append(heading, metadata, marker, editor, buttons);
 	}
 
-	updateContextReviewRow(row, reviewed, index);
+	updateContextReviewRow(row, reviewed, index, {locked, reviewSequence});
 	return row;
 }
 
-function renderContextReview(review) {
+function renderContextReview(review, isRequesting) {
 	newMessages.hidden = !review?.newMessagesAvailable;
 	if (!review) {
 		contextAvailability.textContent = 'No context captured.';
@@ -231,18 +239,22 @@ function renderContextReview(review) {
 
 	contextWindow.value = String(review.requestedCount);
 	const sendableCount = review.items.filter(({item}) => item.omittedReason === undefined).length;
-	contextAvailability.textContent = `${review.actualCount} of ${review.requestedCount} messages available; ${review.items.length} selected; ${sendableCount} will be sent to OpenAI.`;
+	const locked = review.locked || isRequesting;
+	const sendableSummary = review.locked
+		? `${sendableCount} selected in the locked Ask snapshot. Use Refresh context to make changes.`
+		: `${sendableCount} will be sent to OpenAI.`;
+	contextAvailability.textContent = `${review.actualCount} of ${review.requestedCount} messages available; ${review.items.length} selected; ${sendableSummary}`;
 	const presentIds = new Set();
 	for (const [index, reviewed] of review.items.entries()) {
 		presentIds.add(reviewed.id);
 		let row = contextReviewRows.get(reviewed.id);
 		if (!row) {
-			row = createContextReviewRow(reviewed, index);
+			row = createContextReviewRow(reviewed, index, review.sequence, locked);
 			contextReviewRows.set(reviewed.id, row);
 			contextItems.append(row.article);
 		}
 
-		updateContextReviewRow(row, reviewed, index);
+		updateContextReviewRow(row, reviewed, index, {locked, reviewSequence: review.sequence});
 	}
 
 	for (const [id, row] of contextReviewRows) {
@@ -266,7 +278,7 @@ function render(state) {
 	renderedCaptureGeneration = state.conversation.captureGeneration;
 	renderMessageAnchor(state.anchor);
 	contextWindow.value = String(state.contextWindowSize);
-	renderContextReview(state.review);
+	renderContextReview(state.review, isRequesting);
 	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
 		promptInput.value = state.invocation.prompt;
 		promptCaptureGeneration = state.conversation.captureGeneration;

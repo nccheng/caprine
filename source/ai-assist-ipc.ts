@@ -62,6 +62,7 @@ export type AiAssistPanelState = {
 	review?: {
 		actualCount: number;
 		items: ReviewedContextItem[];
+		locked: boolean;
 		newMessagesAvailable: boolean;
 		question: string;
 		requestedCount: ContextWindowSize;
@@ -95,9 +96,9 @@ export type AiAssistPanelCommand =
 	| {type: 'cancel'}
 	| {type: 'close'}
 	| {type: 'delete-api-key'}
-	| {editedExcerpt: string; index: number; type: 'edit-context-item'}
+	| {editedExcerpt: string; itemId: string; reviewSequence: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
-	| {index: number; type: 'remove-context-item'}
+	| {itemId: string; reviewSequence: number; type: 'remove-context-item'}
 	| {type: 'refresh-context'}
 	| {type: 'refresh-conversation'}
 	| {type: 'resolve-media'; kind: MediaKind; messageId: string}
@@ -421,17 +422,17 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 	}
 
 	if (value.type === 'remove-context-item') {
-		return hasExactKeys(value, ['index', 'type'])
-			&& Number.isSafeInteger(value.index)
-			&& (value.index as number) >= 0
-			&& (value.index as number) < 50;
+		return hasExactKeys(value, ['itemId', 'reviewSequence', 'type'])
+			&& isBoundedString(value.itemId, 200)
+			&& Number.isSafeInteger(value.reviewSequence)
+			&& (value.reviewSequence as number) > 0;
 	}
 
 	if (value.type === 'edit-context-item') {
-		return hasExactKeys(value, ['editedExcerpt', 'index', 'type'])
-			&& Number.isSafeInteger(value.index)
-			&& (value.index as number) >= 0
-			&& (value.index as number) < 50
+		return hasExactKeys(value, ['editedExcerpt', 'itemId', 'reviewSequence', 'type'])
+			&& isBoundedString(value.itemId, 200)
+			&& Number.isSafeInteger(value.reviewSequence)
+			&& (value.reviewSequence as number) > 0
 			&& isBoundedString(value.editedExcerpt, 20_000);
 	}
 
@@ -524,13 +525,14 @@ function isReviewedContextItem(value: unknown): boolean {
 
 function isReviewState(value: unknown): boolean {
 	return isRecord(value)
-		&& hasExactKeys(value, ['actualCount', 'items', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence'])
+		&& hasExactKeys(value, ['actualCount', 'items', 'locked', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence'])
 		&& Number.isSafeInteger(value.actualCount)
 		&& (value.actualCount as number) >= 0
 		&& (value.actualCount as number) <= 50
 		&& Array.isArray(value.items)
 		&& value.items.length <= (value.actualCount as number)
 		&& value.items.every(item => isReviewedContextItem(item))
+		&& typeof value.locked === 'boolean'
 		&& typeof value.newMessagesAvailable === 'boolean'
 		&& typeof value.question === 'string'
 		&& value.question.length <= openAiPromptCharacterLimit

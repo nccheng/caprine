@@ -41,6 +41,7 @@ import {
 	captureBoundedContext,
 	ContextCaptureCoordinator,
 	contextVersion,
+	isContextWindowComplete,
 	restoredConversationScrollTop,
 	selectContextWindow,
 } from './context-review';
@@ -912,7 +913,7 @@ async function captureMessengerContext(
 			return scrollContainer.scrollTop < previousScrollTop ? 'moved' : 'no-more-history';
 		},
 		isComplete(items) {
-			return selectContextWindow(items, command.requestedCount, command.anchorMessageId).length === command.requestedCount;
+			return isContextWindowComplete(items, command.requestedCount, command.anchorMessageId);
 		},
 		isConversationCurrent: () => currentConversationId() === command.conversationId,
 		readPage: () => extractLoadedMessengerConversationContext(document),

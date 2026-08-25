@@ -120,8 +120,15 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({type: 'refresh-context'}), true);
 	assert.equal(isAiAssistPanelCommand({requestedCount: 50, type: 'set-context-window'}), true);
 	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
-	assert.equal(isAiAssistPanelCommand({editedExcerpt: 'Redacted', index: 0, type: 'edit-context-item'}), true);
-	assert.equal(isAiAssistPanelCommand({index: 50, type: 'remove-context-item'}), false);
+	assert.equal(isAiAssistPanelCommand({
+		editedExcerpt: 'Redacted',
+		itemId: 'context-capture-1:0',
+		reviewSequence: 3,
+		type: 'edit-context-item',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({itemId: 'context-capture-1:0', reviewSequence: 3, type: 'remove-context-item'}), true);
+	assert.equal(isAiAssistPanelCommand({index: 0, type: 'remove-context-item'}), false);
+	assert.equal(isAiAssistPanelCommand({itemId: 'context-capture-1:0', reviewSequence: 0, type: 'remove-context-item'}), false);
 	assert.equal(isAiAssistMessengerCommand({
 		kind: 'video',
 		messageId: 'message-1',
@@ -265,6 +272,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		review: {
 			actualCount: 3,
 			items: [{editedExcerpt: 'Reviewed excerpt', id: 'context-capture-1:0', item: anchorRequest.item}],
+			locked: false,
 			newMessagesAvailable: true,
 			question: 'Exact question',
 			requestedCount: 10,
@@ -432,9 +440,11 @@ test('conversation reports are rejected until the replacement document is ready'
 	assert.equal(gate.acceptsReports, true);
 });
 
-test('panel clears stale prompts and hides stale answers outside ready state', () => {
+test('panel clears stale prompts and hides stale answers outside ready state', async () => {
 	const elements = new Map();
 	let activeElement;
+	const reviewCommands = [];
+	const commandState = {current: undefined};
 	const element = id => {
 		if (!elements.has(id)) {
 			const listeners = new Map();
@@ -481,7 +491,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 				async cancel() {},
 				async close() {},
 				async deleteApiKey() {},
-				async editContextItem() {},
+				async editContextItem(...arguments_) {
+					reviewCommands.push(['edit', ...arguments_]);
+					return commandState.current;
+				},
 				async getState() {
 					return new Promise(() => {});
 				},
@@ -490,7 +503,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 				},
 				async refreshContext() {},
 				async refreshConversation() {},
-				async removeContextItem() {},
+				async removeContextItem(...arguments_) {
+					reviewCommands.push(['remove', ...arguments_]);
+					return commandState.current;
+				},
 				async resolveMedia() {},
 				async saveApiKey() {},
 				async setContextWindow() {},
@@ -545,6 +561,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 					text: 'Reviewed context',
 				},
 			}],
+			locked: false,
 			newMessagesAvailable: false,
 			question: '',
 			requestedCount: 10,
@@ -558,7 +575,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 	editor.selectionStart = 8;
 	editor.selectionEnd = 13;
 	editor.focus();
-	renderState({
+	const unrelatedReviewState = {
 		...state('ready', 3, {notice: 'Unrelated state update'}),
 		review: {
 			actualCount: 1,
@@ -571,18 +588,42 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 					text: 'Reviewed context',
 				},
 			}],
+			locked: false,
 			newMessagesAvailable: true,
 			question: '',
 			requestedCount: 10,
 			sequence: 1,
 		},
-	});
+	};
+	renderState(unrelatedReviewState);
 	assert.equal(createdElements, elementCountAfterReview);
 	assert.equal(editor.value, 'Unsaved local redaction');
 	assert.equal(editor.selectionStart, 8);
 	assert.equal(editor.selectionEnd, 13);
 	assert.equal(context.document.activeElement, editor);
 	assert.equal(element('context-items').children.length > 0, true);
+	commandState.current = unrelatedReviewState;
+	const removeButton = [...elements.values()].find(node => node.textContent === 'Remove');
+	const saveButton = [...elements.values()].find(node => node.textContent === 'Save redaction');
+	await Promise.all([
+		removeButton.listeners.get('click')(),
+		removeButton.listeners.get('click')(),
+		saveButton.listeners.get('click')(),
+	]);
+	assert.deepEqual(reviewCommands, [
+		['remove', 1, 'context-capture-1:0'],
+		['remove', 1, 'context-capture-1:0'],
+		['edit', 1, 'context-capture-1:0', 'Unsaved local redaction'],
+	]);
+	renderState({
+		...unrelatedReviewState,
+		review: {...unrelatedReviewState.review, locked: true},
+		session: {generation: 1, sessionId: 'ai-session-1', status: 'requesting'},
+	});
+	assert.equal(removeButton.disabled, true);
+	assert.equal(saveButton.disabled, true);
+	assert.equal(editor.disabled, true);
+	assert.match(element('context-availability').textContent, /locked Ask snapshot\. Use Refresh context to make changes/);
 	renderState({
 		...state('ready', 3),
 		review: {
@@ -603,6 +644,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 					sender: {role: 'unknown'},
 				},
 			}],
+			locked: false,
 			newMessagesAvailable: false,
 			question: '',
 			requestedCount: 10,

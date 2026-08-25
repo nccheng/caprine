@@ -56,6 +56,8 @@ import {
 	captureContextReviewSnapshot,
 	ContextReviewSnapshot,
 	ContextWindowSize,
+	editContextReviewItem,
+	removeContextReviewItem,
 	updateContextReview,
 } from './context-review';
 
@@ -111,6 +113,7 @@ class AiAssistController {
 
 	private requestCounter = 0;
 	private review?: {
+		locked: boolean;
 		sequence: number;
 		snapshot: Readonly<ContextReviewSnapshot>;
 	};
@@ -179,6 +182,7 @@ class AiAssistController {
 				review: {
 					actualCount: this.review.snapshot.actualCount,
 					items: this.review.snapshot.items,
+					locked: this.review.locked,
 					newMessagesAvailable: this.review.snapshot.newMessagesAvailable,
 					question: this.review.snapshot.question,
 					requestedCount: this.review.snapshot.requestedCount,
@@ -278,7 +282,7 @@ class AiAssistController {
 			}
 
 			case 'edit-context-item': {
-				this.editContextItem(value.index, value.editedExcerpt);
+				this.editContextItem(value.reviewSequence, value.itemId, value.editedExcerpt);
 				break;
 			}
 
@@ -296,7 +300,7 @@ class AiAssistController {
 			}
 
 			case 'remove-context-item': {
-				this.removeContextItem(value.index);
+				this.removeContextItem(value.reviewSequence, value.itemId);
 				break;
 			}
 
@@ -368,6 +372,7 @@ class AiAssistController {
 					&& value.contextVersion !== this.review.snapshot.contextVersion
 				) {
 					this.review = {
+						locked: this.review.locked,
 						sequence: this.review.sequence,
 						snapshot: updateContextReview(this.review.snapshot, {newMessagesAvailable: true}),
 					};
@@ -638,6 +643,7 @@ class AiAssistController {
 		}
 
 		this.review = {
+			locked: false,
 			sequence: ++this.reviewSequence,
 			snapshot: captureContextReviewSnapshot({
 				contextVersion: value.contextVersion,
@@ -653,32 +659,51 @@ class AiAssistController {
 		pending.resolve();
 	}
 
-	private removeContextItem(index: number): void {
-		if (!this.review || !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot) || !this.review.snapshot.items[index]) {
+	private removeContextItem(reviewSequence: number, itemId: string): void {
+		if (
+			!this.review
+			|| this.review.locked
+			|| this.review.sequence !== reviewSequence
+			|| this.sessionState.snapshot.status === 'requesting'
+			|| !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)
+		) {
+			return;
+		}
+
+		const snapshot = removeContextReviewItem(this.review.snapshot, itemId);
+		if (!snapshot) {
 			return;
 		}
 
 		this.review = {
+			locked: false,
 			sequence: this.review.sequence,
-			snapshot: updateContextReview(this.review.snapshot, {
-				items: this.review.snapshot.items.filter((_item, itemIndex) => itemIndex !== index),
-			}),
+			snapshot,
 		};
 		this.notice = 'Context item removed from this request.';
 		this.broadcastState();
 	}
 
-	private editContextItem(index: number, editedExcerpt: string): void {
-		if (!this.review || !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot) || !this.review.snapshot.items[index]) {
+	private editContextItem(reviewSequence: number, itemId: string, editedExcerpt: string): void {
+		if (
+			!this.review
+			|| this.review.locked
+			|| this.review.sequence !== reviewSequence
+			|| this.sessionState.snapshot.status === 'requesting'
+			|| !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)
+		) {
 			return;
 		}
 
-		const items = this.review.snapshot.items.map((reviewed, itemIndex) => itemIndex === index
-			? {editedExcerpt, id: reviewed.id, item: reviewed.item}
-			: reviewed);
+		const snapshot = editContextReviewItem(this.review.snapshot, itemId, editedExcerpt);
+		if (!snapshot) {
+			return;
+		}
+
 		this.review = {
+			locked: false,
 			sequence: this.review.sequence,
-			snapshot: updateContextReview(this.review.snapshot, {items}),
+			snapshot,
 		};
 		this.notice = 'Edited excerpt saved for this request.';
 		this.broadcastState();
@@ -1060,6 +1085,10 @@ class AiAssistController {
 			return;
 		}
 
+		if (this.review.locked) {
+			return;
+		}
+
 		if (!this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)) {
 			this.error = {
 				code: 'provider-unavailable',
@@ -1070,6 +1099,7 @@ class AiAssistController {
 		}
 
 		this.review = {
+			locked: false,
 			sequence: ++this.reviewSequence,
 			snapshot: updateContextReview(this.review.snapshot, {question}),
 		};
@@ -1082,6 +1112,9 @@ class AiAssistController {
 			this.broadcastState();
 			return;
 		}
+
+		this.review = {...this.review, locked: true};
+		this.broadcastState();
 
 		await this.runOpenAiRequest(prompt, false);
 	}

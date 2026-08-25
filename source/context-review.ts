@@ -192,6 +192,23 @@ export function selectContextWindow(
 	return items.slice(start, end);
 }
 
+export function isContextWindowComplete(
+	items: readonly ConversationContextItem[],
+	requestedCount: ContextWindowSize,
+	anchorMessageId?: string,
+): boolean {
+	if (selectContextWindow(items, requestedCount, anchorMessageId).length !== requestedCount) {
+		return false;
+	}
+
+	if (!anchorMessageId) {
+		return true;
+	}
+
+	const anchorIndex = items.findIndex(item => item.messageId === anchorMessageId);
+	return anchorIndex >= Math.floor((requestedCount - 1) / 2);
+}
+
 export async function captureBoundedContext(
 	options: ContextBackfillOptions,
 ): Promise<{items: ConversationContextItem[]; stopReason: ContextBackfillStopReason}> {
@@ -324,6 +341,35 @@ export function updateContextReview(
 	});
 	freezePlainValue(captured);
 	return captured;
+}
+
+export function removeContextReviewItem(
+	review: Readonly<ContextReviewSnapshot>,
+	itemId: string,
+): Readonly<ContextReviewSnapshot> | undefined {
+	if (!review.items.some(item => item.id === itemId)) {
+		return undefined;
+	}
+
+	return updateContextReview(review, {
+		items: review.items.filter(item => item.id !== itemId),
+	});
+}
+
+export function editContextReviewItem(
+	review: Readonly<ContextReviewSnapshot>,
+	itemId: string,
+	editedExcerpt: string,
+): Readonly<ContextReviewSnapshot> | undefined {
+	if (!review.items.some(item => item.id === itemId)) {
+		return undefined;
+	}
+
+	return updateContextReview(review, {
+		items: review.items.map(reviewed => reviewed.id === itemId
+			? {editedExcerpt, id: reviewed.id, item: reviewed.item}
+			: reviewed),
+	});
 }
 
 export function buildReviewedPrompt(review: Readonly<ContextReviewSnapshot>): string {
