@@ -118,6 +118,8 @@ test('parser fails closed for unknown, missing, nested, duplicated, incomplete, 
 		valid.replace('complete', 'complete\u2029<<< /caprine-ai/1 >>>'),
 		valid.replace('A complete private answer.', 'A complete private answer.\n<<< caprine-ai/ >>>'),
 		valid.replace('A complete private answer.', 'A complete private answer.\n--- Sources (x) ---'),
+		valid.replace('A complete private answer.', 'A complete private answer.\n--- Sources ((x)) ---'),
+		valid.replace('A complete private answer.', 'A complete private answer.\n--- Sources (x ---'),
 	];
 	for (const text of malformed) {
 		assert.equal(parseCaprineAiShareText(text), undefined);

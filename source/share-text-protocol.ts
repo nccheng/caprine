@@ -14,7 +14,7 @@ const endMarker = `<<< /${caprineAiShareProtocolVersion} >>>`;
 const questionMarker = '--- Question ---';
 const answerMarker = '--- Answer ---';
 const sourcesMarkerPattern = /^--- Sources \((0|[1-9]\d*)\) ---$/;
-const structuralLinePattern = /^(?:<<< \/?caprine-ai(?:\/[^>]*)? >>>|--- (?:Question|Answer|Sources \([^)]*\)) ---)$/;
+const structuralLinePattern = /^(?:<<< \/?caprine-ai(?:\/[^>]*)? >>>|--- (?:Question|Answer) ---|--- Sources.* ---)$/;
 // The protocol rejects ASCII controls at the plain-text trust boundary.
 // eslint-disable-next-line no-control-regex
 const unsafeCharacterPattern = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u061C\u200E\u200F\u2028-\u202E\u2066-\u2069\uFEFF]/;
