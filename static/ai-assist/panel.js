@@ -28,10 +28,12 @@ const askButton = document.querySelector('#ask-button');
 const cancelButton = document.querySelector('#cancel-button');
 const requestMessage = document.querySelector('#request-message');
 const answerOutput = document.querySelector('#answer-output');
+const insertAnswerButton = document.querySelector('#insert-answer-button');
 const closeButton = document.querySelector('#close-button');
 let renderedCaptureGeneration;
 let renderedInvocationSequence;
 let promptCaptureGeneration;
+let renderedInsertion;
 const contextReviewRows = new Map();
 
 function shouldClearPrompt(state) {
@@ -332,6 +334,8 @@ function render(state) {
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));
 	answerOutput.textContent = answerForState(state);
+	renderedInsertion = state.request.insertion;
+	insertAnswerButton.disabled = !renderedInsertion || !state.request.answer || !isConversationReady;
 }
 
 promptInput.addEventListener('input', () => {
@@ -385,6 +389,21 @@ promptForm.addEventListener('submit', async event => {
 
 cancelButton.addEventListener('click', async () => {
 	render(await window.caprineAiAssist.cancel());
+});
+
+insertAnswerButton.addEventListener('click', async () => {
+	const insertion = renderedInsertion;
+	if (!insertion) {
+		return;
+	}
+
+	renderedInsertion = undefined;
+	insertAnswerButton.disabled = true;
+	render(await window.caprineAiAssist.insertAnswer(
+		insertion.answerGeneration,
+		insertion.authorizationToken,
+		insertion.conversationId,
+	));
 });
 
 closeButton.addEventListener('click', async () => {

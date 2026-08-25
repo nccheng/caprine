@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 		type: 'edit-context-item',
 	}),
 	getState: async () => sendCommand({type: 'get-state'}),
+	insertAnswer: async (answerGeneration: number, authorizationToken: string, conversationId: string) => sendCommand({
+		answerGeneration,
+		authorizationToken,
+		conversationId,
+		type: 'insert-answer',
+	}),
 	refreshContext: async () => sendCommand({type: 'refresh-context'}),
 	refreshConversation: async () => sendCommand({type: 'refresh-conversation'}),
 	removeContextItem: async (reviewSequence: number, itemId: string) => sendCommand({itemId, reviewSequence, type: 'remove-context-item'}),
