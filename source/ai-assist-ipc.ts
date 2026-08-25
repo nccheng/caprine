@@ -5,9 +5,19 @@ import {
 	MessageAnchorData,
 } from './ai-assist-state';
 import {
+	contextWindowSizes,
+	ContextWindowSize,
+	ReviewedContextItem,
+} from './context-review';
+import {
 	conversationIdentityFailureReasons,
 	ConversationIdentityFailureReason,
 } from './conversation-identity';
+import {
+	conversationContextConfidenceLevels,
+	conversationContextOmittedReasons,
+	ConversationContextItem,
+} from './messenger-context';
 import {
 	openAiAnswerCharacterLimit,
 	openAiErrorCodes,
@@ -47,6 +57,14 @@ export type AiAssistPanelState = {
 		candidates: MessengerMediaCandidate[];
 		resolution?: MessengerMediaResolution;
 	};
+	review?: {
+		actualCount: number;
+		items: ReviewedContextItem[];
+		newMessagesAvailable: boolean;
+		question: string;
+		requestedCount: ContextWindowSize;
+		sequence: number;
+	};
 	request: {
 		answer?: string;
 		error?: {
@@ -75,14 +93,24 @@ export type AiAssistPanelCommand =
 	| {type: 'cancel'}
 	| {type: 'close'}
 	| {type: 'delete-api-key'}
+	| {editedExcerpt: string; index: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
+	| {index: number; type: 'remove-context-item'}
 	| {type: 'refresh-conversation'}
 	| {type: 'resolve-media'; kind: MediaKind; messageId: string}
 	| {type: 'save-api-key'; apiKey: string}
+	| {requestedCount: ContextWindowSize; type: 'set-context-window'}
 	| {type: 'submit-prompt'; prompt: string}
 	| {type: 'test-api-key'};
 
 export type AiAssistMessengerCommand =
+	| {
+		anchorMessageId?: string;
+		conversationId: string;
+		requestId: string;
+		requestedCount: ContextWindowSize;
+		type: 'capture-context';
+	}
 	| {enabled: boolean; type: 'set-enabled'}
 	| {requestId?: string; type: 'report-conversation'}
 	| {kind: MediaKind; messageId: string; requestId: string; type: 'resolve-media'};
@@ -103,7 +131,24 @@ export type MessengerMediaResolution = MessengerMediaCandidate & {
 
 export type AiAssistMessengerEvent =
 	| {
+		contextVersion: string;
 		conversationId: string;
+		items: ConversationContextItem[];
+		requestId: string;
+		requestedCount: ContextWindowSize;
+		status: 'available';
+		stopReason: 'complete' | 'no-more-history' | 'timeout';
+		type: 'context-capture';
+	}
+	| {
+		reason: 'conversation-changed' | 'empty-context' | 'missing-anchor';
+		requestId: string;
+		status: 'unavailable';
+		type: 'context-capture';
+	}
+	| {
+		conversationId: string;
+		contextVersion?: string;
 		displayName?: string;
 		mediaCandidates?: MessengerMediaCandidate[];
 		requestId?: string;
@@ -168,6 +213,64 @@ function isAnchorSender(value: unknown): boolean {
 	return hasExactKeys(value, keys)
 		&& ['incoming', 'outgoing'].includes(value.role as string)
 		&& (value.displayName === undefined || isBoundedString(value.displayName, 200));
+}
+
+function isContextSender(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['role'];
+	if (value.displayName !== undefined) {
+		keys.push('displayName');
+	}
+
+	return hasExactKeys(value, keys)
+		&& ['incoming', 'outgoing', 'unknown'].includes(value.role as string)
+		&& (value.displayName === undefined || isBoundedString(value.displayName, 200));
+}
+
+function isContextItem(value: unknown): value is ConversationContextItem {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const optionalKeys = ['attachments', 'linkPreview', 'messageId', 'omittedReason', 'reactions', 'reply', 'text', 'timestamp'];
+	const keys = ['confidence', 'sender'];
+	for (const key of optionalKeys) {
+		if (value[key] !== undefined) {
+			keys.push(key);
+		}
+	}
+
+	if (!hasExactKeys(value, keys)
+		|| !conversationContextConfidenceLevels.includes(value.confidence as never)
+		|| !isContextSender(value.sender)
+		|| (value.messageId !== undefined && !isMessageId(value.messageId))
+		|| (value.omittedReason !== undefined && !conversationContextOmittedReasons.includes(value.omittedReason as never))
+		|| (value.text !== undefined && !isBoundedString(value.text, 20_000))
+		|| (value.timestamp !== undefined && !isBoundedString(value.timestamp, 200))) {
+		return false;
+	}
+
+	const anchorCompatible: Record<string, unknown> = {
+		...value,
+		confidence: 'high',
+		messageId: value.messageId ?? 'context-item',
+		sender: isRecord(value.sender) && value.sender.role === 'unknown'
+			? {role: 'incoming'}
+			: value.sender,
+	};
+	delete anchorCompatible.omittedReason;
+	if (value.omittedReason !== undefined) {
+		return value.attachments === undefined
+			&& value.linkPreview === undefined
+			&& value.reactions === undefined
+			&& value.reply === undefined
+			&& value.text === undefined;
+	}
+
+	return isAnchorItem(anchorCompatible);
 }
 
 function isAnchorItem(value: unknown): boolean {
@@ -308,6 +411,26 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 			&& isMessageId(value.messageId);
 	}
 
+	if (value.type === 'set-context-window') {
+		return hasExactKeys(value, ['requestedCount', 'type'])
+			&& contextWindowSizes.includes(value.requestedCount as never);
+	}
+
+	if (value.type === 'remove-context-item') {
+		return hasExactKeys(value, ['index', 'type'])
+			&& Number.isSafeInteger(value.index)
+			&& (value.index as number) >= 0
+			&& (value.index as number) < 50;
+	}
+
+	if (value.type === 'edit-context-item') {
+		return hasExactKeys(value, ['editedExcerpt', 'index', 'type'])
+			&& Number.isSafeInteger(value.index)
+			&& (value.index as number) >= 0
+			&& (value.index as number) < 50
+			&& isBoundedString(value.editedExcerpt, 20_000);
+	}
+
 	return value.type === 'submit-prompt'
 		&& hasExactKeys(value, ['prompt', 'type'])
 		&& typeof value.prompt === 'string'
@@ -375,6 +498,38 @@ function isInvocationState(value: unknown): boolean {
 		&& hasExactKeys(value, ['prompt', 'sequence'])
 		&& typeof value.prompt === 'string'
 		&& value.prompt.length <= openAiPromptCharacterLimit
+		&& Number.isSafeInteger(value.sequence)
+		&& (value.sequence as number) > 0;
+}
+
+function isReviewedContextItem(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['item'];
+	if (value.editedExcerpt !== undefined) {
+		keys.push('editedExcerpt');
+	}
+
+	return hasExactKeys(value, keys)
+		&& isContextItem(value.item)
+		&& (value.editedExcerpt === undefined || isBoundedString(value.editedExcerpt, 20_000));
+}
+
+function isReviewState(value: unknown): boolean {
+	return isRecord(value)
+		&& hasExactKeys(value, ['actualCount', 'items', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence'])
+		&& Number.isSafeInteger(value.actualCount)
+		&& (value.actualCount as number) >= 0
+		&& (value.actualCount as number) <= 50
+		&& Array.isArray(value.items)
+		&& value.items.length <= (value.actualCount as number)
+		&& value.items.every(item => isReviewedContextItem(item))
+		&& typeof value.newMessagesAvailable === 'boolean'
+		&& typeof value.question === 'string'
+		&& value.question.length <= openAiPromptCharacterLimit
+		&& contextWindowSizes.includes(value.requestedCount as never)
 		&& Number.isSafeInteger(value.sequence)
 		&& (value.sequence as number) > 0;
 }
@@ -488,6 +643,10 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		keys.push('invocation');
 	}
 
+	if (value.review !== undefined) {
+		keys.push('review');
+	}
+
 	return hasExactKeys(value, keys)
 		&& isConversationState(value.conversation)
 		&& (value.anchor === undefined || (
@@ -506,6 +665,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		&& typeof value.enabled === 'boolean'
 		&& (value.invocation === undefined || isInvocationState(value.invocation))
 		&& isMediaState(value.media)
+		&& (value.review === undefined || isReviewState(value.review))
 		&& isRequestState(value.request)
 		&& isSessionState(value.session);
 }
@@ -513,6 +673,20 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMessengerCommand {
 	if (!isRecord(value) || typeof value.type !== 'string') {
 		return false;
+	}
+
+	if (value.type === 'capture-context') {
+		const keys = ['conversationId', 'requestId', 'requestedCount', 'type'];
+		if (value.anchorMessageId !== undefined) {
+			keys.push('anchorMessageId');
+		}
+
+		return hasExactKeys(value, keys)
+			&& typeof value.conversationId === 'string'
+			&& /^messenger-thread:[\w.:-]{1,200}$/.test(value.conversationId)
+			&& /^context-capture-\d+$/.test(value.requestId as string)
+			&& contextWindowSizes.includes(value.requestedCount as never)
+			&& (value.anchorMessageId === undefined || isMessageId(value.anchorMessageId));
 	}
 
 	if (value.type === 'report-conversation') {
@@ -540,6 +714,29 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMessengerEvent {
 	if (!isRecord(value)) {
 		return false;
+	}
+
+	if (value.type === 'context-capture') {
+		if (!/^context-capture-\d+$/.test(value.requestId as string)) {
+			return false;
+		}
+
+		if (value.status === 'unavailable') {
+			return hasExactKeys(value, ['reason', 'requestId', 'status', 'type'])
+				&& ['conversation-changed', 'empty-context', 'missing-anchor'].includes(value.reason as string);
+		}
+
+		return value.status === 'available'
+			&& hasExactKeys(value, ['contextVersion', 'conversationId', 'items', 'requestId', 'requestedCount', 'status', 'stopReason', 'type'])
+			&& isBoundedString(value.contextVersion, 500)
+			&& typeof value.conversationId === 'string'
+			&& /^messenger-thread:[\w.:-]{1,200}$/.test(value.conversationId)
+			&& Array.isArray(value.items)
+			&& value.items.length > 0
+			&& value.items.length <= 50
+			&& value.items.every(item => isContextItem(item))
+			&& contextWindowSizes.includes(value.requestedCount as never)
+			&& ['complete', 'no-more-history', 'timeout'].includes(value.stopReason as string);
 	}
 
 	if (value.type === 'media-resolution') {
@@ -570,6 +767,10 @@ export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMesse
 		expectedKeys.push('mediaCandidates');
 	}
 
+	if (value.contextVersion !== undefined) {
+		expectedKeys.push('contextVersion');
+	}
+
 	if (value.requestId !== undefined) {
 		expectedKeys.push('requestId');
 	}
@@ -578,6 +779,7 @@ export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMesse
 		&& hasExactKeys(value, expectedKeys)
 		&& typeof value.conversationId === 'string'
 		&& /^messenger-thread:[\w.:-]{1,200}$/.test(value.conversationId)
+		&& (value.contextVersion === undefined || isBoundedString(value.contextVersion, 500))
 		&& (value.requestId === undefined || isConversationRequestId(value.requestId))
 		&& (value.displayName === undefined || (typeof value.displayName === 'string' && value.displayName.length <= 200))
 		&& (value.mediaCandidates === undefined || (

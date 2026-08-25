@@ -4,6 +4,7 @@ import {EmojiStyle} from './emoji';
 
 export type StoreType = {
 	aiAssistEnabled: boolean;
+	aiAssistContextWindowSize: 10 | 20 | 50;
 	aiAssistOpenAiKeyCiphertext: string;
 	theme: 'system' | 'light' | 'dark';
 	privateMode: boolean;
@@ -50,6 +51,11 @@ export type StoreType = {
 };
 
 const schema: Store.Schema<StoreType> = {
+	aiAssistContextWindowSize: {
+		type: 'number',
+		enum: [10, 20, 50],
+		default: 10,
+	},
 	aiAssistEnabled: {
 		type: 'boolean',
 		default: false,

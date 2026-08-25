@@ -139,6 +139,39 @@ textarea:focus-visible {
 	margin-top: 8px;
 }
 
+.context-availability,
+.new-messages {
+	margin-top: 10px;
+}
+
+.new-messages {
+	color: #ffe29a;
+	font-weight: 650;
+}
+
+.context-items {
+	display: grid;
+	gap: 10px;
+	margin-top: 12px;
+}
+
+.context-item {
+	padding: 12px;
+	border: 1px solid #3c4250;
+	border-radius: 10px;
+	background: #151820;
+}
+
+.context-item textarea {
+	margin-top: 8px;
+}
+
+.edited-marker {
+	margin-top: 6px;
+	color: #aeb7ff;
+	font-weight: 650;
+}
+
 .button-row {
 	display: flex;
 	flex-wrap: wrap;
@@ -201,6 +234,11 @@ footer {
 }
 
 @media (prefers-color-scheme: light) {
+	.context-item {
+		border-color: #d9dce5;
+		background: #f7f8fc;
+	}
+
 	:root {
 		color-scheme: light;
 		background: #f5f6fa;

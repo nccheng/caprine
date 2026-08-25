@@ -107,6 +107,16 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), false);
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
 	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
+		requestId: 'context-capture-1',
+		requestedCount: 20,
+		type: 'capture-context',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({requestedCount: 50, type: 'set-context-window'}), true);
+	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
+	assert.equal(isAiAssistPanelCommand({editedExcerpt: 'Redacted', index: 0, type: 'edit-context-item'}), true);
+	assert.equal(isAiAssistPanelCommand({index: 50, type: 'remove-context-item'}), false);
+	assert.equal(isAiAssistMessengerCommand({
 		kind: 'video',
 		messageId: 'message-1',
 		requestId: 'media-request-1',
@@ -120,9 +130,20 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: 'yes'}), false);
 	assert.equal(isAiAssistMessengerEvent({
 		conversationId: 'messenger-thread:123',
+		contextVersion: '3:message-3',
 		requestId: 'conversation-report-1',
 		status: 'available',
 		type: 'conversation-state',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		contextVersion: '1:message-1',
+		conversationId: 'messenger-thread:123',
+		items: [anchorRequest.item],
+		requestId: 'context-capture-1',
+		requestedCount: 10,
+		status: 'available',
+		stopReason: 'no-more-history',
+		type: 'context-capture',
 	}), true);
 	const rawBlobEvent = {
 		byteLength: 3,
@@ -226,6 +247,17 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 			item: anchorRequest.item,
 			loadedCount: anchorRequest.loadedCount,
 			loadedIndex: anchorRequest.loadedIndex,
+			sequence: 1,
+		},
+	}), true);
+	assert.equal(isAiAssistPanelState({
+		...panelStateWithHandle,
+		review: {
+			actualCount: 3,
+			items: [{editedExcerpt: 'Reviewed excerpt', item: anchorRequest.item}],
+			newMessagesAvailable: true,
+			question: 'Exact question',
+			requestedCount: 10,
 			sequence: 1,
 		},
 	}), true);
@@ -399,10 +431,12 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 				addEventListener(type, listener) {
 					listeners.set(type, listener);
 				},
+				append() {},
 				classList: {toggle() {}},
 				disabled: false,
 				listeners,
 				textContent: '',
+				setAttribute() {},
 				value: '',
 			});
 		}
@@ -411,13 +445,18 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 	};
 
 	let renderState;
+	let createdElements = 0;
 	const context = {
-		document: {querySelector: selector => element(selector.slice(1))},
+		document: {
+			createElement: tag => element(`${tag}-${++createdElements}`),
+			querySelector: selector => element(selector.slice(1)),
+		},
 		window: {
 			caprineAiAssist: {
 				async cancel() {},
 				async close() {},
 				async deleteApiKey() {},
+				async editContextItem() {},
 				async getState() {
 					return new Promise(() => {});
 				},
@@ -425,8 +464,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 					renderState = callback;
 				},
 				async refreshConversation() {},
+				async removeContextItem() {},
 				async resolveMedia() {},
 				async saveApiKey() {},
+				async setContextWindow() {},
 				async submitPrompt() {},
 				async testApiKey() {},
 			},
@@ -456,6 +497,25 @@ test('panel clears stale prompts and hides stale answers outside ready state', (
 
 	renderState(state('ready', 3));
 	assert.equal(prompt.value, '');
+	assert.equal(element('ask-button').disabled, false);
+	renderState({
+		...state('ready', 3),
+		review: {
+			actualCount: 1,
+			items: [{
+				item: {
+					confidence: 'high',
+					messageId: 'message-1',
+					sender: {role: 'incoming'},
+					text: 'Reviewed context',
+				},
+			}],
+			newMessagesAvailable: false,
+			question: '',
+			requestedCount: 10,
+			sequence: 1,
+		},
+	});
 	assert.equal(element('ask-button').disabled, false);
 	renderState({
 		...state('ready', 3),

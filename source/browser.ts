@@ -7,6 +7,7 @@ import {sendConversationList} from './browser/conversation-list';
 import {IToggleSounds, IToggleMuteNotifications} from './types';
 import {
 	aiAssistIpcChannels,
+	AiAssistMessengerCommand,
 	isAiComposerCommandResult,
 	isAiAssistMessengerEvent,
 	isAiAssistMessengerCommand,
@@ -32,8 +33,15 @@ import {
 import {maximumMediaBytes, MediaKind} from './media-contract';
 import {
 	captureLoadedMessengerMessageAnchor,
+	extractLoadedMessengerConversationContext,
 	MessengerMessageAnchor,
 } from './messenger-context';
+import {
+	captureBoundedContext,
+	contextVersion,
+	restoredConversationScrollTop,
+	selectContextWindow,
+} from './context-review';
 import {
 	isMessageAnchorRectangleVisible,
 	isMessageAnchorShortcut,
@@ -845,12 +853,106 @@ function reportConversationState(requestId?: string): void {
 	const state = deriveConversationIdentity(window.location.href, selectedConversationCandidates());
 	const event = {
 		...state,
-		...(state.status === 'available' ? {mediaCandidates: extractLoadedMessengerMediaCandidates(document)} : {}),
+		...(state.status === 'available' ? {
+			contextVersion: contextVersion(extractLoadedMessengerConversationContext(document)),
+			mediaCandidates: extractLoadedMessengerMediaCandidates(document),
+		} : {}),
 		type: 'conversation-state',
 	};
 	electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, requestId
 		? {...event, requestId}
 		: event);
+}
+
+function messengerConversationScrollContainer(): HTMLElement | undefined {
+	const conversation = document.querySelector<HTMLElement>('[role="main"] [role="grid"]');
+	let candidate = conversation?.parentElement ?? undefined;
+	while (candidate) {
+		if (candidate.scrollHeight > candidate.clientHeight + 1) {
+			return candidate;
+		}
+
+		candidate = candidate.parentElement ?? undefined;
+	}
+
+	return undefined;
+}
+
+async function captureMessengerContext(
+	command: Extract<AiAssistMessengerCommand, {type: 'capture-context'}>,
+): Promise<void> {
+	const initialConversationId = currentConversationId();
+	if (initialConversationId !== command.conversationId) {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			reason: 'conversation-changed',
+			requestId: command.requestId,
+			status: 'unavailable',
+			type: 'context-capture',
+		});
+		return;
+	}
+
+	const scrollContainer = messengerConversationScrollContainer();
+	const originalScrollTop = scrollContainer?.scrollTop ?? 0;
+	const originalScrollHeight = scrollContainer?.scrollHeight ?? 0;
+	const initialContextVersion = contextVersion(extractLoadedMessengerConversationContext(document));
+	const capture = await captureBoundedContext({
+		async backfillOnce() {
+			if (!scrollContainer || scrollContainer.scrollTop <= 0) {
+				return 'no-more-history';
+			}
+
+			const previousScrollTop = scrollContainer.scrollTop;
+			scrollContainer.scrollTop = Math.max(0, previousScrollTop - Math.max(240, scrollContainer.clientHeight * 0.8));
+			await new Promise(resolve => {
+				setTimeout(resolve, 120);
+			});
+			return scrollContainer.scrollTop < previousScrollTop ? 'moved' : 'no-more-history';
+		},
+		isConversationCurrent: () => currentConversationId() === command.conversationId,
+		readPage: () => extractLoadedMessengerConversationContext(document),
+		requestedCount: command.requestedCount,
+		restore() {
+			if (scrollContainer?.isConnected) {
+				scrollContainer.scrollTop = restoredConversationScrollTop(
+					originalScrollTop,
+					originalScrollHeight,
+					scrollContainer.scrollHeight,
+				);
+			}
+		},
+	});
+	if (capture.stopReason === 'conversation-changed' || currentConversationId() !== command.conversationId) {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			reason: 'conversation-changed',
+			requestId: command.requestId,
+			status: 'unavailable',
+			type: 'context-capture',
+		});
+		return;
+	}
+
+	const items = selectContextWindow(capture.items, command.requestedCount, command.anchorMessageId);
+	if (items.length === 0) {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			reason: command.anchorMessageId ? 'missing-anchor' : 'empty-context',
+			requestId: command.requestId,
+			status: 'unavailable',
+			type: 'context-capture',
+		});
+		return;
+	}
+
+	electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+		contextVersion: initialContextVersion,
+		conversationId: command.conversationId,
+		items,
+		requestId: command.requestId,
+		requestedCount: command.requestedCount,
+		status: 'available',
+		stopReason: capture.stopReason,
+		type: 'context-capture',
+	});
 }
 
 function scheduleConversationStateReport(): void {
@@ -1057,6 +1159,11 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 		return;
 	}
 
+	if (value.type === 'capture-context') {
+		void captureMessengerContext(value);
+		return;
+	}
+
 	if (value.type === 'report-conversation') {
 		if (value.requestId) {
 			reportConversationState(value.requestId);
@@ -1069,6 +1176,10 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 
 	if (value.type === 'resolve-media') {
 		void resolveMessengerMedia(value.requestId, value.messageId, value.kind);
+		return;
+	}
+
+	if (value.type !== 'set-enabled') {
 		return;
 	}
 
