@@ -22,6 +22,7 @@ const {
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
 	isAiAssistPanelState,
+	isDraftInsertionAuthorizationCheck,
 } = require('../dist-js/ai-assist-ipc.js');
 const {isMessengerMediaResolverRequest} = require('../dist-js/media-resolver-ipc.js');
 
@@ -131,6 +132,20 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
 	assert.equal(isAiAssistPanelCommand({mode: 'always', type: 'set-web-search-mode'}), true);
 	assert.equal(isAiAssistPanelCommand({mode: 'sometimes', type: 'set-web-search-mode'}), false);
+	const insertionToken = 'draft-insertion-token:00000000-0000-4000-8000-000000000001';
+	assert.equal(isAiAssistPanelCommand({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		type: 'insert-answer',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:other',
+		extra: true,
+		type: 'insert-answer',
+	}), false);
 	assert.equal(isAiAssistPanelCommand({
 		editedExcerpt: 'Redacted',
 		itemId: 'context-capture-1:0',
@@ -146,6 +161,59 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		requestId: 'media-request-1',
 		type: 'resolve-media',
 	}), true);
+	const insertionCommand = {
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		requestId: 'draft-insertion-request-1',
+		text: 'Private answer',
+		type: 'insert-draft',
+	};
+	assert.equal(isDraftInsertionAuthorizationCheck({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		requestId: 'draft-insertion-request-1',
+	}), true);
+	assert.equal(isDraftInsertionAuthorizationCheck({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		extra: true,
+		requestId: 'draft-insertion-request-1',
+	}), false);
+	assert.equal(isAiAssistMessengerCommand({
+		requestId: 'draft-insertion-request-1',
+		type: 'cancel-draft-insertion',
+	}), true);
+	assert.equal(isAiAssistMessengerCommand(insertionCommand), true);
+	assert.equal(isAiAssistMessengerCommand({...insertionCommand, text: ''}), false);
+	assert.equal(isAiAssistMessengerEvent({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		requestId: 'draft-insertion-request-1',
+		status: 'inserted',
+		type: 'draft-insertion',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		reason: 'draft-present',
+		requestId: 'draft-insertion-request-1',
+		status: 'blocked',
+		type: 'draft-insertion',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		reason: 'sent-anyway',
+		requestId: 'draft-insertion-request-1',
+		status: 'blocked',
+		type: 'draft-insertion',
+	}), false);
 	assert.equal(isAiAssistMessengerCommand({type: 'report-conversation'}), true);
 	assert.equal(isAiAssistMessengerCommand({
 		requestId: 'conversation-report-1',
@@ -264,6 +332,22 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		session: {generation: 1, status: 'open'},
 	};
 	assert.equal(isAiAssistPanelState(panelStateWithHandle), true);
+	assert.equal(isAiAssistPanelState({
+		...panelStateWithHandle,
+		request: {
+			answer: {
+				text: 'private',
+				webSearch: {
+					citations: [], mode: 'off', ran: false, sources: [],
+				},
+			},
+			insertion: {
+				answerGeneration: 3,
+				authorizationToken: insertionToken,
+				conversationId: 'messenger-thread:123',
+			},
+		},
+	}), true);
 	assert.equal(isAiAssistPanelState({...panelStateWithHandle, contextCapturePending: 'yes'}), false);
 	assert.equal(isAiAssistPanelState({...panelStateWithHandle, contextWindowSize: 12}), false);
 	assert.equal(isAiAssistPanelState({...panelStateWithHandle, webSearchMode: 'sometimes'}), false);
@@ -457,6 +541,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	const elements = new Map();
 	let activeElement;
 	const reviewCommands = [];
+	const insertCommands = [];
 	const webSearchModeCommands = [];
 	const commandState = {current: undefined};
 	const element = id => {
@@ -511,6 +596,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				},
 				async getState() {
 					return new Promise(() => {});
+				},
+				async insertAnswer(...arguments_) {
+					insertCommands.push(arguments_);
+					return commandState.current;
 				},
 				onStateChanged(callback) {
 					renderState = callback;
@@ -659,7 +748,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(element('ask-button').textContent, 'Asked — Refresh context to ask again');
 	assert.equal(element('refresh-context-button').disabled, false);
 	assert.match(element('context-availability').textContent, /locked Ask snapshot\. Use Refresh context to make changes/);
-	renderState({
+	const completedState = {
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},
 		request: {
@@ -669,10 +758,24 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 					citations: [], mode: 'always', ran: true, sources: [],
 				},
 			},
+			insertion: {
+				answerGeneration: 3,
+				authorizationToken: 'draft-insertion-token:00000000-0000-4000-8000-000000000001',
+				conversationId: 'messenger-thread:alpha',
+			},
 		},
-	});
+	};
+	renderState(completedState);
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('ask-button').disabled, true);
+	assert.equal(element('insert-answer-button').disabled, false);
+	commandState.current = completedState;
+	await element('insert-answer-button').listeners.get('click')();
+	assert.deepEqual(insertCommands, [[
+		3,
+		'draft-insertion-token:00000000-0000-4000-8000-000000000001',
+		'messenger-thread:alpha',
+	]]);
 	renderState({
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},

@@ -19,9 +19,15 @@ import {
 	ConversationContextItem,
 } from './messenger-context';
 import {
+	draftInsertionFailureReasons,
+	DraftInsertionAuthorizationView,
+	DraftInsertionFailureReason,
+} from './draft-insertion';
+import {
 	openAiErrorCodes,
 	isOpenAiAnswer,
 	OpenAiAnswer,
+	openAiAnswerCharacterLimit,
 	OpenAiErrorCode,
 	openAiPromptCharacterLimit,
 	WebSearchMode,
@@ -37,12 +43,20 @@ import {
 
 export const aiAssistIpcChannels = {
 	composerCommand: 'ai-assist:composer-command',
+	draftInsertionAuthorization: 'ai-assist:draft-insertion-authorization',
 	messageAnchor: 'ai-assist:message-anchor',
 	panelCommand: 'ai-assist:panel-command',
 	panelStateChanged: 'ai-assist:panel-state-changed',
 	messengerCommand: 'ai-assist:messenger-command',
 	messengerEvent: 'ai-assist:messenger-event',
 } as const;
+
+export type DraftInsertionAuthorizationCheck = {
+	answerGeneration: number;
+	authorizationToken: string;
+	conversationId: string;
+	requestId: string;
+};
 
 export type AiAssistPanelState = {
 	anchor?: MessageAnchorData & {sequence: number};
@@ -79,6 +93,7 @@ export type AiAssistPanelState = {
 			message: string;
 		};
 		notice?: string;
+		insertion?: DraftInsertionAuthorizationView;
 	};
 	session: AiSessionState;
 };
@@ -102,6 +117,7 @@ export type AiAssistPanelCommand =
 	| {type: 'delete-api-key'}
 	| {editedExcerpt: string; itemId: string; reviewSequence: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
+	| {answerGeneration: number; authorizationToken: string; conversationId: string; type: 'insert-answer'}
 	| {itemId: string; reviewSequence: number; type: 'remove-context-item'}
 	| {type: 'refresh-context'}
 	| {type: 'refresh-conversation'}
@@ -114,6 +130,7 @@ export type AiAssistPanelCommand =
 
 export type AiAssistMessengerCommand =
 	| {requestId: string; type: 'cancel-context-capture'}
+	| {requestId: string; type: 'cancel-draft-insertion'}
 	| {
 		anchorMessageId?: string;
 		conversationId: string;
@@ -122,6 +139,14 @@ export type AiAssistMessengerCommand =
 		type: 'capture-context';
 	}
 	| {enabled: boolean; type: 'set-enabled'}
+	| {
+		answerGeneration: number;
+		authorizationToken: string;
+		conversationId: string;
+		requestId: string;
+		text: string;
+		type: 'insert-draft';
+	}
 	| {requestId?: string; type: 'report-conversation'}
 	| {kind: MediaKind; messageId: string; requestId: string; type: 'resolve-media'};
 
@@ -140,6 +165,23 @@ export type MessengerMediaResolution = MessengerMediaCandidate & {
 };
 
 export type AiAssistMessengerEvent =
+	| {
+		answerGeneration: number;
+		authorizationToken: string;
+		conversationId: string;
+		requestId: string;
+		status: 'inserted';
+		type: 'draft-insertion';
+	}
+	| {
+		answerGeneration: number;
+		authorizationToken: string;
+		conversationId: string;
+		reason: DraftInsertionFailureReason;
+		requestId: string;
+		status: 'blocked';
+		type: 'draft-insertion';
+	}
 	| {
 		contextVersion: string;
 		conversationId: string;
@@ -195,6 +237,32 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 
 function isBoundedString(value: unknown, maximumLength: number): value is string {
 	return typeof value === 'string' && value.length > 0 && value.length <= maximumLength;
+}
+
+function isConversationId(value: unknown): value is string {
+	return typeof value === 'string' && /^messenger-thread:[\w.:-]{1,200}$/.test(value);
+}
+
+function isDraftInsertionToken(value: unknown): value is string {
+	return typeof value === 'string'
+		&& /^draft-insertion-token:[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(value);
+}
+
+function isDraftInsertionRequestId(value: unknown): value is string {
+	return typeof value === 'string' && /^draft-insertion-request-\d+$/.test(value);
+}
+
+function isAnswerGeneration(value: unknown): value is number {
+	return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+export function isDraftInsertionAuthorizationCheck(value: unknown): value is DraftInsertionAuthorizationCheck {
+	return isRecord(value)
+		&& hasExactKeys(value, ['answerGeneration', 'authorizationToken', 'conversationId', 'requestId'])
+		&& isAnswerGeneration(value.answerGeneration)
+		&& isDraftInsertionToken(value.authorizationToken)
+		&& isConversationId(value.conversationId)
+		&& isDraftInsertionRequestId(value.requestId);
 }
 
 function isBoundedHttpUrl(value: unknown): boolean {
@@ -431,6 +499,13 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 			&& webSearchModes.includes(value.mode as never);
 	}
 
+	if (value.type === 'insert-answer') {
+		return hasExactKeys(value, ['answerGeneration', 'authorizationToken', 'conversationId', 'type'])
+			&& isAnswerGeneration(value.answerGeneration)
+			&& isDraftInsertionToken(value.authorizationToken)
+			&& isConversationId(value.conversationId);
+	}
+
 	if (value.type === 'remove-context-item') {
 		return hasExactKeys(value, ['itemId', 'reviewSequence', 'type'])
 			&& isBoundedString(value.itemId, 200)
@@ -502,9 +577,21 @@ function isRequestState(value: unknown): boolean {
 		requestKeys.push('notice');
 	}
 
+	if (value.insertion !== undefined) {
+		requestKeys.push('insertion');
+	}
+
 	return hasExactKeys(value, requestKeys)
 		&& (value.answer === undefined || isOpenAiAnswer(value.answer))
 		&& (value.notice === undefined || typeof value.notice === 'string')
+		&& (value.insertion === undefined || value.answer !== undefined)
+		&& (value.insertion === undefined || (
+			isRecord(value.insertion)
+			&& hasExactKeys(value.insertion, ['answerGeneration', 'authorizationToken', 'conversationId'])
+			&& isAnswerGeneration(value.insertion.answerGeneration)
+			&& isDraftInsertionToken(value.insertion.authorizationToken)
+			&& isConversationId(value.insertion.conversationId)
+		))
 		&& (value.error === undefined || isRequestError(value.error));
 }
 
@@ -714,6 +801,11 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 			&& /^context-capture-\d+$/.test(value.requestId as string);
 	}
 
+	if (value.type === 'cancel-draft-insertion') {
+		return hasExactKeys(value, ['requestId', 'type'])
+			&& isDraftInsertionRequestId(value.requestId);
+	}
+
 	if (value.type === 'report-conversation') {
 		const expectedKeys = ['type'];
 		if (value.requestId !== undefined) {
@@ -729,6 +821,15 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 			&& mediaKinds.includes(value.kind as never)
 			&& isMessageId(value.messageId)
 			&& isMediaRequestId(value.requestId);
+	}
+
+	if (value.type === 'insert-draft') {
+		return hasExactKeys(value, ['answerGeneration', 'authorizationToken', 'conversationId', 'requestId', 'text', 'type'])
+			&& isAnswerGeneration(value.answerGeneration)
+			&& isDraftInsertionToken(value.authorizationToken)
+			&& isConversationId(value.conversationId)
+			&& isDraftInsertionRequestId(value.requestId)
+			&& isBoundedString(value.text, openAiAnswerCharacterLimit);
 	}
 
 	return value.type === 'set-enabled'
@@ -766,6 +867,23 @@ export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMesse
 
 	if (value.type === 'media-resolution') {
 		return isMessengerMediaEvent(value);
+	}
+
+	if (value.type === 'draft-insertion') {
+		const expectedKeys = ['answerGeneration', 'authorizationToken', 'conversationId', 'requestId', 'status', 'type'];
+		if (value.status === 'blocked') {
+			expectedKeys.push('reason');
+		}
+
+		return hasExactKeys(value, expectedKeys)
+			&& isAnswerGeneration(value.answerGeneration)
+			&& isDraftInsertionToken(value.authorizationToken)
+			&& isConversationId(value.conversationId)
+			&& isDraftInsertionRequestId(value.requestId)
+			&& (
+				value.status === 'inserted'
+				|| (value.status === 'blocked' && draftInsertionFailureReasons.includes(value.reason as never))
+			);
 	}
 
 	if (value.type !== 'conversation-state') {

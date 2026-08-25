@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {
@@ -16,9 +17,11 @@ import {
 	AiMessageAnchorRequest,
 	AiAssistMessengerCommand,
 	AiAssistMessengerEvent,
+	AiAssistPanelCommand,
 	AiAssistPanelState,
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
+	isDraftInsertionAuthorizationCheck,
 	isAiComposerCommandRequest,
 	isAiMessageAnchorRequest,
 	MessengerMediaCandidate,
@@ -62,10 +65,17 @@ import {
 	removeContextReviewItem,
 	updateContextReview,
 } from './context-review';
+import {
+	draftInsertionTimeoutResult,
+	DraftInsertionAuthorizationState,
+	DraftInsertionFailureReason,
+	DraftInsertionResult,
+} from './draft-insertion';
 
 const panelPartition = 'ai-assist';
 
 class AiAssistController {
+	private answerGeneration = 0;
 	private anchor?: {
 		sequence: number;
 		snapshot: Readonly<MessageAnchorSnapshot>;
@@ -79,6 +89,9 @@ class AiAssistController {
 	};
 
 	private readonly answer = new ConversationBoundAnswer<OpenAiAnswer>();
+	private readonly draftInsertionAuthorization = new DraftInsertionAuthorizationState();
+	private draftInsertionGeneration = 0;
+	private draftInsertionRequestCounter = 0;
 	private readonly conversationBinding = new AiConversationBinding();
 	private readonly conversationLifecycle = new ConversationLifecycle();
 	private conversationReportCounter = 0;
@@ -95,6 +108,15 @@ class AiAssistController {
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
 	private readonly pendingConversationReports = new Map<string, (generation?: number) => void>();
+	private pendingDraftInsertion?: {
+		answerGeneration: number;
+		authorizationToken: string;
+		conversationId: string;
+		requestId: string;
+		resolve: (result: DraftInsertionResult) => void;
+		snapshot: Readonly<ConversationSnapshot>;
+	};
+
 	private pendingContextCapture?: {
 		anchorMessageId?: string;
 		question: string;
@@ -136,6 +158,7 @@ class AiAssistController {
 		);
 		this.mediaCleanupReady = this.mediaResolver.cleanupRestartArtifacts().catch(() => undefined);
 		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
+		ipcMain.handle(aiAssistIpcChannels.draftInsertionAuthorization, this.handleDraftInsertionAuthorizationCheck);
 		ipcMain.handle(aiAssistIpcChannels.messageAnchor, this.handleMessageAnchor);
 		ipcMain.handle(aiAssistIpcChannels.panelCommand, this.handlePanelCommand);
 		ipcMain.handle(messengerMediaResolverChannel, this.handleMessengerMediaResolverRequest);
@@ -156,6 +179,11 @@ class AiAssistController {
 
 		if (this.notice !== undefined) {
 			request.notice = this.notice;
+		}
+
+		const insertion = this.draftInsertionAuthorization.read(this.conversationBinding.currentSnapshot);
+		if (insertion !== undefined) {
+			request.insertion = insertion;
 		}
 
 		return {
@@ -257,9 +285,11 @@ class AiAssistController {
 			case 'cancel': {
 				this.cancelActiveRequest();
 				this.cancelPendingContextCapture();
+				this.cancelPendingDraftInsertion('stale-authorization');
 				this.cancelMediaResolution();
 				this.sessionState.cancel();
 				this.review = undefined;
+				this.draftInsertionAuthorization.invalidate();
 				this.notice = 'Request cancelled.';
 				this.broadcastState();
 				break;
@@ -286,6 +316,11 @@ class AiAssistController {
 
 			case 'edit-context-item': {
 				this.editContextItem(value.reviewSequence, value.itemId, value.editedExcerpt);
+				break;
+			}
+
+			case 'insert-answer': {
+				await this.insertAnswer(value);
 				break;
 			}
 
@@ -327,7 +362,7 @@ class AiAssistController {
 				}
 
 				config.set('aiAssistWebSearchMode', value.mode);
-				this.answer.clear();
+				this.clearAnswer();
 				this.error = undefined;
 				this.notice = `Web search mode set to ${value.mode}.`;
 				this.broadcastState();
@@ -352,6 +387,11 @@ class AiAssistController {
 
 	private readonly handleMessengerEvent = (event: IpcMainEvent, value: unknown): void => {
 		if (!this.isExpectedMessengerSender(event) || !isAiAssistMessengerEvent(value)) {
+			return;
+		}
+
+		if (value.type === 'draft-insertion') {
+			this.handleDraftInsertionResult(value);
 			return;
 		}
 
@@ -462,6 +502,24 @@ class AiAssistController {
 			status: 'available',
 			type: 'media-resolution',
 		};
+	};
+
+	private readonly handleDraftInsertionAuthorizationCheck = (
+		event: IpcMainInvokeEvent,
+		value: unknown,
+	): boolean => {
+		if (!this.isExpectedMessengerSender(event) || !isDraftInsertionAuthorizationCheck(value)) {
+			throw new TypeError('Rejected invalid draft insertion authorization IPC');
+		}
+
+		const pending = this.pendingDraftInsertion;
+		return config.get('aiAssistEnabled')
+			&& pending !== undefined
+			&& pending.requestId === value.requestId
+			&& pending.answerGeneration === value.answerGeneration
+			&& pending.authorizationToken === value.authorizationToken
+			&& pending.conversationId === value.conversationId
+			&& this.isRequestSnapshotCurrent(pending.snapshot);
 	};
 
 	private bindMessengerLifecycle(): void {
@@ -1052,6 +1110,156 @@ class AiAssistController {
 		pending.resolve();
 	}
 
+	private async insertAnswer(
+		input: Extract<AiAssistPanelCommand, {type: 'insert-answer'}>,
+	): Promise<void> {
+		if (this.pendingDraftInsertion) {
+			this.notice = 'An answer insertion is already in progress.';
+			this.broadcastState();
+			return;
+		}
+
+		const reportedGeneration = await this.requestConversationState();
+		if (
+			reportedGeneration === undefined
+			|| !this.conversationLifecycle.isCurrent(reportedGeneration)
+		) {
+			this.draftInsertionAuthorization.invalidate();
+			this.notice = 'Messenger is unavailable. Nothing was inserted.';
+			this.broadcastState();
+			return;
+		}
+
+		const {currentSnapshot} = this.conversationBinding;
+		const authorization = this.draftInsertionAuthorization.consume(input, currentSnapshot);
+		const answer = this.answer.read(currentSnapshot);
+		if (
+			!authorization
+			|| !answer
+			|| answer.text !== authorization.text
+			|| !this.isRequestSnapshotCurrent(authorization.snapshot)
+		) {
+			this.notice = 'This insertion authorization is stale or already used. Nothing was inserted.';
+			this.broadcastState();
+			return;
+		}
+
+		const requestId = `draft-insertion-request-${++this.draftInsertionRequestCounter}`;
+		const insertionGeneration = ++this.draftInsertionGeneration;
+		this.notice = 'Inserting the answer into the current Messenger draft…';
+		this.broadcastState();
+		const result = await new Promise<DraftInsertionResult>(resolvePromise => {
+			const timeout = setTimeout(() => {
+				if (this.pendingDraftInsertion?.requestId === requestId) {
+					this.notifyMessenger({requestId, type: 'cancel-draft-insertion'});
+					this.pendingDraftInsertion = undefined;
+					resolvePromise(draftInsertionTimeoutResult);
+				}
+			}, 2500);
+			this.pendingDraftInsertion = {
+				answerGeneration: authorization.answerGeneration,
+				authorizationToken: authorization.authorizationToken,
+				conversationId: authorization.conversationId,
+				requestId,
+				resolve(result) {
+					clearTimeout(timeout);
+					resolvePromise(result);
+				},
+				snapshot: authorization.snapshot,
+			};
+			this.notifyMessenger({
+				answerGeneration: authorization.answerGeneration,
+				authorizationToken: authorization.authorizationToken,
+				conversationId: authorization.conversationId,
+				requestId,
+				text: authorization.text,
+				type: 'insert-draft',
+			});
+		});
+
+		if (
+			insertionGeneration !== this.draftInsertionGeneration
+			|| !this.isRequestSnapshotCurrent(authorization.snapshot)
+		) {
+			return;
+		}
+
+		this.notice = result.status === 'inserted'
+			? 'Answer inserted into the Messenger draft. Review it there and press Send yourself.'
+			: this.draftInsertionFailureMessage(result.reason);
+		this.broadcastState();
+	}
+
+	private handleDraftInsertionResult(
+		value: Extract<AiAssistMessengerEvent, {type: 'draft-insertion'}>,
+	): void {
+		const pending = this.pendingDraftInsertion;
+		if (
+			!pending
+			|| pending.requestId !== value.requestId
+			|| pending.authorizationToken !== value.authorizationToken
+			|| pending.answerGeneration !== value.answerGeneration
+			|| pending.conversationId !== value.conversationId
+		) {
+			return;
+		}
+
+		this.pendingDraftInsertion = undefined;
+		pending.resolve(value.status === 'inserted'
+			? {status: 'inserted'}
+			: {reason: value.reason, status: 'blocked'});
+	}
+
+	private draftInsertionFailureMessage(reason: DraftInsertionFailureReason): string {
+		// eslint-disable-next-line default-case
+		switch (reason) {
+			case 'attachment-present': {
+				return 'Messenger already has a pending attachment. Nothing was inserted.';
+			}
+
+			case 'composer-ambiguous': {
+				return 'Caprine found more than one visible Messenger composer. Nothing was inserted.';
+			}
+
+			case 'composer-changed': {
+				return 'The Messenger composer changed during insertion. Verify the draft before trying again.';
+			}
+
+			case 'composer-not-editable':
+			case 'focus-failed': {
+				return 'The current Messenger composer is not ready for editing. Nothing was inserted.';
+			}
+
+			case 'conversation-changed': {
+				return 'The Messenger conversation changed. Nothing was inserted.';
+			}
+
+			case 'draft-present': {
+				return 'Messenger already contains draft text. It was preserved and nothing was inserted.';
+			}
+
+			case 'partial-insertion': {
+				return 'Caprine could not verify the complete inserted draft. Review the Messenger composer before continuing.';
+			}
+
+			case 'stale-authorization': {
+				return 'This insertion authorization is stale or already used. Nothing was inserted.';
+			}
+		}
+	}
+
+	private cancelPendingDraftInsertion(reason: DraftInsertionFailureReason): void {
+		const pending = this.pendingDraftInsertion;
+		if (!pending) {
+			return;
+		}
+
+		this.pendingDraftInsertion = undefined;
+		this.draftInsertionGeneration += 1;
+		this.notifyMessenger({requestId: pending.requestId, type: 'cancel-draft-insertion'});
+		pending.resolve({reason, status: 'blocked'});
+	}
+
 	private saveApiKey(apiKey: string): void {
 		this.error = undefined;
 		this.notice = undefined;
@@ -1169,7 +1377,7 @@ class AiAssistController {
 			return;
 		}
 
-		this.answer.clear();
+		this.clearAnswer();
 		this.error = undefined;
 		this.notice = undefined;
 
@@ -1218,6 +1426,14 @@ class AiAssistController {
 					return;
 				}
 
+				this.draftInsertionAuthorization.issue({
+					answerGeneration: ++this.answerGeneration,
+					authorizationToken: `draft-insertion-token:${randomUUID()}`,
+					conversationId: request.snapshot.conversationId,
+					snapshot: request.snapshot,
+					text: answer.text,
+				});
+
 				this.error = undefined;
 				this.notice = undefined;
 			}
@@ -1261,7 +1477,8 @@ class AiAssistController {
 	private clearConversationBoundRequestState(): void {
 		this.cancelActiveRequest();
 		this.cancelPendingContextCapture();
-		this.answer.clear();
+		this.cancelPendingDraftInsertion('conversation-changed');
+		this.clearAnswer();
 		this.anchor = undefined;
 		this.error = undefined;
 		this.invocation = undefined;
@@ -1296,7 +1513,7 @@ class AiAssistController {
 		const requestError = error instanceof OpenAiRequestError
 			? error
 			: new OpenAiRequestError('provider-unavailable', 'OpenAI is unavailable right now. Try again later.');
-		this.answer.clear();
+		this.clearAnswer();
 		this.notice = undefined;
 		this.error = {
 			code: requestError.code,
@@ -1307,6 +1524,11 @@ class AiAssistController {
 	private cancelActiveRequest(): void {
 		this.activeRequest?.abortController.abort();
 		this.activeRequest = undefined;
+	}
+
+	private clearAnswer(): void {
+		this.answer.clear();
+		this.draftInsertionAuthorization.invalidate();
 	}
 
 	private broadcastState(): void {

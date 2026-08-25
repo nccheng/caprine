@@ -30,6 +30,10 @@ import {
 	ConversationIdentityCandidate,
 	deriveConversationIdentity,
 } from './conversation-identity';
+import {
+	executeDraftInsertion,
+	InsertedDraftProvenanceState,
+} from './draft-insertion';
 import {maximumMediaBytes, MediaKind} from './media-contract';
 import {
 	captureLoadedMessengerMessageAnchor,
@@ -76,6 +80,8 @@ const aiComposerSendGestureGuard = new AiComposerSendGestureGuard<HTMLElement>()
 let pendingAiComposerImeEnter: HTMLElement | undefined;
 let handledAiComposerImeEnter: HTMLElement | undefined;
 let composerCommandInFlight = false;
+let draftInsertionInFlight: {cancelled: boolean; requestId: string} | undefined;
+const insertedDraftProvenance = new InsertedDraftProvenanceState<HTMLElement>();
 let composerStatusHost: HTMLElement | undefined;
 let composerStatusText: HTMLElement | undefined;
 let messageAnchorHost: HTMLElement | undefined;
@@ -434,6 +440,117 @@ function setComposerText(composer: HTMLElement, value: string): void {
 	webFrame.insertText(value);
 }
 
+function draftInsertionComposerResolution() {
+	const composers = visibleMessengerComposers();
+	if (composers.length === 0) {
+		return {status: 'unavailable'} as const;
+	}
+
+	if (composers.length > 1) {
+		return {status: 'ambiguous'} as const;
+	}
+
+	return {composer: composers[0], status: 'unique'} as const;
+}
+
+function isDraftInsertionComposerEditable(composer: HTMLElement): boolean {
+	return composer.isConnected
+		&& composer.matches(messengerComposerSelector)
+		&& composer.contentEditable === 'true'
+		&& composer.getClientRects().length > 0
+		&& composer.getAttribute('aria-disabled') !== 'true'
+		&& !composer.closest('[inert]');
+}
+
+function hasPendingMessengerAttachment(composer: HTMLElement): boolean {
+	const surface = composer.closest('form') ?? composer.parentElement?.parentElement ?? composer.parentElement;
+	return Boolean(surface?.querySelector([
+		'[data-testid="attachment-preview"]',
+		'[data-testid="composer-attachment"]',
+		'button[aria-label*="remove attachment" i]',
+		'button[aria-label*="remove file" i]',
+		'button[aria-label*="remove photo" i]',
+		'button[aria-label*="remove video" i]',
+	].join(',')));
+}
+
+async function settleDraftInsertionDom(): Promise<void> {
+	await new Promise<void>(resolve => {
+		setTimeout(resolve, 0);
+	});
+}
+
+async function handleDraftInsertion(
+	command: Extract<AiAssistMessengerCommand, {type: 'insert-draft'}>,
+): Promise<void> {
+	const base = {
+		answerGeneration: command.answerGeneration,
+		authorizationToken: command.authorizationToken,
+		conversationId: command.conversationId,
+		requestId: command.requestId,
+		type: 'draft-insertion',
+	} as const;
+	if (!isAiAssistEnabled || draftInsertionInFlight !== undefined) {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			...base,
+			reason: 'stale-authorization',
+			status: 'blocked',
+		});
+		return;
+	}
+
+	const execution = {cancelled: false, requestId: command.requestId};
+	draftInsertionInFlight = execution;
+	invalidateComposerCommand();
+	try {
+		const result = await executeDraftInsertion(command.conversationId, command.text, {
+			currentConversationId,
+			focus(composer) {
+				composer.focus();
+				return document.activeElement === composer;
+			},
+			hasPendingAttachment: hasPendingMessengerAttachment,
+			insertText(composer, text) {
+				setComposerText(composer, text);
+			},
+			async isAuthorized() {
+				if (draftInsertionInFlight !== execution || execution.cancelled || !isAiAssistEnabled) {
+					return false;
+				}
+
+				const result: unknown = await electronIpcRenderer.invoke(
+					aiAssistIpcChannels.draftInsertionAuthorization,
+					{
+						answerGeneration: command.answerGeneration,
+						authorizationToken: command.authorizationToken,
+						conversationId: command.conversationId,
+						requestId: command.requestId,
+					},
+				);
+				return result === true;
+			},
+			isEditable: isDraftInsertionComposerEditable,
+			readText: composerText,
+			resolveComposer: draftInsertionComposerResolution,
+			settle: settleDraftInsertionDom,
+		});
+		if (result.status === 'inserted') {
+			const composer = uniqueCurrentMessengerComposer();
+			if (composer) {
+				insertedDraftProvenance.mark(composer, command.conversationId, command.text);
+			}
+		}
+
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, result.status === 'inserted'
+			? {...base, status: 'inserted'}
+			: {...base, reason: result.reason, status: 'blocked'});
+	} finally {
+		if (draftInsertionInFlight === execution) {
+			draftInsertionInFlight = undefined;
+		}
+	}
+}
+
 function isMessengerSendControl(target: EventTarget | undefined, composer: HTMLElement): boolean {
 	if (!(target instanceof Element)) {
 		return false;
@@ -589,6 +706,10 @@ function handleAiComposerInput(event: Event): void {
 		return;
 	}
 
+	if (insertedDraftProvenance.owns(composer)) {
+		insertedDraftProvenance.invalidate();
+	}
+
 	armComposerCommand(composer);
 }
 
@@ -660,6 +781,15 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 	const resolution = composerFromEvent(event, undefined);
 	const composer = resolution.composer
 		?? (resolution.blockedArmedFallback ? undefined : uniqueCurrentMessengerComposer());
+	if (
+		!isCompositionConfirmation
+		&& composer
+		&& insertedDraftProvenance.consume(composer, currentConversationId(), composerText(composer))
+	) {
+		invalidateComposerCommand();
+		return;
+	}
+
 	const command = composer ? parseAiComposerCommand(composerText(composer)) : undefined;
 	if (isCompositionConfirmation) {
 		pendingAiComposerImeEnter = command ? composer : undefined;
@@ -801,6 +931,19 @@ function handleAiComposerClick(event: MouseEvent): void {
 
 	const sendOwnership = resolveMessengerSendOwnership(sendControl);
 	const {liveComposer, ownership} = sendOwnership;
+	if (
+		ownership === 'unique'
+		&& liveComposer
+		&& insertedDraftProvenance.matches(liveComposer, currentConversationId(), composerText(liveComposer))
+	) {
+		invalidateComposerCommand();
+		if (event.type === 'click') {
+			insertedDraftProvenance.invalidate();
+		}
+
+		return;
+	}
+
 	if (
 		ownership === 'unique'
 		&& liveComposer
@@ -1051,6 +1194,7 @@ function stopConversationObserver(): void {
 	window.removeEventListener('scroll', revalidateMessageAnchorOverlay, true);
 	removeMessageAnchorOverlay();
 	invalidateComposerCommand();
+	insertedDraftProvenance.invalidate();
 	composerCommandInFlight = false;
 	aiComposerCompositionState.finish();
 	pendingAiComposerImeEnter = undefined;
@@ -1198,6 +1342,14 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 		return;
 	}
 
+	if (value.type === 'cancel-draft-insertion') {
+		if (draftInsertionInFlight?.requestId === value.requestId) {
+			draftInsertionInFlight.cancelled = true;
+		}
+
+		return;
+	}
+
 	if (value.type === 'cancel-context-capture') {
 		contextCaptureCoordinator.cancel(value.requestId);
 		return;
@@ -1215,6 +1367,11 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 
 	if (value.type === 'resolve-media') {
 		void resolveMessengerMedia(value.requestId, value.messageId, value.kind);
+		return;
+	}
+
+	if (value.type === 'insert-draft') {
+		void handleDraftInsertion(value);
 		return;
 	}
 
@@ -1236,6 +1393,7 @@ const notifyConversationRouteChanged = (): void => {
 	pendingAiComposerImeEnter = undefined;
 	aiComposerSendGestureGuard.clear();
 	invalidateComposerCommand();
+	insertedDraftProvenance.invalidate();
 	removeMessageAnchorOverlay();
 	scheduleConversationStateReport();
 };
