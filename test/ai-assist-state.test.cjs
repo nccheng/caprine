@@ -22,6 +22,7 @@ const {
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
 	isAiAssistPanelState,
+	isDraftInsertionAuthorizationCheck,
 } = require('../dist-js/ai-assist-ipc.js');
 const {isMessengerMediaResolverRequest} = require('../dist-js/media-resolver-ipc.js');
 
@@ -168,6 +169,23 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		text: 'Private answer',
 		type: 'insert-draft',
 	};
+	assert.equal(isDraftInsertionAuthorizationCheck({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		requestId: 'draft-insertion-request-1',
+	}), true);
+	assert.equal(isDraftInsertionAuthorizationCheck({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
+		extra: true,
+		requestId: 'draft-insertion-request-1',
+	}), false);
+	assert.equal(isAiAssistMessengerCommand({
+		requestId: 'draft-insertion-request-1',
+		type: 'cancel-draft-insertion',
+	}), true);
 	assert.equal(isAiAssistMessengerCommand(insertionCommand), true);
 	assert.equal(isAiAssistMessengerCommand({...insertionCommand, text: ''}), false);
 	assert.equal(isAiAssistMessengerEvent({

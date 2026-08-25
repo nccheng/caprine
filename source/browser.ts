@@ -32,6 +32,7 @@ import {
 } from './conversation-identity';
 import {
 	executeDraftInsertion,
+	InsertedDraftProvenanceState,
 } from './draft-insertion';
 import {maximumMediaBytes, MediaKind} from './media-contract';
 import {
@@ -79,7 +80,8 @@ const aiComposerSendGestureGuard = new AiComposerSendGestureGuard<HTMLElement>()
 let pendingAiComposerImeEnter: HTMLElement | undefined;
 let handledAiComposerImeEnter: HTMLElement | undefined;
 let composerCommandInFlight = false;
-let draftInsertionInFlight: string | undefined;
+let draftInsertionInFlight: {cancelled: boolean; requestId: string} | undefined;
+const insertedDraftProvenance = new InsertedDraftProvenanceState<HTMLElement>();
 let composerStatusHost: HTMLElement | undefined;
 let composerStatusText: HTMLElement | undefined;
 let messageAnchorHost: HTMLElement | undefined;
@@ -497,7 +499,8 @@ async function handleDraftInsertion(
 		return;
 	}
 
-	draftInsertionInFlight = command.requestId;
+	const execution = {cancelled: false, requestId: command.requestId};
+	draftInsertionInFlight = execution;
 	invalidateComposerCommand();
 	try {
 		const result = await executeDraftInsertion(command.conversationId, command.text, {
@@ -510,16 +513,39 @@ async function handleDraftInsertion(
 			insertText(composer, text) {
 				setComposerText(composer, text);
 			},
+			async isAuthorized() {
+				if (draftInsertionInFlight !== execution || execution.cancelled || !isAiAssistEnabled) {
+					return false;
+				}
+
+				const result: unknown = await electronIpcRenderer.invoke(
+					aiAssistIpcChannels.draftInsertionAuthorization,
+					{
+						answerGeneration: command.answerGeneration,
+						authorizationToken: command.authorizationToken,
+						conversationId: command.conversationId,
+						requestId: command.requestId,
+					},
+				);
+				return result === true;
+			},
 			isEditable: isDraftInsertionComposerEditable,
 			readText: composerText,
 			resolveComposer: draftInsertionComposerResolution,
 			settle: settleDraftInsertionDom,
 		});
+		if (result.status === 'inserted') {
+			const composer = uniqueCurrentMessengerComposer();
+			if (composer) {
+				insertedDraftProvenance.mark(composer, command.conversationId, command.text);
+			}
+		}
+
 		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, result.status === 'inserted'
 			? {...base, status: 'inserted'}
 			: {...base, reason: result.reason, status: 'blocked'});
 	} finally {
-		if (draftInsertionInFlight === command.requestId) {
+		if (draftInsertionInFlight === execution) {
 			draftInsertionInFlight = undefined;
 		}
 	}
@@ -680,6 +706,10 @@ function handleAiComposerInput(event: Event): void {
 		return;
 	}
 
+	if (insertedDraftProvenance.owns(composer)) {
+		insertedDraftProvenance.invalidate();
+	}
+
 	armComposerCommand(composer);
 }
 
@@ -751,6 +781,15 @@ function handleAiComposerKeydown(event: KeyboardEvent): void {
 	const resolution = composerFromEvent(event, undefined);
 	const composer = resolution.composer
 		?? (resolution.blockedArmedFallback ? undefined : uniqueCurrentMessengerComposer());
+	if (
+		!isCompositionConfirmation
+		&& composer
+		&& insertedDraftProvenance.consume(composer, currentConversationId(), composerText(composer))
+	) {
+		invalidateComposerCommand();
+		return;
+	}
+
 	const command = composer ? parseAiComposerCommand(composerText(composer)) : undefined;
 	if (isCompositionConfirmation) {
 		pendingAiComposerImeEnter = command ? composer : undefined;
@@ -892,6 +931,19 @@ function handleAiComposerClick(event: MouseEvent): void {
 
 	const sendOwnership = resolveMessengerSendOwnership(sendControl);
 	const {liveComposer, ownership} = sendOwnership;
+	if (
+		ownership === 'unique'
+		&& liveComposer
+		&& insertedDraftProvenance.matches(liveComposer, currentConversationId(), composerText(liveComposer))
+	) {
+		invalidateComposerCommand();
+		if (event.type === 'click') {
+			insertedDraftProvenance.invalidate();
+		}
+
+		return;
+	}
+
 	if (
 		ownership === 'unique'
 		&& liveComposer
@@ -1142,6 +1194,7 @@ function stopConversationObserver(): void {
 	window.removeEventListener('scroll', revalidateMessageAnchorOverlay, true);
 	removeMessageAnchorOverlay();
 	invalidateComposerCommand();
+	insertedDraftProvenance.invalidate();
 	composerCommandInFlight = false;
 	aiComposerCompositionState.finish();
 	pendingAiComposerImeEnter = undefined;
@@ -1289,6 +1342,14 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 		return;
 	}
 
+	if (value.type === 'cancel-draft-insertion') {
+		if (draftInsertionInFlight?.requestId === value.requestId) {
+			draftInsertionInFlight.cancelled = true;
+		}
+
+		return;
+	}
+
 	if (value.type === 'cancel-context-capture') {
 		contextCaptureCoordinator.cancel(value.requestId);
 		return;
@@ -1332,6 +1393,7 @@ const notifyConversationRouteChanged = (): void => {
 	pendingAiComposerImeEnter = undefined;
 	aiComposerSendGestureGuard.clear();
 	invalidateComposerCommand();
+	insertedDraftProvenance.invalidate();
 	removeMessageAnchorOverlay();
 	scheduleConversationStateReport();
 };

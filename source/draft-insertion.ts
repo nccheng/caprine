@@ -36,6 +36,7 @@ export type DraftInsertionAdapter<Composer> = {
 	focus: (composer: Composer) => boolean;
 	hasPendingAttachment: (composer: Composer) => boolean;
 	insertText: (composer: Composer, text: string) => Promise<void> | void;
+	isAuthorized: () => boolean | Promise<boolean>;
 	isEditable: (composer: Composer) => boolean;
 	readText: (composer: Composer) => string;
 	resolveComposer: () => ComposerResolution<Composer>;
@@ -45,6 +46,34 @@ export type DraftInsertionAdapter<Composer> = {
 export type DraftInsertionResult =
 	| {status: 'inserted'}
 	| {reason: DraftInsertionFailureReason; status: 'blocked'};
+
+export class InsertedDraftProvenanceState<Composer> {
+	private provenance?: {composer: Composer; conversationId: string; text: string};
+
+	invalidate(): void {
+		this.provenance = undefined;
+	}
+
+	mark(composer: Composer, conversationId: string, text: string): void {
+		this.provenance = {composer, conversationId, text};
+	}
+
+	matches(composer: Composer, conversationId: string | undefined, text: string): boolean {
+		return this.provenance?.composer === composer
+			&& this.provenance.conversationId === conversationId
+			&& this.provenance.text === text;
+	}
+
+	owns(composer: Composer): boolean {
+		return this.provenance?.composer === composer;
+	}
+
+	consume(composer: Composer, conversationId: string | undefined, text: string): boolean {
+		const matches = this.matches(composer, conversationId, text);
+		this.invalidate();
+		return matches;
+	}
+}
 
 function sameSnapshot(
 	left: Readonly<ConversationSnapshot>,
@@ -145,6 +174,10 @@ export async function executeDraftInsertion<Composer>(
 	text: string,
 	adapter: DraftInsertionAdapter<Composer>,
 ): Promise<DraftInsertionResult> {
+	if (!await adapter.isAuthorized()) {
+		return {reason: 'stale-authorization', status: 'blocked'};
+	}
+
 	if (adapter.currentConversationId() !== conversationId) {
 		return {reason: 'conversation-changed', status: 'blocked'};
 	}
@@ -169,6 +202,10 @@ export async function executeDraftInsertion<Composer>(
 	}
 
 	await adapter.settle();
+	if (!await adapter.isAuthorized()) {
+		return {reason: 'stale-authorization', status: 'blocked'};
+	}
+
 	if (adapter.currentConversationId() !== conversationId) {
 		return {reason: 'conversation-changed', status: 'blocked'};
 	}
@@ -199,22 +236,26 @@ export async function executeDraftInsertion<Composer>(
 	}
 
 	await adapter.settle();
+	if (!await adapter.isAuthorized()) {
+		return {reason: 'partial-insertion', status: 'blocked'};
+	}
+
 	if (adapter.currentConversationId() !== conversationId) {
-		return {reason: 'conversation-changed', status: 'blocked'};
+		return {reason: 'partial-insertion', status: 'blocked'};
 	}
 
 	const verifiedResolution = adapter.resolveComposer();
 	const {composer: verifiedComposer, failure: verifiedResolutionFailure} = resolvedComposer(verifiedResolution);
 	if (verifiedResolutionFailure) {
-		return {reason: verifiedResolutionFailure, status: 'blocked'};
+		return {reason: 'partial-insertion', status: 'blocked'};
 	}
 
 	if (verifiedComposer === undefined) {
-		return {reason: 'composer-not-editable', status: 'blocked'};
+		return {reason: 'partial-insertion', status: 'blocked'};
 	}
 
 	if (verifiedComposer !== initialComposer) {
-		return {reason: 'composer-changed', status: 'blocked'};
+		return {reason: 'partial-insertion', status: 'blocked'};
 	}
 
 	if (!adapter.isEditable(verifiedComposer) || adapter.readText(verifiedComposer) !== text) {
@@ -222,7 +263,7 @@ export async function executeDraftInsertion<Composer>(
 	}
 
 	if (!adapter.focus(verifiedComposer)) {
-		return {reason: 'focus-failed', status: 'blocked'};
+		return {reason: 'partial-insertion', status: 'blocked'};
 	}
 
 	return {status: 'inserted'};

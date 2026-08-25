@@ -21,6 +21,7 @@ import {
 	AiAssistPanelState,
 	isAiAssistMessengerEvent,
 	isAiAssistPanelCommand,
+	isDraftInsertionAuthorizationCheck,
 	isAiComposerCommandRequest,
 	isAiMessageAnchorRequest,
 	MessengerMediaCandidate,
@@ -156,6 +157,7 @@ class AiAssistController {
 		);
 		this.mediaCleanupReady = this.mediaResolver.cleanupRestartArtifacts().catch(() => undefined);
 		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
+		ipcMain.handle(aiAssistIpcChannels.draftInsertionAuthorization, this.handleDraftInsertionAuthorizationCheck);
 		ipcMain.handle(aiAssistIpcChannels.messageAnchor, this.handleMessageAnchor);
 		ipcMain.handle(aiAssistIpcChannels.panelCommand, this.handlePanelCommand);
 		ipcMain.handle(messengerMediaResolverChannel, this.handleMessengerMediaResolverRequest);
@@ -499,6 +501,24 @@ class AiAssistController {
 			status: 'available',
 			type: 'media-resolution',
 		};
+	};
+
+	private readonly handleDraftInsertionAuthorizationCheck = (
+		event: IpcMainInvokeEvent,
+		value: unknown,
+	): boolean => {
+		if (!this.isExpectedMessengerSender(event) || !isDraftInsertionAuthorizationCheck(value)) {
+			throw new TypeError('Rejected invalid draft insertion authorization IPC');
+		}
+
+		const pending = this.pendingDraftInsertion;
+		return config.get('aiAssistEnabled')
+			&& pending !== undefined
+			&& pending.requestId === value.requestId
+			&& pending.answerGeneration === value.answerGeneration
+			&& pending.authorizationToken === value.authorizationToken
+			&& pending.conversationId === value.conversationId
+			&& this.isRequestSnapshotCurrent(pending.snapshot);
 	};
 
 	private bindMessengerLifecycle(): void {
@@ -1130,8 +1150,9 @@ class AiAssistController {
 		const result = await new Promise<DraftInsertionResult>(resolvePromise => {
 			const timeout = setTimeout(() => {
 				if (this.pendingDraftInsertion?.requestId === requestId) {
+					this.notifyMessenger({requestId, type: 'cancel-draft-insertion'});
 					this.pendingDraftInsertion = undefined;
-					resolvePromise({reason: 'composer-not-editable', status: 'blocked'});
+					resolvePromise({reason: 'stale-authorization', status: 'blocked'});
 				}
 			}, 2500);
 			this.pendingDraftInsertion = {
@@ -1234,6 +1255,7 @@ class AiAssistController {
 
 		this.pendingDraftInsertion = undefined;
 		this.draftInsertionGeneration += 1;
+		this.notifyMessenger({requestId: pending.requestId, type: 'cancel-draft-insertion'});
 		pending.resolve({reason, status: 'blocked'});
 	}
 

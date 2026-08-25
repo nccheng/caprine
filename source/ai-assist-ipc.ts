@@ -43,12 +43,20 @@ import {
 
 export const aiAssistIpcChannels = {
 	composerCommand: 'ai-assist:composer-command',
+	draftInsertionAuthorization: 'ai-assist:draft-insertion-authorization',
 	messageAnchor: 'ai-assist:message-anchor',
 	panelCommand: 'ai-assist:panel-command',
 	panelStateChanged: 'ai-assist:panel-state-changed',
 	messengerCommand: 'ai-assist:messenger-command',
 	messengerEvent: 'ai-assist:messenger-event',
 } as const;
+
+export type DraftInsertionAuthorizationCheck = {
+	answerGeneration: number;
+	authorizationToken: string;
+	conversationId: string;
+	requestId: string;
+};
 
 export type AiAssistPanelState = {
 	anchor?: MessageAnchorData & {sequence: number};
@@ -122,6 +130,7 @@ export type AiAssistPanelCommand =
 
 export type AiAssistMessengerCommand =
 	| {requestId: string; type: 'cancel-context-capture'}
+	| {requestId: string; type: 'cancel-draft-insertion'}
 	| {
 		anchorMessageId?: string;
 		conversationId: string;
@@ -245,6 +254,15 @@ function isDraftInsertionRequestId(value: unknown): value is string {
 
 function isAnswerGeneration(value: unknown): value is number {
 	return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+export function isDraftInsertionAuthorizationCheck(value: unknown): value is DraftInsertionAuthorizationCheck {
+	return isRecord(value)
+		&& hasExactKeys(value, ['answerGeneration', 'authorizationToken', 'conversationId', 'requestId'])
+		&& isAnswerGeneration(value.answerGeneration)
+		&& isDraftInsertionToken(value.authorizationToken)
+		&& isConversationId(value.conversationId)
+		&& isDraftInsertionRequestId(value.requestId);
 }
 
 function isBoundedHttpUrl(value: unknown): boolean {
@@ -781,6 +799,11 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 	if (value.type === 'cancel-context-capture') {
 		return hasExactKeys(value, ['requestId', 'type'])
 			&& /^context-capture-\d+$/.test(value.requestId as string);
+	}
+
+	if (value.type === 'cancel-draft-insertion') {
+		return hasExactKeys(value, ['requestId', 'type'])
+			&& isDraftInsertionRequestId(value.requestId);
 	}
 
 	if (value.type === 'report-conversation') {

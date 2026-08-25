@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
 	DraftInsertionAuthorizationState,
 	executeDraftInsertion,
+	InsertedDraftProvenanceState,
 } = require('../dist-js/draft-insertion.js');
 
 const snapshot = (overrides = {}) => ({
@@ -30,6 +31,7 @@ function insertionHarness() {
 		text: '',
 	};
 	const state = {
+		authorized: true,
 		composer,
 		composers: [composer],
 		conversationId: 'messenger-thread:alpha',
@@ -55,6 +57,7 @@ function insertionHarness() {
 			state.insertions += 1;
 			candidate.text = state.partial ? text.slice(0, -1) : text;
 		},
+		isAuthorized: () => state.authorized,
 		isEditable: candidate => candidate.editable,
 		readText: candidate => candidate.text,
 		resolveComposer() {
@@ -101,6 +104,22 @@ test('stale snapshot invalidates a draft insertion authorization', () => {
 	state.issue(issued);
 	assert.equal(state.consume(issued, snapshot({conversationId: 'messenger-thread:beta'})), undefined);
 	assert.equal(state.read(snapshot()), undefined);
+});
+
+test('inserted draft provenance bypasses one exact send and invalidates on edits or mismatch', () => {
+	const composer = {};
+	const state = new InsertedDraftProvenanceState();
+	state.mark(composer, 'messenger-thread:alpha', '/ai literal answer');
+	assert.equal(state.matches(composer, 'messenger-thread:alpha', '/ai literal answer'), true);
+	assert.equal(state.consume(composer, 'messenger-thread:alpha', '/ai literal answer'), true);
+	assert.equal(state.consume(composer, 'messenger-thread:alpha', '/ai literal answer'), false);
+
+	state.mark(composer, 'messenger-thread:alpha', '/ai literal answer');
+	assert.equal(state.consume(composer, 'messenger-thread:alpha', '/ai edited'), false);
+	assert.equal(state.matches(composer, 'messenger-thread:alpha', '/ai literal answer'), false);
+
+	state.mark(composer, 'messenger-thread:alpha', '/ai literal answer');
+	assert.equal(state.consume({}, 'messenger-thread:alpha', '/ai literal answer'), false);
 });
 
 test('draft insertion inserts once, verifies the full draft, leaves focus, and never sends', async () => {
@@ -174,9 +193,33 @@ test('draft insertion revalidates conversation before focus, before mutation, an
 	});
 	assert.deepEqual(
 		await executeDraftInsertion('messenger-thread:alpha', 'Answer', afterMutation.adapter),
-		{reason: 'conversation-changed', status: 'blocked'},
+		{reason: 'partial-insertion', status: 'blocked'},
 	);
 	assert.equal(afterMutation.state.insertions, 1);
+});
+
+test('draft insertion cancellation before mutation fails closed without changing the composer', async () => {
+	const cancelled = insertionHarness();
+	cancelled.state.settleHooks.set(1, () => {
+		cancelled.state.authorized = false;
+	});
+	assert.deepEqual(
+		await executeDraftInsertion('messenger-thread:alpha', 'Answer', cancelled.adapter),
+		{reason: 'stale-authorization', status: 'blocked'},
+	);
+	assert.equal(cancelled.state.insertions, 0);
+});
+
+test('draft insertion invalidation after mutation is reported as partial insertion', async () => {
+	const cancelled = insertionHarness();
+	cancelled.state.settleHooks.set(2, () => {
+		cancelled.state.authorized = false;
+	});
+	assert.deepEqual(
+		await executeDraftInsertion('messenger-thread:alpha', 'Answer', cancelled.adapter),
+		{reason: 'partial-insertion', status: 'blocked'},
+	);
+	assert.equal(cancelled.state.insertions, 1);
 });
 
 test('draft insertion detects composer replacement before and after mutation', async () => {
@@ -196,7 +239,7 @@ test('draft insertion detects composer replacement before and after mutation', a
 	});
 	assert.deepEqual(
 		await executeDraftInsertion('messenger-thread:alpha', 'Answer', afterMutation.adapter),
-		{reason: 'composer-changed', status: 'blocked'},
+		{reason: 'partial-insertion', status: 'blocked'},
 	);
 	assert.equal(afterMutation.state.insertions, 1);
 });
@@ -224,6 +267,15 @@ test('draft insertion reports partial text and editability loss instead of succe
 	});
 	assert.deepEqual(
 		await executeDraftInsertion('messenger-thread:alpha', 'Answer', focusLost.adapter),
-		{reason: 'focus-failed', status: 'blocked'},
+		{reason: 'partial-insertion', status: 'blocked'},
+	);
+
+	const unavailable = insertionHarness();
+	unavailable.state.settleHooks.set(2, () => {
+		unavailable.state.composers = [];
+	});
+	assert.deepEqual(
+		await executeDraftInsertion('messenger-thread:alpha', 'Answer', unavailable.adapter),
+		{reason: 'partial-insertion', status: 'blocked'},
 	);
 });
