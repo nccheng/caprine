@@ -7,6 +7,7 @@ import process from 'node:process';
 export const maximumVideoToolOutputBytes = 1024 * 1024;
 export const maximumVideoDurationSeconds = 24 * 60 * 60;
 export const defaultVideoToolTimeoutMilliseconds = 30_000;
+export const allowedVideoInputFormats = 'avi,flv,matroska,mov,mpeg,mpegts,ogg,webm';
 
 export const videoToolErrorCodes = [
 	'cancelled',
@@ -349,15 +350,31 @@ export class VideoMetadataInspector {
 		}
 
 		options.onPhase?.('inspecting-metadata');
-		const result = await this.runner.run(tools.ffprobe, [
-			'-v',
-			'error',
-			'-print_format',
-			'json',
-			'-show_format',
-			'-show_streams',
-			filePath,
-		], options.signal);
+		let result: ProcessResult;
+		try {
+			result = await this.runner.run(tools.ffprobe, [
+				'-v',
+				'error',
+				'-protocol_whitelist',
+				'file',
+				'-format_whitelist',
+				allowedVideoInputFormats,
+				'-print_format',
+				'json',
+				'-show_format',
+				'-show_streams',
+				filePath,
+			], options.signal);
+		} catch (error: unknown) {
+			if (error instanceof VideoToolError
+				&& error.code === 'process-failed'
+				&& error.exitCode !== undefined) {
+				throw new VideoToolError('unsupported-video', 'This video file is corrupt or unsupported.');
+			}
+
+			throw error;
+		}
+
 		return parseFfprobeMetadata(result.stdout);
 	}
 }

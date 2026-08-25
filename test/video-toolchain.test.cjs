@@ -5,6 +5,7 @@ const {PassThrough} = require('node:stream');
 const test = require('node:test');
 const {
 	BoundedProcessRunner,
+	allowedVideoInputFormats,
 	findMacVideoTools,
 	maximumVideoDurationSeconds,
 	parseFfprobeMetadata,
@@ -183,6 +184,22 @@ test('bounded process runner terminates oversized, timed-out, and canceled work 
 		assert.equal(error.message.includes('/private/source'), false);
 		return true;
 	});
+
+	const spawnFailed = new BoundedProcessRunner({
+		spawnImplementation() {
+			return fakeChildProcess(child => {
+				child.emit('error', new Error('/private/tool path'));
+			});
+		},
+		timeoutMilliseconds: 100,
+	});
+	await assert.rejects(spawnFailed.run('/tool', []), error => {
+		assert.ok(error instanceof VideoToolError);
+		assert.equal(error.code, 'process-failed');
+		assert.equal(error.exitCode, undefined);
+		assert.equal(error.message.includes('/private/tool'), false);
+		return true;
+	});
 });
 
 test('ffprobe parser normalizes bounded audio-bearing and silent video metadata', () => {
@@ -256,14 +273,41 @@ test('metadata inspector emits only fixed phases and invokes ffprobe with fixed 
 	assert.deepEqual(invocation.arguments_, [
 		'-v',
 		'error',
+		'-protocol_whitelist',
+		'file',
+		'-format_whitelist',
+		allowedVideoInputFormats,
 		'-print_format',
 		'json',
 		'-show_format',
 		'-show_streams',
 		'/private/tmp/caprine-media/video.mp4',
 	]);
+	for (const forbiddenFormat of ['concat', 'dash', 'hls', 'webm_dash_manifest']) {
+		assert.equal(allowedVideoInputFormats.split(',').includes(forbiddenFormat), false);
+	}
 
 	await expectCode(inspector.inspect('relative.mp4'), 'unsupported-video');
 	cancellation.abort();
 	await expectCode(inspector.inspect('/private/tmp/video.mp4', {signal: cancellation.signal}), 'cancelled');
+});
+
+test('metadata inspector distinguishes corrupt input from tool start failure', async () => {
+	const tools = async () => ({
+		ffmpeg: '/opt/homebrew/bin/ffmpeg',
+		ffprobe: '/opt/homebrew/bin/ffprobe',
+	});
+	const corrupt = new VideoMetadataInspector({
+		async run() {
+			throw new VideoToolError('process-failed', 'sanitized failure', 2);
+		},
+	}, tools);
+	await expectCode(corrupt.inspect('/private/tmp/corrupt.mp4'), 'unsupported-video');
+
+	const unavailableTool = new VideoMetadataInspector({
+		async run() {
+			throw new VideoToolError('process-failed', 'sanitized failure');
+		},
+	}, tools);
+	await expectCode(unavailableTool.inspect('/private/tmp/video.mp4'), 'process-failed');
 });
