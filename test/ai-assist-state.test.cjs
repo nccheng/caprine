@@ -138,6 +138,15 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		session: {generation: 1, status: 'open'},
 	}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'save-api-key', apiKey: 'sk-test-value'}), true);
+	assert.equal(isAiAssistPanelCommand({reviewSequence: 1, transcriptId: 'transcript:context-1', type: 'prepare-transcript'}), true);
+	assert.equal(isAiAssistPanelCommand({reviewSequence: 1, transcriptId: 'transcript:context-1', type: 'transcribe-reviewed-media'}), true);
+	assert.equal(isAiAssistPanelCommand({
+		reviewSequence: 1,
+		texts: ['Edited segment'],
+		transcriptId: 'transcript:context-1',
+		type: 'edit-transcript',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({reviewSequence: 0, transcriptId: 'transcript:context-1', type: 'remove-transcript'}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'save-api-key', apiKey: 'short'}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: 'Hello'}), true);
 	assert.equal(isAiAssistPanelCommand({type: 'submit-prompt', prompt: ''}), false);
@@ -518,6 +527,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 			question: 'Exact question',
 			requestedCount: 10,
 			sequence: 1,
+			transcripts: [],
 		},
 	}), true);
 	assert.equal(isAiAssistPanelState({
@@ -690,6 +700,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	const citationCommands = [];
 	const webSearchModeCommands = [];
 	const historyDeletionCommands = [];
+	const transcriptCommands = [];
 	const commandState = {current: undefined};
 	const element = id => {
 		if (!elements.has(id)) {
@@ -747,6 +758,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 			caprineCitationViewModel: undefined,
 			caprineAiAssist: {
 				async cancel() {},
+				async cancelTranscription(...arguments_) {
+					transcriptCommands.push(['cancel', ...arguments_]);
+					return commandState.current;
+				},
 				async cancelHistoryDeletion(token) {
 					historyDeletionCommands.push(['cancel', token]);
 					return commandState.current;
@@ -759,6 +774,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				async deleteApiKey() {},
 				async editContextItem(...arguments_) {
 					reviewCommands.push(['edit', ...arguments_]);
+					return commandState.current;
+				},
+				async editTranscript(...arguments_) {
+					transcriptCommands.push(['edit', arguments_[0], arguments_[1], [...arguments_[2]]]);
 					return commandState.current;
 				},
 				async getState() {
@@ -779,6 +798,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 					historyDeletionCommands.push(['prepare', scope, chatId]);
 					return commandState.current;
 				},
+				async prepareTranscript(...arguments_) {
+					transcriptCommands.push(['prepare', ...arguments_]);
+					return commandState.current;
+				},
 				onStateChanged(callback) {
 					renderState = callback;
 				},
@@ -792,6 +815,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 					imageCommands.push(['remove-image', ...arguments_]);
 					return commandState.current;
 				},
+				async removeTranscript(...arguments_) {
+					transcriptCommands.push(['remove', ...arguments_]);
+					return commandState.current;
+				},
 				async resolveMedia() {},
 				async saveApiKey() {},
 				async setContextWindow() {},
@@ -801,6 +828,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				},
 				async submitPrompt() {},
 				async testApiKey() {},
+				async transcribeReviewedMedia(...arguments_) {
+					transcriptCommands.push(['transcribe', ...arguments_]);
+					return commandState.current;
+				},
 			},
 		},
 	};
@@ -1090,6 +1121,89 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(element('ask-button').textContent, 'Asked — Refresh context to ask again');
 	assert.equal(element('refresh-context-button').disabled, false);
 	assert.match(element('context-availability').textContent, /locked Ask snapshot\. Use Refresh context to make changes/);
+	const transcriptBase = {
+		byteLength: 4096,
+		contextItemId: 'context-capture-2:0',
+		durationSeconds: 2.5,
+		id: 'transcript:context-capture-2:0',
+		messageId: 'message-voice',
+		mimeType: 'audio/ogg',
+		senderLabel: 'Voice message received from Alex',
+	};
+	const transcriptReviewState = {
+		...state('ready', 3),
+		review: {
+			actualCount: 1,
+			browsingMode: 'always',
+			contextSource: 'current',
+			editable: true,
+			imageSelection: {aggregateBytes: 0, selectedCount: 0},
+			images: [],
+			items: [{
+				id: 'context-capture-2:0',
+				item: {
+					attachments: [{kind: 'audio'}],
+					confidence: 'high',
+					messageId: 'message-voice',
+					sender: {displayName: 'Alex', role: 'incoming'},
+				},
+			}],
+			locked: false,
+			newMessagesAvailable: false,
+			question: 'Review voice',
+			requestedCount: 10,
+			sequence: 2,
+			transcripts: [{...transcriptBase, status: 'ready'}],
+		},
+	};
+	commandState.current = transcriptReviewState;
+	renderState(transcriptReviewState);
+	const transcribeButton = [...elements.values()].find(node => node.textContent === 'Transcribe and review');
+	assert.ok(transcribeButton);
+	assert.equal(transcribeButton.disabled, false);
+	assert.ok([...elements.values()].some(node => node.textContent === 'This media will be sent to OpenAI for transcription'));
+	assert.ok([...elements.values()].some(node => /2\.5 seconds · 4,096 bytes · audio\/ogg/.test(node.textContent)));
+	await transcribeButton.listeners.get('click')();
+	assert.deepEqual(transcriptCommands.at(-1), ['transcribe', 2, 'transcript:context-capture-2:0']);
+	const transcribingState = {
+		...transcriptReviewState,
+		review: {
+			...transcriptReviewState.review,
+			transcripts: [{...transcriptBase, status: 'transcribing'}],
+		},
+	};
+	commandState.current = transcribingState;
+	renderState(transcribingState);
+	assert.equal(transcribeButton.textContent, 'Cancel transcription');
+	await transcribeButton.listeners.get('click')();
+	assert.deepEqual(transcriptCommands.at(-1), ['cancel', 2, 'transcript:context-capture-2:0']);
+	const completedTranscriptState = {
+		...transcriptReviewState,
+		review: {
+			...transcriptReviewState.review,
+			transcripts: [{
+				...transcriptBase,
+				originalSegments: [
+					{endSeconds: 1.25, startSeconds: 0, text: 'First segment'},
+					{endSeconds: 2.5, startSeconds: 1.25, text: 'Second segment'},
+				],
+				status: 'completed',
+			}],
+		},
+	};
+	commandState.current = completedTranscriptState;
+	renderState(completedTranscriptState);
+	assert.ok([...elements.values()].some(node => node.textContent === '00:00.000–00:01.250'));
+	const firstTranscriptEditor = [...elements.values()].find(node => node.attributes.get('aria-label') === 'Edit transcript segment 1');
+	firstTranscriptEditor.value = 'Edited first segment';
+	const saveTranscriptButton = [...elements.values()].find(node => node.textContent === 'Save transcript edits');
+	const removeTranscriptButton = [...elements.values()].find(node => node.textContent === 'Remove transcript');
+	await saveTranscriptButton.listeners.get('click')();
+	await removeTranscriptButton.listeners.get('click')();
+	assert.deepEqual(transcriptCommands.slice(-2), [
+		['edit', 2, 'transcript:context-capture-2:0', ['Edited first segment', 'Second segment']],
+		['remove', 2, 'transcript:context-capture-2:0'],
+	]);
 	const completedState = {
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},
@@ -1179,7 +1293,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 			sequence: 1,
 		},
 	});
-	assert.equal([...elements.keys()].filter(id => id.startsWith('textarea-')).length, 1);
+	assert.equal([...elements.values()].some(node => node.attributes.get('aria-label') === 'Edit message 2 excerpt'), false);
 	assert.equal([...elements.values()].some(node => node.textContent.includes('Not sent to OpenAI')), true);
 	renderState({
 		...state('ready', 3),

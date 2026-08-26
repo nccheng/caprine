@@ -567,3 +567,35 @@ test('reviewed prompts include only frozen selected sendable items', () => {
 	assert.doesNotMatch(prompt, /unsupported-message/);
 	assert.doesNotMatch(prompt, /Message 1/);
 });
+
+test('reviewed prompts include only completed selected transcript snapshots', () => {
+	const review = captureContextReviewSnapshot({
+		contextVersion: 'message:message-1',
+		items: [{id: 'item-1', item: {...messages(1)[0], attachments: [{kind: 'audio'}]}}],
+		question: 'Summarize the voice message',
+		requestedCount: 10,
+		snapshot: {
+			captureGeneration: 1,
+			conversationId: 'messenger-thread:123',
+			messengerWebContentsId: 2,
+			sessionId: 'ai-session-1',
+		},
+		transcripts: [{
+			byteLength: 42,
+			contextItemId: 'item-1',
+			durationSeconds: 1,
+			id: 'transcript:item-1',
+			messageId: 'message-1',
+			mimeType: 'audio/ogg',
+			originalSegments: [{endSeconds: 1, startSeconds: 0, text: 'Private reviewed words'}],
+			senderLabel: 'Voice message received from Alex',
+			status: 'completed',
+		}],
+	});
+	assert.match(buildReviewedPrompt(review), /Original transcript:/);
+	assert.match(buildReviewedPrompt(review), /Private reviewed words/);
+	const removed = updateContextReview(review, {
+		transcripts: [{...review.transcripts[0], originalSegments: undefined, status: 'removed'}],
+	});
+	assert.doesNotMatch(buildReviewedPrompt(removed), /Private reviewed words/);
+});

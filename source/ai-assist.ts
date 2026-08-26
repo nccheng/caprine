@@ -102,6 +102,19 @@ import {
 	DraftInsertionFailureReason,
 	DraftInsertionResult,
 } from './draft-insertion';
+import {
+	inspectAudioDuration,
+	MediaTranscriptionService,
+	OpenAiTranscriptionClient,
+} from './media-transcription';
+import {
+	completeReviewedTranscript,
+	createReviewedTranscriptItems,
+	editReviewedTranscript,
+	removeReviewedTranscript,
+	transcriptFailure,
+	updateReviewedTranscript,
+} from './reviewed-transcripts';
 
 const panelPartition = 'ai-assist';
 type ReviewContextSource = 'current' | 'historical-current' | 'historical-original';
@@ -147,6 +160,7 @@ class AiAssistController {
 	private mediaResolution?: MessengerMediaResolution;
 	private readonly mediaCleanupReady: Promise<void>;
 	private readonly mediaResolver: MessengerMediaResolver;
+	private readonly mediaTranscriptionService: MediaTranscriptionService;
 	private readonly imageCaptures: MessengerImageCaptureStore;
 	private readonly processedImages: ProcessedMessengerImageStore;
 	private readonly historyStore?: AiHistoryStore;
@@ -188,6 +202,19 @@ class AiAssistController {
 		kind: MediaKind;
 		messageId: string;
 		resolve: () => void;
+		snapshot: Readonly<ConversationSnapshot>;
+	}>();
+
+	private pendingTranscription?: {
+		abortController: AbortController;
+		reviewSequence: number;
+		transcriptId: string;
+	};
+
+	private readonly transcriptHandles = new Map<string, {
+		handleId: string;
+		messageId: string;
+		reviewSequence: number;
 		snapshot: Readonly<ConversationSnapshot>;
 	}>();
 
@@ -242,6 +269,11 @@ class AiAssistController {
 			snapshot => this.isRequestSnapshotCurrent(snapshot),
 		);
 		this.mediaCleanupReady = this.mediaResolver.cleanupRestartArtifacts().catch(() => undefined);
+		this.mediaTranscriptionService = new MediaTranscriptionService(
+			this.mediaResolver,
+			new OpenAiTranscriptionClient(),
+			() => this.conversationBinding.currentSnapshot,
+		);
 		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
 		ipcMain.handle(aiAssistIpcChannels.draftInsertionAuthorization, this.handleDraftInsertionAuthorizationCheck);
 		ipcMain.handle(aiAssistIpcChannels.messageAnchor, this.handleMessageAnchor);
@@ -281,7 +313,9 @@ class AiAssistController {
 				},
 			} : {}),
 			conversation: this.conversationBinding.panelState,
-			contextCapturePending: this.pendingContextCapture !== undefined || this.reviewedImageCapture !== undefined,
+			contextCapturePending: this.pendingContextCapture !== undefined
+				|| this.reviewedImageCapture !== undefined
+				|| this.pendingTranscription !== undefined,
 			contextWindowSize: config.get('aiAssistContextWindowSize'),
 			webSearchMode: config.get('aiAssistWebSearchMode'),
 			credentials: {
@@ -312,6 +346,7 @@ class AiAssistController {
 					question: this.review.snapshot.question,
 					requestedCount: this.review.snapshot.requestedCount,
 					sequence: this.review.sequence,
+					transcripts: this.review.snapshot.transcripts,
 				},
 			} : {}),
 			request,
@@ -417,6 +452,7 @@ class AiAssistController {
 		switch (value.type) {
 			case 'cancel': {
 				this.cancelActiveRequest();
+				this.cancelTranscription();
 				this.cancelPendingContextCapture();
 				this.cancelPendingDraftInsertion('stale-authorization');
 				this.cancelMediaResolution();
@@ -425,6 +461,11 @@ class AiAssistController {
 				this.draftInsertionAuthorization.invalidate();
 				this.notice = 'Request cancelled.';
 				this.broadcastState();
+				break;
+			}
+
+			case 'cancel-transcription': {
+				this.cancelTranscription(value.reviewSequence, value.transcriptId);
 				break;
 			}
 
@@ -466,6 +507,11 @@ class AiAssistController {
 				break;
 			}
 
+			case 'edit-transcript': {
+				this.editTranscript(value.reviewSequence, value.transcriptId, value.texts);
+				break;
+			}
+
 			case 'insert-answer': {
 				await this.insertAnswer(value);
 				break;
@@ -483,6 +529,11 @@ class AiAssistController {
 
 			case 'prepare-history-replay': {
 				await this.prepareHistoryReplay(value.chatId, value.interactionId, value.contextSource);
+				break;
+			}
+
+			case 'prepare-transcript': {
+				await this.prepareTranscript(value.reviewSequence, value.transcriptId);
 				break;
 			}
 
@@ -523,6 +574,11 @@ class AiAssistController {
 
 			case 'remove-reviewed-image': {
 				this.updateReviewedImage(value.reviewSequence, value.itemId, value.processedHandleId, 'remove');
+				break;
+			}
+
+			case 'remove-transcript': {
+				this.removeTranscript(value.reviewSequence, value.transcriptId);
 				break;
 			}
 
@@ -577,6 +633,11 @@ class AiAssistController {
 
 			case 'test-api-key': {
 				await this.runOpenAiRequest('Reply with exactly: OK', {isConnectionTest: true});
+				break;
+			}
+
+			case 'transcribe-reviewed-media': {
+				await this.transcribeReviewedMedia(value.reviewSequence, value.transcriptId);
 				break;
 			}
 
@@ -932,16 +993,21 @@ class AiAssistController {
 			return;
 		}
 
+		const reviewedItems = value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item}));
 		this.review = {
 			browsingMode: config.get('aiAssistWebSearchMode'),
 			contextSource: pending.contextSource,
 			editable: true,
 			...createUnlockedContextReview({
 				contextVersion: value.contextVersion,
-				items: value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item})),
+				items: reviewedItems,
 				question: pending.question,
 				requestedCount: pending.requestedCount,
 				snapshot: pending.snapshot,
+				transcripts: createReviewedTranscriptItems(
+					reviewedItems,
+					messageId => this.mediaCandidates.find(candidate => candidate.kind === 'audio' && candidate.messageId === messageId)?.durationSeconds,
+				),
 			}),
 			sequence: ++this.reviewSequence,
 		};
@@ -1391,10 +1457,15 @@ class AiAssistController {
 		}
 	}
 
-	private async resolveMedia(messageId: string, kind: MediaKind): Promise<void> {
+	private async resolveMedia(
+		messageId: string,
+		kind: MediaKind,
+		candidateOverride?: Readonly<MessengerMediaCandidate>,
+	): Promise<void> {
 		await this.mediaCleanupReady;
 		const snapshot = this.conversationBinding.currentSnapshot;
-		const candidate = this.mediaCandidates.find(item => item.messageId === messageId && item.kind === kind);
+		const candidate = candidateOverride
+			?? this.mediaCandidates.find(item => item.messageId === messageId && item.kind === kind);
 		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot) || !candidate) {
 			this.mediaResolution = {kind, messageId, status: 'unavailable'};
 			this.broadcastState();
@@ -1434,6 +1505,213 @@ class AiAssistController {
 				type: 'resolve-media',
 			});
 		});
+	}
+
+	private updateTranscriptState(
+		reviewSequence: number,
+		transcriptId: string,
+		update: Parameters<typeof updateReviewedTranscript>[2],
+	): boolean {
+		if (!this.review
+			|| this.review.sequence !== reviewSequence
+			|| this.review.locked
+			|| !this.review.editable
+			|| !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)) {
+			return false;
+		}
+
+		const transcripts = updateReviewedTranscript(this.review.snapshot.transcripts, transcriptId, update);
+		if (!transcripts) {
+			return false;
+		}
+
+		this.review = {
+			...this.review,
+			snapshot: updateContextReview(this.review.snapshot, {transcripts}),
+		};
+		return true;
+	}
+
+	private async prepareTranscript(reviewSequence: number, transcriptId: string): Promise<void> {
+		if (this.pendingTranscription) {
+			return;
+		}
+
+		const transcript = this.review?.sequence === reviewSequence
+			? this.review.snapshot.transcripts.find(item => item.id === transcriptId)
+			: undefined;
+		if (!transcript || !['available', 'canceled', 'failed', 'removed', 'timed-out'].includes(transcript.status)) {
+			return;
+		}
+
+		this.transcriptHandles.clear();
+		if (this.review) {
+			const transcripts = this.review.snapshot.transcripts.map(item => item.status === 'ready'
+				? {...item, status: 'available' as const}
+				: item);
+			this.review = {...this.review, snapshot: updateContextReview(this.review.snapshot, {transcripts})};
+		}
+
+		if (!this.updateTranscriptState(reviewSequence, transcriptId, item => ({...item, notice: undefined, status: 'preparing'}))) {
+			return;
+		}
+
+		this.broadcastState();
+		await this.resolveMedia(transcript.messageId, 'audio', {
+			...(transcript.durationSeconds === undefined ? {} : {durationSeconds: transcript.durationSeconds}),
+			kind: 'audio',
+			messageId: transcript.messageId,
+		});
+		if (this.review?.sequence !== reviewSequence || !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)) {
+			await this.mediaResolver.releaseAll();
+			this.mediaResolution = undefined;
+			return;
+		}
+
+		const resolution = this.mediaResolution;
+		if (!resolution || resolution.messageId !== transcript.messageId || resolution.kind !== 'audio' || resolution.status !== 'ready') {
+			const status = resolution?.status === 'unsupported' ? 'unsupported' : 'failed';
+			this.updateTranscriptState(reviewSequence, transcriptId, item => ({
+				...item,
+				notice: status === 'unsupported'
+					? 'This voice message cannot be resolved as supported audio.'
+					: 'Voice-message bytes were unavailable. Text-only context remains available.',
+				status,
+			}));
+			this.broadcastState();
+			return;
+		}
+
+		try {
+			const durationSeconds = await this.mediaResolver.withFile(
+				resolution.handleId!,
+				resolution.messageId,
+				this.review.snapshot.snapshot,
+				async filePath => inspectAudioDuration(filePath),
+			);
+			if (!this.updateTranscriptState(reviewSequence, transcriptId, item => ({
+				...item,
+				byteLength: resolution.byteLength,
+				durationSeconds,
+				mimeType: resolution.mimeType,
+				notice: undefined,
+				status: 'ready',
+			}))) {
+				await this.mediaResolver.releaseHandle(resolution.handleId!);
+				return;
+			}
+
+			this.transcriptHandles.set(transcriptId, {
+				handleId: resolution.handleId!,
+				messageId: transcript.messageId,
+				reviewSequence,
+				snapshot: this.review.snapshot.snapshot,
+			});
+		} catch (error) {
+			this.updateTranscriptState(reviewSequence, transcriptId, item => transcriptFailure(item, error));
+			await this.mediaResolver.releaseAll();
+		}
+
+		this.broadcastState();
+	}
+
+	private async transcribeReviewedMedia(reviewSequence: number, transcriptId: string): Promise<void> {
+		const handle = this.transcriptHandles.get(transcriptId);
+		const transcript = this.review?.sequence === reviewSequence
+			? this.review.snapshot.transcripts.find(item => item.id === transcriptId)
+			: undefined;
+		if (!handle
+			|| handle.reviewSequence !== reviewSequence
+			|| !transcript
+			|| transcript.status !== 'ready'
+			|| this.pendingTranscription) {
+			return;
+		}
+
+		const pending = {
+			abortController: new AbortController(),
+			reviewSequence,
+			transcriptId,
+		};
+		this.pendingTranscription = pending;
+		this.updateTranscriptState(reviewSequence, transcriptId, item => ({...item, notice: undefined, status: 'transcribing'}));
+		this.broadcastState();
+
+		let apiKey = '';
+		try {
+			apiKey = this.readApiKey();
+			const [result] = await this.mediaTranscriptionService.transcribeBatch(apiKey, {
+				consent: 'transcribe-and-review',
+				items: [{handleId: handle.handleId, messageId: handle.messageId}],
+				snapshot: handle.snapshot,
+			}, pending.abortController.signal);
+			if (this.pendingTranscription !== pending) {
+				return;
+			}
+
+			this.updateTranscriptState(reviewSequence, transcriptId, item => completeReviewedTranscript(item, {
+				byteLength: result.source.byteLength,
+				durationSeconds: result.source.durationSeconds,
+				mimeType: result.source.mimeType,
+				segments: result.segments,
+			}));
+		} catch (error) {
+			if (this.pendingTranscription === pending) {
+				this.updateTranscriptState(reviewSequence, transcriptId, item => transcriptFailure(item, error));
+			}
+		} finally {
+			apiKey = '';
+			await this.mediaResolver.releaseHandle(handle.handleId).catch(() => undefined);
+			this.transcriptHandles.delete(transcriptId);
+			if (this.pendingTranscription === pending) {
+				this.pendingTranscription = undefined;
+				this.mediaResolution = undefined;
+				this.broadcastState();
+			}
+		}
+	}
+
+	private editTranscript(reviewSequence: number, transcriptId: string, texts: readonly string[]): void {
+		if (this.updateTranscriptState(reviewSequence, transcriptId, item => editReviewedTranscript(item, texts) ?? item)) {
+			this.broadcastState();
+		}
+	}
+
+	private removeTranscript(reviewSequence: number, transcriptId: string): void {
+		if (this.pendingTranscription?.reviewSequence === reviewSequence && this.pendingTranscription.transcriptId === transcriptId) {
+			this.pendingTranscription.abortController.abort();
+			this.pendingTranscription = undefined;
+		}
+
+		const handle = this.transcriptHandles.get(transcriptId);
+		if (handle?.reviewSequence === reviewSequence) {
+			this.transcriptHandles.delete(transcriptId);
+			void this.mediaResolver.releaseHandle(handle.handleId);
+			if (this.mediaResolution?.handleId === handle.handleId) {
+				this.mediaResolution = undefined;
+			}
+		}
+
+		if (this.updateTranscriptState(reviewSequence, transcriptId, item => removeReviewedTranscript(item))) {
+			this.broadcastState();
+		}
+	}
+
+	private cancelTranscription(reviewSequence?: number, transcriptId?: string): void {
+		const pending = this.pendingTranscription;
+		if (!pending
+			|| (reviewSequence !== undefined && pending.reviewSequence !== reviewSequence)
+			|| (transcriptId !== undefined && pending.transcriptId !== transcriptId)) {
+			return;
+		}
+
+		pending.abortController.abort();
+		this.updateTranscriptState(pending.reviewSequence, pending.transcriptId, item => ({
+			...item,
+			notice: 'Transcription cancelled. Text-only context remains available.',
+			status: 'canceled',
+		}));
+		this.broadcastState();
 	}
 
 	private async handleMediaResolution(
@@ -1734,6 +2012,12 @@ class AiAssistController {
 	}
 
 	private async submitReviewedPrompt(question: string): Promise<void> {
+		if (this.review?.snapshot.transcripts.some(item => item.status === 'preparing' || item.status === 'transcribing')) {
+			this.notice = 'Wait for voice-message preparation or transcription to finish before Ask.';
+			this.broadcastState();
+			return;
+		}
+
 		if (this.reviewedImageCapture) {
 			this.notice = 'Wait for processed image previews to finish before Ask.';
 			this.broadcastState();
@@ -2303,6 +2587,10 @@ class AiAssistController {
 	}
 
 	private clearContextReview(): void {
+		this.pendingTranscription?.abortController.abort();
+		this.pendingTranscription = undefined;
+		this.transcriptHandles.clear();
+		this.cancelMediaResolution();
 		this.reviewedImageCapture?.abortController.abort();
 		this.reviewedImageCapture = undefined;
 		if (this.review) {
@@ -2321,6 +2609,9 @@ class AiAssistController {
 	}
 
 	private clearMediaState(): void {
+		this.pendingTranscription?.abortController.abort();
+		this.pendingTranscription = undefined;
+		this.transcriptHandles.clear();
 		this.cancelMediaResolution();
 		this.mediaCandidates = [];
 	}
