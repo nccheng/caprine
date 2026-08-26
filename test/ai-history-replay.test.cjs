@@ -98,3 +98,54 @@ test('original history replay fails closed for missing media/artifacts and unsup
 		reason: 'unsupported-metadata',
 	});
 });
+
+test('original history replay restores included and removed transcripts without raw media', () => {
+	const reviewedTranscripts = [{
+		contextItemId: 'context-audio',
+		durationSeconds: 2,
+		editedSegments: [{endSeconds: 2, startSeconds: 0, text: 'Edited words'}],
+		id: 'transcript:context-audio',
+		kind: 'audio',
+		mediaSha256: 'ab'.repeat(32),
+		messageId: 'message-audio',
+		originalSegments: [{endSeconds: 2, startSeconds: 0, text: 'Original words'}],
+		senderLabel: 'Voice message from Alex',
+		status: 'included',
+	}, {
+		contextItemId: 'context-video',
+		durationSeconds: 3,
+		id: 'transcript:context-video',
+		kind: 'video',
+		mediaSha256: 'cd'.repeat(32),
+		messageId: 'message-video',
+		originalSegments: [{endSeconds: 3, startSeconds: 0, text: 'Removed words'}],
+		senderLabel: 'Video from Alex',
+		status: 'removed',
+	}];
+	const stored = interaction({
+		context: {
+			...interaction().context,
+			items: [{
+				id: 'context-audio',
+				item: {
+					attachments: [{kind: 'audio'}], confidence: 'high', messageId: 'message-audio', sender: {role: 'incoming'},
+				},
+			}],
+		},
+		reviewedTranscripts,
+	});
+	const snapshot = {
+		captureGeneration: 7,
+		conversationId: 'messenger-thread:one',
+		messengerWebContentsId: 3,
+		sessionId: 'ai-session-2',
+	};
+
+	assert.deepEqual(originalHistoryReplayAvailability(stored, 'gpt-5.6-luna'), {available: true});
+	assert.deepEqual(restoreOriginalHistoryReview(stored, snapshot).transcripts.map(item => ({
+		id: item.id, status: item.status, editedSegments: item.editedSegments,
+	})), [
+		{id: 'transcript:context-audio', status: 'completed', editedSegments: reviewedTranscripts[0].editedSegments},
+		{id: 'transcript:context-video', status: 'removed', editedSegments: undefined},
+	]);
+});

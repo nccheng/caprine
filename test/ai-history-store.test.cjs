@@ -106,6 +106,94 @@ function videoArtifact(overrides = {}) {
 	};
 }
 
+function reviewedTranscript(overrides = {}) {
+	return {
+		contextItemId: 'review-voice-1',
+		durationSeconds: 2,
+		editedSegments: [
+			{endSeconds: 1, startSeconds: 0, text: 'Edited included phrase'},
+			{endSeconds: 2, startSeconds: 1, text: 'Second phrase'},
+		],
+		id: 'transcript:review-voice-1',
+		kind: 'audio',
+		mediaSha256: 'ab'.repeat(32),
+		messageId: 'message-voice-1',
+		originalSegments: [
+			{endSeconds: 1, startSeconds: 0, text: 'Superseded original phrase'},
+			{endSeconds: 2, startSeconds: 1, text: 'Second phrase'},
+		],
+		senderLabel: 'Voice message from Alex',
+		status: 'included',
+		...overrides,
+	};
+}
+
+test('reviewed transcripts round-trip self-contained and search only effective included text', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator(), now: () => 500});
+	const matching = store.createChat('thread:transcripts');
+	const removed = store.createChat('thread:transcripts');
+	const otherConversation = store.createChat('thread:other');
+	const expected = reviewedTranscript();
+	const interactionId = store.appendCompletedInteraction(matching, interaction({
+		artifactReferences: [],
+		reviewedTranscripts: [expected],
+	}));
+	store.appendCompletedInteraction(removed, interaction({
+		artifactReferences: [],
+		reviewedTranscripts: [reviewedTranscript({
+			editedSegments: undefined,
+			id: 'transcript:removed',
+			mediaSha256: 'cd'.repeat(32),
+			originalSegments: [{endSeconds: 2, startSeconds: 0, text: 'Removed secret phrase'}],
+			status: 'removed',
+		})],
+	}));
+	store.appendCompletedInteraction(otherConversation, interaction({
+		artifactReferences: [],
+		reviewedTranscripts: [reviewedTranscript({id: 'transcript:other'})],
+	}));
+	store.close();
+
+	const reopened = new AiHistoryStore({databasePath});
+	assert.deepEqual(reopened.loadInteraction('thread:transcripts', matching, interactionId).reviewedTranscripts, [expected]);
+	assert.deepEqual(reopened.searchConversation('thread:transcripts', 'edited included').map(chat => chat.id), [matching]);
+	assert.deepEqual(reopened.searchConversation('thread:transcripts', 'superseded original'), []);
+	assert.deepEqual(reopened.searchConversation('thread:transcripts', 'removed secret'), []);
+	assert.deepEqual(reopened.searchConversation('thread:other', 'edited included').map(chat => chat.id), [otherConversation]);
+	assert.equal(reopened.deleteChat('thread:transcripts', matching), true);
+	assert.equal(reopened.loadInteraction('thread:transcripts', matching, interactionId), undefined);
+	reopened.close();
+
+	const inspected = new DatabaseSync(databasePath, {readOnly: true});
+	assert.equal(inspected.prepare('SELECT count(*) AS count FROM ai_history_reviewed_transcripts WHERE interaction_id = ?').get(interactionId).count, 0);
+	inspected.close();
+});
+
+test('reviewed transcript persistence is atomic with its interaction', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({
+		databasePath,
+		failAt(stage) {
+			if (stage === 'after-reviewed-transcripts') {
+				throw new Error('injected reviewed transcript failure');
+			}
+		},
+		generateId: idGenerator(),
+	});
+	const chatId = store.createChat('thread:transcript-rollback');
+	assert.throws(() => store.appendCompletedInteraction(chatId, interaction({
+		artifactReferences: [],
+		reviewedTranscripts: [reviewedTranscript()],
+	})), /injected reviewed transcript failure/);
+	assert.deepEqual(store.loadConversation('thread:transcript-rollback')[0].interactions, []);
+	store.close();
+
+	const inspected = new DatabaseSync(databasePath, {readOnly: true});
+	assert.equal(inspected.prepare('SELECT count(*) AS count FROM ai_history_reviewed_transcripts').get().count, 0);
+	inspected.close();
+});
+
 test('completed interactions round-trip exactly after close and reopen', () => {
 	const databasePath = temporaryDatabasePath();
 	const store = new AiHistoryStore({databasePath, generateId: idGenerator(), now: () => 500});

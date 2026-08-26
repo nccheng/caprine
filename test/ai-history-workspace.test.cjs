@@ -136,3 +136,38 @@ test('history workspace exposes only bounded renderable video evidence and no lo
 	assert.equal(JSON.stringify(view).includes('mediaSha256'), false);
 	assert.equal(JSON.stringify(view).includes('sourceMessageId'), false);
 });
+
+test('history workspace exposes reviewed transcript snapshots without hashes or source identifiers', () => {
+	const transcript = {
+		contextItemId: 'context-voice',
+		durationSeconds: 2,
+		editedSegments: [{endSeconds: 2, startSeconds: 0, text: 'Edited words'}],
+		id: 'transcript:context-voice',
+		kind: 'audio',
+		mediaSha256: 'ab'.repeat(32),
+		messageId: 'message-voice',
+		originalSegments: [{endSeconds: 2, startSeconds: 0, text: 'Original words'}],
+		senderLabel: 'Voice message from Alex',
+		status: 'included',
+	};
+	const [view] = buildAiHistoryChatViews([{
+		badges: ['Audio'], contextCount: 1, createdAt: 1, id: 'chat-audio', interactionCount: 1,
+		lastActivityAt: 2, preview: 'Audio answer', title: 'Audio question',
+	}], {
+		conversationId: 'messenger-thread:one', createdAt: 1, id: 'chat-audio',
+		interactions: [interaction({artifactReferences: [], reviewedTranscripts: [transcript]})],
+	});
+
+	assert.deepEqual(view.interactions[0].reviewedTranscripts, [{
+		durationSeconds: 2,
+		editedSegments: transcript.editedSegments,
+		id: transcript.id,
+		kind: 'audio',
+		originalSegments: transcript.originalSegments,
+		senderLabel: transcript.senderLabel,
+		status: 'included',
+	}]);
+	assert.equal(JSON.stringify(view).includes('mediaSha256'), false);
+	assert.equal(JSON.stringify(view).includes('message-voice'), false);
+	assert.equal(JSON.stringify(view).includes('context-voice'), true);
+});

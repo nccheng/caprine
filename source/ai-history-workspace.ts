@@ -25,6 +25,15 @@ export type AiHistoryInteractionView = {
 	model: string;
 	originalReplay: {available: true} | {available: false; reason: 'missing-artifacts' | 'unsupported-metadata'};
 	question: string;
+	reviewedTranscripts?: Array<{
+		durationSeconds: number;
+		editedSegments?: Array<{endSeconds: number; startSeconds: number; text: string}>;
+		id: string;
+		kind: 'audio' | 'video';
+		originalSegments: Array<{endSeconds: number; startSeconds: number; text: string}>;
+		senderLabel: string;
+		status: 'included' | 'removed';
+	}>;
 	shareStatus: 'private' | 'shared';
 	videoArtifact?: {
 		coverage: 'balanced' | 'sparse';
@@ -123,6 +132,19 @@ function interactionView(interaction: AiHistoryInteraction): AiHistoryInteractio
 		model: boundedText(interaction.model, 200),
 		originalReplay: originalHistoryReplayAvailability(interaction, openAiResponseModel),
 		question: boundedText(interaction.question),
+		...(interaction.reviewedTranscripts?.length ? {
+			reviewedTranscripts: interaction.reviewedTranscripts.map(transcript => ({
+				durationSeconds: transcript.durationSeconds,
+				...(transcript.editedSegments ? {
+					editedSegments: transcript.editedSegments.map(segment => ({...segment, text: boundedText(segment.text)})),
+				} : {}),
+				id: boundedText(transcript.id, 512),
+				kind: transcript.kind,
+				originalSegments: transcript.originalSegments.map(segment => ({...segment, text: boundedText(segment.text)})),
+				senderLabel: boundedText(transcript.senderLabel, 200),
+				status: transcript.status,
+			})),
+		} : {}),
 		shareStatus: interaction.shareStatus,
 		...(interaction.videoArtifact ? {
 			videoArtifact: {

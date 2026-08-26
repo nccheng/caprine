@@ -106,7 +106,9 @@ test('edit and remove operations target only the selected transcript item', () =
 		status: 'completed',
 	});
 	assert.equal(removed.status, 'removed');
-	assert.equal(removed.originalSegments, undefined);
+	assert.deepEqual(removed.originalSegments, [{endSeconds: 1, startSeconds: 0, text: 'Keep original separately'}]);
+	assert.equal(removed.byteLength, undefined);
+	assert.equal(removed.mimeType, undefined);
 	assert.equal(second.status, 'available');
 });
 

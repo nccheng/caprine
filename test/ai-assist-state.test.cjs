@@ -595,6 +595,20 @@ test('history state validator accepts bounded saved video evidence and rejects n
 		webSearchMode: 'always',
 	};
 	assert.equal(isAiAssistPanelState(state), true);
+	const reviewedTranscript = {
+		durationSeconds: 2,
+		editedSegments: [{endSeconds: 2, startSeconds: 0, text: 'Edited words'}],
+		id: 'transcript:voice',
+		kind: 'audio',
+		originalSegments: [{endSeconds: 2, startSeconds: 0, text: 'Original words'}],
+		senderLabel: 'Voice message from Alex',
+		status: 'included',
+	};
+	const withReviewedTranscript = structuredClone(state);
+	withReviewedTranscript.history.chats[0].interactions[0].reviewedTranscripts = [reviewedTranscript];
+	assert.equal(isAiAssistPanelState(withReviewedTranscript), true);
+	withReviewedTranscript.history.chats[0].interactions[0].reviewedTranscripts[0].mediaSha256 = 'ab'.repeat(32);
+	assert.equal(isAiAssistPanelState(withReviewedTranscript), false);
 	assert.equal(isAiAssistPanelState({
 		...state,
 		history: {
