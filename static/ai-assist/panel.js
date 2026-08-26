@@ -1102,7 +1102,8 @@ function render(state) {
 	mediaStatus.textContent = mediaStatusForState(state);
 	const isOriginalHistoryReplay = state.review?.contextSource === 'historical-original';
 	const isPreparedVideoReview = state.review?.editable === false && state.videoAnalysis?.status === 'ready';
-	promptInput.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || !isConversationReady;
+	const isSavedVideoHistoryReplay = isOriginalHistoryReplay && isPreparedVideoReview;
+	promptInput.disabled = isRequesting || isReviewLocked || (isOriginalHistoryReplay && !isSavedVideoHistoryReplay) || !isConversationReady;
 	contextWindow.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || isPreparedVideoReview || !isConversationReady;
 	webSearchMode.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || isPreparedVideoReview || !isConversationReady;
 	refreshContextButton.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || !isConversationReady;

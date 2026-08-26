@@ -7,7 +7,7 @@ import {
 } from './media-transcription';
 import {OpenAiUrlCitation, OpenAiWebSource, WebSearchMode} from './openai-client';
 
-export const aiHistorySchemaVersion = 4;
+export const aiHistorySchemaVersion = 5;
 
 export const maximumVideoArtifactKeyframes = 12;
 export const maximumVideoArtifactKeyframeBytes = 512 * 1024;
@@ -145,6 +145,7 @@ type VideoArtifactRow = {
 	duration_seconds: number;
 	focused_frame_count: number;
 	id: string;
+	interaction_transcript_json: string;
 	media_sha256: string;
 	model: string;
 	provider: 'openai';
@@ -153,7 +154,6 @@ type VideoArtifactRow = {
 	source_conversation_id: string;
 	source_message_id: string;
 	timeline_json: string;
-	transcript_json: string;
 	uncertainty_notes_json: string;
 };
 
@@ -397,7 +397,7 @@ export class AiHistoryStore {
 								JOIN ai_video_analysis_artifacts video_a ON video_a.id = video_r.artifact_id
 								WHERE video_r.interaction_id = search_i.id
 									AND (
-										LOWER(video_a.transcript_json) LIKE ? ESCAPE '\\'
+										LOWER(video_r.transcript_json) LIKE ? ESCAPE '\\'
 										OR LOWER(video_r.timeline_json) LIKE ? ESCAPE '\\'
 									)
 							)
@@ -472,7 +472,8 @@ export class AiHistoryStore {
 		requireIdentifier(conversationId, 'conversationId');
 		requireMediaSha256(mediaSha256);
 		const row = this.database.prepare(`
-			SELECT a.*, r.focused_frame_count, r.timeline_json, r.uncertainty_notes_json
+			SELECT a.*, r.focused_frame_count, r.timeline_json,
+				r.transcript_json AS interaction_transcript_json, r.uncertainty_notes_json
 			FROM ai_video_analysis_artifacts a
 			JOIN ai_history_interaction_video_artifacts r ON r.artifact_id = a.id
 			JOIN ai_history_interactions i ON i.id = r.interaction_id
@@ -504,7 +505,7 @@ export class AiHistoryStore {
 						JOIN ai_video_analysis_artifacts video_a ON video_a.id = video_r.artifact_id
 						WHERE video_r.interaction_id = i.id
 							AND (
-								LOWER(video_a.transcript_json) LIKE ? ESCAPE '\\'
+								LOWER(video_r.transcript_json) LIKE ? ESCAPE '\\'
 								OR LOWER(video_r.timeline_json) LIKE ? ESCAPE '\\'
 							)
 					)
@@ -648,7 +649,8 @@ export class AiHistoryStore {
 	private interactionWithVideoArtifact(row: InteractionRow): AiHistoryInteraction {
 		const interaction = interactionFromRow(row);
 		const artifactRow = this.database.prepare(`
-			SELECT a.*, r.focused_frame_count, r.timeline_json, r.uncertainty_notes_json
+			SELECT a.*, r.focused_frame_count, r.timeline_json,
+				r.transcript_json AS interaction_transcript_json, r.uncertainty_notes_json
 			FROM ai_history_interaction_video_artifacts r
 			JOIN ai_video_analysis_artifacts a ON a.id = r.artifact_id
 			WHERE r.interaction_id = ?
@@ -683,7 +685,7 @@ export class AiHistoryStore {
 			sourceConversationId: row.source_conversation_id,
 			sourceMessageId: row.source_message_id,
 			timeline: parseJson<AiHistoryVideoArtifact['timeline']>(row.timeline_json),
-			transcript: parseJson<AiHistoryVideoTranscript>(row.transcript_json),
+			transcript: parseJson<AiHistoryVideoTranscript>(row.interaction_transcript_json),
 			uncertaintyNotes: parseJson<string[]>(row.uncertainty_notes_json),
 		};
 	}
@@ -738,13 +740,15 @@ export class AiHistoryStore {
 
 		this.database.prepare(`
 			INSERT INTO ai_history_interaction_video_artifacts (
-				interaction_id, artifact_id, focused_frame_count, timeline_json, uncertainty_notes_json
-			) VALUES (?, ?, ?, ?, ?)
+				interaction_id, artifact_id, focused_frame_count, timeline_json,
+				transcript_json, uncertainty_notes_json
+			) VALUES (?, ?, ?, ?, ?, ?)
 		`).run(
 			interactionId,
 			existing?.id ?? artifactId,
 			artifact.focusedFrameCount,
 			JSON.stringify(artifact.timeline),
+			JSON.stringify(artifact.transcript),
 			JSON.stringify(artifact.uncertaintyNotes),
 		);
 	}
@@ -998,6 +1002,20 @@ export class AiHistoryStore {
 							) STRICT;
 							CREATE INDEX ai_history_video_artifacts_artifact
 								ON ai_history_interaction_video_artifacts (artifact_id);
+						`);
+						break;
+					}
+
+					case 5: {
+						this.database.exec(`
+							ALTER TABLE ai_history_interaction_video_artifacts
+								ADD COLUMN transcript_json TEXT NOT NULL DEFAULT '{"status":"no-audio"}';
+							UPDATE ai_history_interaction_video_artifacts
+							SET transcript_json = (
+								SELECT transcript_json
+								FROM ai_video_analysis_artifacts
+								WHERE id = ai_history_interaction_video_artifacts.artifact_id
+							);
 						`);
 						break;
 					}

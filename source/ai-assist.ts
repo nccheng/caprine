@@ -2315,7 +2315,9 @@ class AiAssistController {
 			return;
 		}
 
-		const submittedQuestion = this.review.contextSource === 'historical-original'
+		const hasSavedHistoricalVideo = this.review.contextSource === 'historical-original'
+			&& this.review.snapshot.transcripts.some(item => this.videoArtifacts.has(item.id));
+		const submittedQuestion = this.review.contextSource === 'historical-original' && !hasSavedHistoricalVideo
 			? this.review.snapshot.question
 			: question;
 
@@ -2513,6 +2515,7 @@ class AiAssistController {
 							reviewedImages: images,
 							savedTimeline: options.videoArtifact!.savedTimeline,
 							sourceAvailable: options.videoArtifact!.handleId !== undefined,
+							timestampQuestion: this.review?.snapshot.question,
 							webSearchMode: searchMode,
 						}, {
 							isCurrent: () => this.activeRequest?.id === request.id && this.isRequestSnapshotCurrent(request.snapshot),
@@ -2847,6 +2850,13 @@ class AiAssistController {
 				savedTimeline: video.timeline,
 				snapshot,
 			});
+			this.videoAnalysis = {
+				coverage: video.coverage,
+				frameCount: video.keyframes.length,
+				phase: 'preprocessing',
+				status: 'ready',
+				transcriptAvailable: video.transcript.status === 'completed',
+			};
 		}
 
 		this.review = {

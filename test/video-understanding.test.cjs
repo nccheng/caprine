@@ -234,6 +234,7 @@ test('timestamp follow-up reuses a saved timeline and performs only bounded focu
 			description: 'Person holds a cup', endSeconds: 6, startSeconds: 4, timestamps: [5],
 		}],
 		sourceAvailable: true,
+		timestampQuestion: 'What is the person holding around 00:05?',
 		webSearchMode: 'off',
 	});
 
@@ -243,6 +244,38 @@ test('timestamp follow-up reuses a saved timeline and performs only bounded focu
 	assert.ok(intervals[0].endSeconds <= 5.8);
 	assert.match(answerPrompt, /Person holds a cup/u);
 	assert.equal(result.focusedFrameCount, 3);
+});
+
+test('timestamp markers in reviewed evidence do not trigger targeted extraction unless the user question includes one', async () => {
+	let scans = 0;
+	let extracted = 0;
+	await new VideoUnderstandingService({
+		async scan() {
+			scans += 1;
+			return {events: [], focusIntervals: [], uncertaintyNotes: []};
+		},
+		async answer() {
+			return answer('The cup is blue [Video 00:05].');
+		},
+	}, {
+		async extract() {
+			extracted += 1;
+			return [];
+		},
+	}).analyze({
+		apiKey: 'sk-private',
+		artifact: artifact(),
+		question: 'Reviewed context includes transcript [00:00.000–00:01.000]. What color is the cup?',
+		savedTimeline: [{
+			description: 'Person holds a cup', endSeconds: 6, startSeconds: 4, timestamps: [5],
+		}],
+		sourceAvailable: true,
+		timestampQuestion: 'What color is the cup?',
+		webSearchMode: 'off',
+	});
+
+	assert.equal(scans, 1);
+	assert.equal(extracted, 0);
 });
 
 test('post-restart timestamp follow-up uses saved keyframes and discloses that new frames require source re-selection', async () => {
@@ -272,6 +305,7 @@ test('post-restart timestamp follow-up uses saved keyframes and discloses that n
 			description: 'A red box is visible', endSeconds: 6, startSeconds: 4, timestamps: [5],
 		}],
 		sourceAvailable: false,
+		timestampQuestion: 'What happens around 00:05?',
 		webSearchMode: 'off',
 	});
 

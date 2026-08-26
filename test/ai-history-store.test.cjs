@@ -145,8 +145,9 @@ test('video artifacts round-trip, search locally, reuse by hash, and keep shared
 		timeline: [{
 			description: 'Follow-up finds the cup handle', endSeconds: 12.5, startSeconds: 11.5, timestamps: [12],
 		}],
+		transcript: {segments: [{endSeconds: 2, startSeconds: 0, text: 'Second reviewed transcript'}], status: 'completed'},
 	});
-	store.appendCompletedInteraction(secondChat, interaction({
+	const secondId = store.appendCompletedInteraction(secondChat, interaction({
 		artifactReferences: [],
 		question: 'What is around 00:12?',
 		context: {...interaction().context, question: 'What is around 00:12?'},
@@ -157,8 +158,11 @@ test('video artifacts round-trip, search locally, reuse by hash, and keep shared
 		...videoArtifact(),
 		id: `video:thread:video:${'ef'.repeat(32)}`,
 	});
+	assert.deepEqual(store.loadInteraction('thread:video', secondChat, secondId).videoArtifact.transcript, secondArtifact.transcript);
 	assert.equal(store.loadVideoArtifactByMediaHash('thread:video', 'ef'.repeat(32)).focusedFrameCount, 5);
-	assert.deepEqual(store.searchConversation('thread:video', 'spoken phrase').map(chat => chat.id), [firstChat, secondChat]);
+	assert.deepEqual(store.loadVideoArtifactByMediaHash('thread:video', 'ef'.repeat(32)).transcript, secondArtifact.transcript);
+	assert.deepEqual(store.searchConversation('thread:video', 'spoken phrase').map(chat => chat.id), [firstChat]);
+	assert.deepEqual(store.searchConversation('thread:video', 'second reviewed').map(chat => chat.id), [secondChat]);
 	assert.deepEqual(store.searchConversation('thread:video', 'cup handle').map(chat => chat.id), [secondChat]);
 	assert.equal(store.loadVideoArtifactByMediaHash('thread:other', 'ef'.repeat(32)), undefined);
 

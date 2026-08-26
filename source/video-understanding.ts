@@ -62,6 +62,7 @@ export type VideoUnderstandingRequest = {
 	reviewedImages?: ReadonlyArray<Readonly<OpenAiImageInput>>;
 	savedTimeline?: ReadonlyArray<Readonly<VideoTimelineEvent>>;
 	sourceAvailable?: boolean;
+	timestampQuestion?: string;
 	webSearchMode: WebSearchMode;
 };
 
@@ -439,7 +440,7 @@ export class VideoUnderstandingService {
 
 		failIfUnavailable(options);
 		const requestedTimestamp = request.savedTimeline
-			? targetedTimestamp(request.question, request.artifact.metadata.durationSeconds)
+			? targetedTimestamp(request.timestampQuestion ?? request.question, request.artifact.metadata.durationSeconds)
 			: undefined;
 		let timeline: VideoTimelineScan;
 		if (requestedTimestamp === undefined) {
