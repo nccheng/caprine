@@ -40,7 +40,7 @@ import {
 	captureMessageAnchorSnapshot,
 	MessageAnchorSnapshot,
 } from './ai-assist-state';
-import {isTrustedMessengerOrigin} from './ipc-validation';
+import {isExpectedLocalPanelSender, isExpectedMessengerSender} from './ai-renderer-trust';
 import {openCitationExternal} from './citation-navigation';
 import {MediaKind} from './media-contract';
 import {ConversationContextItem} from './messenger-context';
@@ -1463,17 +1463,11 @@ class AiAssistController {
 	}
 
 	private isExpectedPanelSender(event: IpcMainInvokeEvent): boolean {
-		return Boolean(this.panelWindow)
-			&& !this.panelWindow!.isDestroyed()
-			&& event.sender === this.panelWindow!.webContents
-			&& event.senderFrame === this.panelWindow!.webContents.mainFrame
-			&& event.senderFrame.url === this.panelUrl;
+		return isExpectedLocalPanelSender(event, this.panelWindow, this.panelUrl);
 	}
 
 	private isExpectedMessengerSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
-		return event.sender === this.messengerWindow.webContents
-			&& event.senderFrame === this.messengerWindow.webContents.mainFrame
-			&& isTrustedMessengerOrigin(event.senderFrame.origin);
+		return isExpectedMessengerSender(event, this.messengerWindow.webContents);
 	}
 
 	private invalidate(

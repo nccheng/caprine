@@ -1,5 +1,5 @@
 import {BrowserWindow, IpcMainEvent} from 'electron';
-import {isTrustedMessengerOrigin} from './ipc-validation';
+import {isExpectedMessengerSender} from './ai-renderer-trust';
 
 type BetterIpcRequest<DataType> = {
 	dataChannel: string;
@@ -41,12 +41,6 @@ function isBetterIpcRequest<DataType>(channel: string, value: unknown): value is
 	return dataSuffix !== undefined && dataSuffix === errorSuffix;
 }
 
-function isTrustedSender(event: IpcMainEvent, browserWindow: BrowserWindow): boolean {
-	return event.sender === browserWindow.webContents
-		&& event.senderFrame === browserWindow.webContents.mainFrame
-		&& isTrustedMessengerOrigin(event.senderFrame.origin);
-}
-
 function serializedError(error: unknown): {name: string; message: string; stack?: string} {
 	if (error instanceof Error) {
 		return {
@@ -73,7 +67,7 @@ export function answerTrustedRenderer<DataType, ReturnType = unknown>(
 			return;
 		}
 
-		if (!isTrustedSender(event, browserWindow)) {
+		if (!isExpectedMessengerSender(event, browserWindow.webContents)) {
 			event.reply(value.errorChannel, serializedError(new Error('Rejected IPC from an untrusted renderer frame')));
 			return;
 		}
