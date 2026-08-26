@@ -1041,9 +1041,10 @@ function render(state) {
 	resolveMediaButton.disabled = isRequesting || isMediaResolving || !isConversationReady;
 	mediaStatus.textContent = mediaStatusForState(state);
 	const isOriginalHistoryReplay = state.review?.contextSource === 'historical-original';
+	const isPreparedVideoReview = state.review?.editable === false && state.videoAnalysis?.status === 'ready';
 	promptInput.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || !isConversationReady;
-	contextWindow.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || !isConversationReady;
-	webSearchMode.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || !isConversationReady;
+	contextWindow.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || isPreparedVideoReview || !isConversationReady;
+	webSearchMode.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || isPreparedVideoReview || !isConversationReady;
 	refreshContextButton.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || !isConversationReady;
 	refreshContextButton.textContent = state.review?.newMessagesAvailable ? 'Refresh context — new messages available' : 'Refresh context';
 	if (isReviewLocked) {

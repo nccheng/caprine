@@ -632,7 +632,7 @@ class AiAssistController {
 			}
 
 			case 'set-context-window': {
-				if (this.review?.contextSource === 'historical-original') {
+				if (this.review?.editable === false || this.review?.contextSource === 'historical-original') {
 					break;
 				}
 
@@ -646,7 +646,10 @@ class AiAssistController {
 			}
 
 			case 'set-web-search-mode': {
-				if (this.sessionState.snapshot.status === 'requesting' || this.review?.locked === true || this.review?.contextSource === 'historical-original') {
+				if (this.sessionState.snapshot.status === 'requesting'
+					|| this.review?.editable === false
+					|| this.review?.locked === true
+					|| this.review?.contextSource === 'historical-original') {
 					break;
 				}
 
