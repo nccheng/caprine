@@ -45,6 +45,7 @@ let renderedCaptureGeneration;
 let renderedInvocationSequence;
 let promptCaptureGeneration;
 let renderedInsertion;
+let renderedAnswerSignature;
 const contextReviewRows = new Map();
 
 function shouldClearPrompt(state) {
@@ -64,16 +65,23 @@ function sourceLabel(source) {
 }
 
 function renderAnswer(state) {
+	const renderedAnswer = state.conversation.status === 'ready' ? state.request.answer : undefined;
+	const signature = renderedAnswer === undefined ? '' : JSON.stringify(renderedAnswer);
+	if (signature === renderedAnswerSignature) {
+		return;
+	}
+
+	renderedAnswerSignature = signature;
 	answerOutput.textContent = '';
 	answerSourceList.textContent = '';
 	answerSources.hidden = true;
-	if (state.conversation.status !== 'ready' || !state.request.answer) {
+	if (!renderedAnswer) {
 		answerOutput.textContent = 'No answer yet.';
 		answerSearchStatus.textContent = 'No answer yet.';
 		return;
 	}
 
-	const view = window.caprineCitationViewModel.build(state.request.answer);
+	const view = window.caprineCitationViewModel.build(renderedAnswer);
 	if (view.status === 'malformed') {
 		answerOutput.textContent = view.text || 'No answer yet.';
 		answerSearchStatus.textContent = 'Search evidence could not be displayed safely.';

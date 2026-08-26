@@ -54,6 +54,7 @@ test('citation view model preserves repeated and overlapping spans while dedupli
 		webSearch: {
 			citations: [
 				citation(0, 10, 'https://example.com/a', 'Alpha source'),
+				citation(0, 10, 'https://example.com/a', 'Duplicate annotation'),
 				citation(6, 16, 'https://example.com/b'),
 				citation(0, 5, 'https://example.com/a', 'Repeated title'),
 			],

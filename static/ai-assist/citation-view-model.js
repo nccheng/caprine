@@ -42,6 +42,7 @@
 
 		const sourcesByUrl = new Map();
 		const markers = [];
+		const markerKeys = new Set();
 		for (const citation of webSearch.citations) {
 			if (
 				!citation
@@ -75,6 +76,12 @@
 				source.title = title;
 			}
 
+			const markerKey = `${citation.startIndex}:${citation.endIndex}:${url}`;
+			if (markerKeys.has(markerKey)) {
+				continue;
+			}
+
+			markerKeys.add(markerKey);
 			markers.push({
 				endIndex: citation.endIndex,
 				evidence: text.slice(citation.startIndex, citation.endIndex),

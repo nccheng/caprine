@@ -812,6 +812,11 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal([...elements.values()].some(node => node.textContent === 'Uncited source'), false);
 	await citationMarker.listeners.get('click')();
 	assert.deepEqual(citationCommands, ['https://example.com/cited']);
+	citationMarker.focus();
+	const elementCountAfterAnswer = createdElements;
+	renderState({...completedState, request: {...completedState.request, notice: 'Unrelated update'}});
+	assert.equal(createdElements, elementCountAfterAnswer);
+	assert.equal(context.document.activeElement, citationMarker);
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('ask-button').disabled, true);
 	assert.equal(element('insert-answer-button').disabled, false);
