@@ -61,6 +61,10 @@ import {
 	messengerMediaResolverChannel,
 	MessengerMediaResolverRequest,
 } from './media-resolver-ipc';
+import {
+	reconcileLoadedCaprineAiShareDecorations,
+	removeLoadedCaprineAiShareDecorations,
+} from './share-message-decoration';
 
 // Sandboxed preloads receive Electron's limited process global but cannot load node:process.
 const {platform} = process; // eslint-disable-line n/prefer-global/process
@@ -1149,10 +1153,20 @@ function startConversationObserver(): void {
 		scheduleConversationStateReport();
 		revalidateArmedComposer();
 		revalidateMessageAnchorOverlay();
+		reconcileLoadedCaprineAiShareDecorations();
 	});
 	conversationObserver.observe(document.documentElement, {
-		attributeFilter: ['aria-current', 'aria-selected', 'href'],
+		attributeFilter: [
+			'aria-current',
+			'aria-label',
+			'aria-selected',
+			'data-ad-preview',
+			'data-message-id',
+			'data-messageid',
+			'href',
+		],
 		attributes: true,
+		characterData: true,
 		childList: true,
 		subtree: true,
 	});
@@ -1172,6 +1186,7 @@ function startConversationObserver(): void {
 	window.addEventListener('resize', revalidateMessageAnchorOverlay, true);
 	window.addEventListener('scroll', revalidateMessageAnchorOverlay, true);
 	revalidateArmedComposer();
+	reconcileLoadedCaprineAiShareDecorations();
 }
 
 function stopConversationObserver(): void {
@@ -1193,6 +1208,7 @@ function stopConversationObserver(): void {
 	window.removeEventListener('resize', revalidateMessageAnchorOverlay, true);
 	window.removeEventListener('scroll', revalidateMessageAnchorOverlay, true);
 	removeMessageAnchorOverlay();
+	removeLoadedCaprineAiShareDecorations();
 	invalidateComposerCommand();
 	insertedDraftProvenance.invalidate();
 	composerCommandInFlight = false;

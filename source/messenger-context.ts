@@ -469,6 +469,22 @@ function senderFromElement(element: Element): SenderEvidence {
 		: {confident: false};
 }
 
+export function extractNativeMessengerSender(element: Element): ConversationContextItem['sender'] | undefined {
+	try {
+		const sender = senderFromElement(element);
+		if (!sender.confident || !sender.senderRole) {
+			return;
+		}
+
+		return {
+			...(sender.senderDisplayName ? {displayName: sender.senderDisplayName} : {}),
+			role: sender.senderRole,
+		};
+	} catch {}
+
+	return undefined;
+}
+
 function timestampFromElement(element: Element): string | undefined {
 	const timestamp = element.querySelector(messengerContextSelectors.timestamp);
 	return normalizedInline(

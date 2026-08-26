@@ -20,7 +20,7 @@
 		"lint": "npm run lint:xo && npm run lint:stylelint",
 		"test:tsc": "npm run build",
 		"test": "npm run test:tsc && npm run test:ai-assist && npm run lint",
-		"test:ai-assist": "node --test test/ai-assist-state.test.cjs test/ai-composer-command.test.cjs test/ai-history-store.test.cjs test/ai-history-workspace.test.cjs test/citation-panel.test.cjs test/context-review.test.cjs test/draft-insertion.test.cjs test/media-resolver.test.cjs test/media-transcription.test.cjs test/message-anchor-interaction.test.cjs test/messenger-context.test.cjs test/messenger-image-capture.test.cjs test/messenger-media-dom.test.cjs test/openai-client.test.cjs test/share-text-protocol.test.cjs test/video-toolchain.test.cjs",
+		"test:ai-assist": "node --test test/ai-assist-state.test.cjs test/ai-composer-command.test.cjs test/ai-history-store.test.cjs test/ai-history-workspace.test.cjs test/citation-panel.test.cjs test/context-review.test.cjs test/draft-insertion.test.cjs test/media-resolver.test.cjs test/media-transcription.test.cjs test/message-anchor-interaction.test.cjs test/messenger-context.test.cjs test/messenger-image-capture.test.cjs test/messenger-media-dom.test.cjs test/openai-client.test.cjs test/share-message-decoration.test.cjs test/share-text-protocol.test.cjs test/video-toolchain.test.cjs",
 		"start": "npm run build && electron .",
 		"build": "tsc && npm run build:preloads",
 		"build:preloads": "node scripts/build-preloads.mjs",
