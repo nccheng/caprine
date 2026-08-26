@@ -51,6 +51,19 @@ test('closed sessions ignore invalidation and cancellation', () => {
 
 test('AI IPC validators reject unknown, malformed, and over-posted messages', () => {
 	assert.equal(isAiAssistPanelCommand({type: 'get-state'}), true);
+	assert.equal(isAiAssistPanelCommand({type: 'prepare-history-deletion', scope: 'all'}), true);
+	assert.equal(isAiAssistPanelCommand({type: 'prepare-history-deletion', scope: 'conversation'}), true);
+	assert.equal(isAiAssistPanelCommand({chatId: 'chat-1', type: 'prepare-history-deletion', scope: 'chat'}), true);
+	assert.equal(isAiAssistPanelCommand({type: 'prepare-history-deletion', scope: 'chat'}), false);
+	assert.equal(isAiAssistPanelCommand({chatId: 'chat-1', type: 'prepare-history-deletion', scope: 'all'}), false);
+	assert.equal(isAiAssistPanelCommand({
+		authorizationToken: 'history-deletion-token:one',
+		type: 'confirm-history-deletion',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({
+		authorizationToken: 'wrong-prefix',
+		type: 'cancel-history-deletion',
+	}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'open'}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'close', extra: true}), false);
 	assert.equal(isAiAssistPanelState({
@@ -72,6 +85,46 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		},
 		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
 	}), true);
+	assert.equal(isAiAssistPanelState({
+		conversation: {captureGeneration: 2, displayName: 'Derek', status: 'ready'},
+		contextCapturePending: false,
+		contextWindowSize: 10,
+		webSearchMode: 'always',
+		credentials: {configured: true, secureStorageAvailable: true},
+		enabled: true,
+		history: {
+			chats: [],
+			deletionConfirmation: {
+				authorizationToken: 'history-deletion-token:one',
+				confirmLabel: 'Delete all AI history',
+				message: 'Exact scope',
+				scope: 'all',
+				title: 'Delete all?',
+			},
+			query: '',
+			status: 'ready',
+		},
+		media: {candidates: []},
+		request: {},
+		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
+	}), true);
+	assert.equal(isAiAssistPanelState({
+		conversation: {captureGeneration: 2, status: 'ready'},
+		contextCapturePending: false,
+		contextWindowSize: 10,
+		webSearchMode: 'always',
+		credentials: {configured: true, secureStorageAvailable: true},
+		enabled: true,
+		history: {
+			chats: [],
+			deletionConfirmation: {authorizationToken: 'history-deletion-token:one', scope: 'all'},
+			query: '',
+			status: 'ready',
+		},
+		media: {candidates: []},
+		request: {},
+		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
+	}), false);
 	assert.equal(isAiAssistPanelState({
 		conversation: {captureGeneration: 2, status: 'ready'},
 		contextCapturePending: false,
@@ -636,6 +689,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	const insertCommands = [];
 	const citationCommands = [];
 	const webSearchModeCommands = [];
+	const historyDeletionCommands = [];
 	const commandState = {current: undefined};
 	const element = id => {
 		if (!elements.has(id)) {
@@ -650,6 +704,9 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 					children.push(...nodes);
 				},
 				classList: {toggle() {}},
+				close() {
+					this.open = false;
+				},
 				children,
 				dataset: {},
 				disabled: false,
@@ -657,6 +714,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 					activeElement = elements.get(id);
 				},
 				listeners,
+				open: false,
 				prepend(...nodes) {
 					children.unshift(...nodes);
 				},
@@ -664,6 +722,9 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				textContent: '',
 				setAttribute(name, value) {
 					this.attributes.set(name, value);
+				},
+				showModal() {
+					this.open = true;
 				},
 				value: '',
 			});
@@ -686,7 +747,15 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 			caprineCitationViewModel: undefined,
 			caprineAiAssist: {
 				async cancel() {},
+				async cancelHistoryDeletion(token) {
+					historyDeletionCommands.push(['cancel', token]);
+					return commandState.current;
+				},
 				async close() {},
+				async confirmHistoryDeletion(token) {
+					historyDeletionCommands.push(['confirm', token]);
+					return commandState.current;
+				},
 				async deleteApiKey() {},
 				async editContextItem(...arguments_) {
 					reviewCommands.push(['edit', ...arguments_]);
@@ -705,6 +774,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				},
 				async openCitation(url) {
 					citationCommands.push(url);
+				},
+				async prepareHistoryDeletion(scope, chatId) {
+					historyDeletionCommands.push(['prepare', scope, chatId]);
+					return commandState.current;
 				},
 				onStateChanged(callback) {
 					renderState = callback;
@@ -757,6 +830,80 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	const prompt = element('prompt');
 	assert.equal(element('context-window').value, '20');
 	assert.equal(element('web-search-mode').value, 'always');
+	const confirmationState = {
+		...state('ready', 1),
+		history: {
+			chats: [],
+			deletionConfirmation: {
+				authorizationToken: 'history-deletion-token:ui',
+				confirmLabel: 'Delete all AI history',
+				message: 'Delete every local chat, but no Messenger messages.',
+				scope: 'all',
+				title: 'Delete all local AI history?',
+			},
+			query: '',
+			status: 'ready',
+		},
+	};
+	renderState(confirmationState);
+	assert.equal(element('history-deletion-dialog').open, true);
+	assert.equal(element('history-deletion-title').textContent, 'Delete all local AI history?');
+	assert.equal(element('history-deletion-message').textContent, 'Delete every local chat, but no Messenger messages.');
+	assert.equal(context.document.activeElement, element('cancel-history-deletion-button'));
+	commandState.current = state('ready', 1);
+	await element('cancel-history-deletion-button').listeners.get('click')();
+	assert.deepEqual(historyDeletionCommands, [['cancel', 'history-deletion-token:ui']]);
+	assert.equal(element('history-deletion-dialog').open, false);
+	assert.equal(context.document.activeElement, element('new-history-chat-button'));
+	const escapeState = {
+		...confirmationState,
+		history: {
+			...confirmationState.history,
+			deletionConfirmation: {
+				...confirmationState.history.deletionConfirmation,
+				authorizationToken: 'history-deletion-token:escape',
+			},
+		},
+	};
+	renderState(escapeState);
+	let defaultPrevented = false;
+	await element('history-deletion-dialog').listeners.get('cancel')({
+		preventDefault() {
+			defaultPrevented = true;
+		},
+	});
+	assert.equal(defaultPrevented, true);
+	assert.deepEqual(historyDeletionCommands.at(-1), ['cancel', 'history-deletion-token:escape']);
+	assert.equal(element('history-deletion-dialog').open, false);
+	const historyState = {
+		...state('ready', 1),
+		history: {
+			chats: [{
+				badges: [],
+				contextCount: 0,
+				id: 'chat-1',
+				interactionCount: 0,
+				interactions: [],
+				lastActivityAt: 1,
+				preview: 'No questions yet',
+				title: 'New AI chat',
+			}],
+			query: '',
+			selectedChatId: 'chat-1',
+			status: 'ready',
+		},
+	};
+	commandState.current = historyState;
+	renderState(historyState);
+	await element('clear-conversation-history-button').listeners.get('click')();
+	await element('clear-all-history-button').listeners.get('click')();
+	const deleteChatButton = [...elements.values()].find(node => node.textContent === 'Delete this AI chat');
+	await deleteChatButton.listeners.get('click')();
+	assert.deepEqual(historyDeletionCommands.slice(-3), [
+		['prepare', 'conversation', undefined],
+		['prepare', 'all', undefined],
+		['prepare', 'chat', 'chat-1'],
+	]);
 	commandState.current = {...state('ready', 1), webSearchMode: 'auto'};
 	element('web-search-mode').value = 'auto';
 	await element('web-search-mode').listeners.get('change')();

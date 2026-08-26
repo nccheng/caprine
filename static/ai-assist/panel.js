@@ -41,9 +41,16 @@ const historySearchForm = document.querySelector('#history-search-form');
 const historySearchInput = document.querySelector('#history-search');
 const historySearchButton = document.querySelector('#history-search-button');
 const newHistoryChatButton = document.querySelector('#new-history-chat-button');
+const clearConversationHistoryButton = document.querySelector('#clear-conversation-history-button');
+const clearAllHistoryButton = document.querySelector('#clear-all-history-button');
 const historyStatus = document.querySelector('#history-status');
 const historyList = document.querySelector('#history-list');
 const historyDetail = document.querySelector('#history-detail');
+const historyDeletionDialog = document.querySelector('#history-deletion-dialog');
+const historyDeletionTitle = document.querySelector('#history-deletion-title');
+const historyDeletionMessage = document.querySelector('#history-deletion-message');
+const confirmHistoryDeletionButton = document.querySelector('#confirm-history-deletion-button');
+const cancelHistoryDeletionButton = document.querySelector('#cancel-history-deletion-button');
 const closeButton = document.querySelector('#close-button');
 let renderedCaptureGeneration;
 let renderedInvocationSequence;
@@ -51,6 +58,7 @@ let renderedOriginalReplaySequence;
 let promptCaptureGeneration;
 let renderedInsertion;
 let renderedAnswerSignature;
+let renderedHistoryDeletionToken;
 const contextReviewRows = new Map();
 const reviewedImageRows = new Map();
 
@@ -498,7 +506,7 @@ function historyTime(timestamp) {
 	return new Date(timestamp).toLocaleString([], {dateStyle: 'medium', timeStyle: 'short'});
 }
 
-function appendHistoryDetail(chat) {
+function appendHistoryDetail(chat, isRequesting) {
 	historyDetail.textContent = '';
 	if (!chat) {
 		historyDetail.textContent = 'Select a chat to inspect its frozen local history.';
@@ -508,6 +516,18 @@ function appendHistoryDetail(chat) {
 	const heading = document.createElement('h3');
 	heading.textContent = chat.title;
 	historyDetail.append(heading);
+	const deleteActions = document.createElement('div');
+	deleteActions.className = 'button-row history-delete-actions';
+	const deleteButton = document.createElement('button');
+	deleteButton.type = 'button';
+	deleteButton.className = 'danger';
+	deleteButton.textContent = 'Delete this AI chat';
+	deleteButton.disabled = isRequesting;
+	deleteButton.addEventListener('click', async () => {
+		render(await window.caprineAiAssist.prepareHistoryDeletion('chat', chat.id));
+	});
+	deleteActions.append(deleteButton);
+	historyDetail.append(deleteActions);
 	if (chat.interactions.length < chat.interactionCount) {
 		const boundedNotice = document.createElement('p');
 		boundedNotice.textContent = `Showing the ${chat.interactions.length} most recent of ${chat.interactionCount} interactions to keep the local panel responsive.`;
@@ -602,11 +622,13 @@ function appendHistoryDetail(chat) {
 	}
 }
 
-function renderHistory(history, isConversationReady) {
+function renderHistory(history, isConversationReady, isRequesting) {
 	const ready = history?.status === 'ready' && isConversationReady;
-	historySearchInput.disabled = !ready;
-	historySearchButton.disabled = !ready;
-	newHistoryChatButton.disabled = !ready;
+	historySearchInput.disabled = !ready || isRequesting;
+	historySearchButton.disabled = !ready || isRequesting;
+	newHistoryChatButton.disabled = !ready || isRequesting;
+	clearConversationHistoryButton.disabled = !ready || isRequesting;
+	clearAllHistoryButton.disabled = isRequesting;
 	historyList.textContent = '';
 	if (!ready) {
 		historySearchInput.value = '';
@@ -652,7 +674,36 @@ function renderHistory(history, isConversationReady) {
 		historyList.append(button);
 	}
 
-	appendHistoryDetail(history.chats.find(chat => chat.id === history.selectedChatId));
+	appendHistoryDetail(history.chats.find(chat => chat.id === history.selectedChatId), isRequesting);
+}
+
+function renderHistoryDeletionConfirmation(confirmation) {
+	if (!confirmation) {
+		if (historyDeletionDialog.open) {
+			historyDeletionDialog.close();
+		}
+
+		if (renderedHistoryDeletionToken) {
+			const focusTarget = newHistoryChatButton.disabled ? closeButton : newHistoryChatButton;
+			focusTarget.focus?.();
+		}
+
+		renderedHistoryDeletionToken = undefined;
+		return;
+	}
+
+	historyDeletionTitle.textContent = confirmation.title;
+	historyDeletionMessage.textContent = confirmation.message;
+	confirmHistoryDeletionButton.textContent = confirmation.confirmLabel;
+	confirmHistoryDeletionButton.disabled = false;
+	if (!historyDeletionDialog.open) {
+		historyDeletionDialog.showModal();
+	}
+
+	if (renderedHistoryDeletionToken !== confirmation.authorizationToken) {
+		renderedHistoryDeletionToken = confirmation.authorizationToken;
+		cancelHistoryDeletionButton.focus?.();
+	}
 }
 
 function render(state) {
@@ -662,7 +713,8 @@ function render(state) {
 	const isMediaResolving = state.media.resolution?.status === 'resolving';
 	const isContextCapturing = state.contextCapturePending;
 	const isImageSelectionBlocked = Boolean(state.review?.imageSelection?.blockingNotice);
-	renderHistory(state.history, isConversationReady);
+	renderHistory(state.history, isConversationReady, isRequesting);
+	renderHistoryDeletionConfirmation(state.history.deletionConfirmation);
 	if (shouldClearPrompt(state)) {
 		promptInput.value = '';
 		promptCaptureGeneration = undefined;
@@ -820,6 +872,39 @@ historySearchForm.addEventListener('submit', async event => {
 
 newHistoryChatButton.addEventListener('click', async () => {
 	render(await window.caprineAiAssist.newHistoryChat());
+});
+
+clearConversationHistoryButton.addEventListener('click', async () => {
+	render(await window.caprineAiAssist.prepareHistoryDeletion('conversation'));
+});
+
+clearAllHistoryButton.addEventListener('click', async () => {
+	render(await window.caprineAiAssist.prepareHistoryDeletion('all'));
+});
+
+confirmHistoryDeletionButton.addEventListener('click', async () => {
+	const token = renderedHistoryDeletionToken;
+	if (!token) {
+		return;
+	}
+
+	confirmHistoryDeletionButton.disabled = true;
+	render(await window.caprineAiAssist.confirmHistoryDeletion(token));
+});
+
+cancelHistoryDeletionButton.addEventListener('click', async () => {
+	const token = renderedHistoryDeletionToken;
+	if (token) {
+		render(await window.caprineAiAssist.cancelHistoryDeletion(token));
+	}
+});
+
+historyDeletionDialog.addEventListener('cancel', async event => {
+	event.preventDefault();
+	const token = renderedHistoryDeletionToken;
+	if (token) {
+		render(await window.caprineAiAssist.cancelHistoryDeletion(token));
+	}
 });
 
 closeButton.addEventListener('click', async () => {

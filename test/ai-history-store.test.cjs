@@ -278,6 +278,29 @@ test('delete operations are scoped and cascade only through the selected chat', 
 	store.close();
 });
 
+test('database deletion failures preserve the requested and unrelated history', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
+	const selected = store.createChat('thread:selected');
+	const unrelated = store.createChat('thread:unrelated');
+	store.appendCompletedInteraction(selected, interaction());
+	store.appendCompletedInteraction(unrelated, interaction());
+	const blocker = new DatabaseSync(databasePath);
+	blocker.exec(`
+		CREATE TRIGGER reject_history_delete
+		BEFORE DELETE ON ai_history_chats
+		BEGIN
+			SELECT RAISE(ABORT, 'injected delete failure');
+		END;
+	`);
+	blocker.close();
+
+	assert.throws(() => store.deleteChat('thread:selected', selected), /injected delete failure/);
+	assert.equal(store.loadConversation('thread:selected').length, 1);
+	assert.equal(store.loadConversation('thread:unrelated').length, 1);
+	store.close();
+});
+
 test('database schema excludes forbidden secret, provider payload, DOM, cookie, and raw-media fields', () => {
 	const databasePath = temporaryDatabasePath();
 	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});

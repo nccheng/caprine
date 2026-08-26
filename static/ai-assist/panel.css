@@ -208,6 +208,27 @@ textarea:focus-visible {
 	align-items: end;
 }
 
+.history-delete-actions {
+	margin-top: 10px;
+}
+
+#history-deletion-dialog {
+	max-width: min(520px, calc(100vw - 32px));
+	padding: 20px;
+	border: 1px solid #4b5262;
+	border-radius: 12px;
+	background: #20242d;
+	color: #eef0f5;
+}
+
+#history-deletion-dialog::backdrop {
+	background: rgb(0 0 0 / 65%);
+}
+
+#history-deletion-dialog p {
+	color: #d2d5dc;
+}
+
 .history-workspace {
 	display: grid;
 	grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.5fr);

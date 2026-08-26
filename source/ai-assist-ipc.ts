@@ -41,6 +41,7 @@ import {
 	MediaSourceType,
 } from './media-contract';
 import {AiHistoryChatView, maximumHistoryChats, maximumHistoryInteractionsPerChat} from './ai-history-workspace';
+import {AiHistoryDeletionConfirmation, AiHistoryDeletionScope} from './ai-history-deletion';
 import {ReviewedImageItem, ReviewedImageSelectionSummary} from './reviewed-images';
 import {
 	MessengerImageCaptureFailureReason,
@@ -78,6 +79,7 @@ export type AiAssistPanelState = {
 	enabled: boolean;
 	history: {
 		chats: AiHistoryChatView[];
+		deletionConfirmation?: AiHistoryDeletionConfirmation;
 		query: string;
 		selectedChatId?: string;
 		status: 'inactive' | 'ready' | 'unavailable';
@@ -131,12 +133,15 @@ export type AiMessageAnchorRequest = MessageAnchorData & {
 
 export type AiAssistPanelCommand =
 	| {type: 'cancel'}
+	| {authorizationToken: string; type: 'cancel-history-deletion'}
 	| {type: 'close'}
+	| {authorizationToken: string; type: 'confirm-history-deletion'}
 	| {type: 'delete-api-key'}
 	| {editedExcerpt: string; itemId: string; reviewSequence: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
 	| {itemId: string; processedHandleId: string; reviewSequence: number; type: 'include-reviewed-image'}
 	| {chatId: string; contextSource: 'current' | 'original'; interactionId: string; type: 'prepare-history-replay'}
+	| {chatId?: string; scope: AiHistoryDeletionScope; type: 'prepare-history-deletion'}
 	| {type: 'new-history-chat'}
 	| {type: 'open-citation'; url: string}
 	| {answerGeneration: number; authorizationToken: string; conversationId: string; type: 'insert-answer'}
@@ -570,6 +575,25 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 
 	if (value.type === 'select-history-chat') {
 		return hasExactKeys(value, ['chatId', 'type']) && isBoundedString(value.chatId, 512);
+	}
+
+	if (['cancel-history-deletion', 'confirm-history-deletion'].includes(value.type)) {
+		return hasExactKeys(value, ['authorizationToken', 'type'])
+			&& isBoundedString(value.authorizationToken, 200)
+			&& value.authorizationToken.startsWith('history-deletion-token:');
+	}
+
+	if (value.type === 'prepare-history-deletion') {
+		const keys = ['scope', 'type'];
+		if (value.chatId !== undefined) {
+			keys.push('chatId');
+		}
+
+		return hasExactKeys(value, keys)
+			&& ['all', 'chat', 'conversation'].includes(value.scope as string)
+			&& (value.scope === 'chat'
+				? isBoundedString(value.chatId, 512)
+				: value.chatId === undefined);
 	}
 
 	if (value.type === 'prepare-history-replay') {
@@ -1012,11 +1036,16 @@ function isHistoryState(value: unknown): boolean {
 		keys.push('selectedChatId');
 	}
 
+	if (value.deletionConfirmation !== undefined) {
+		keys.push('deletionConfirmation');
+	}
+
 	return hasExactKeys(value, keys)
 		&& ['inactive', 'ready', 'unavailable'].includes(value.status as string)
 		&& typeof value.query === 'string'
 		&& value.query.length <= 200
 		&& (value.selectedChatId === undefined || isBoundedString(value.selectedChatId, 512))
+		&& (value.deletionConfirmation === undefined || isHistoryDeletionConfirmation(value.deletionConfirmation))
 		&& Array.isArray(value.chats)
 		&& value.chats.length <= maximumHistoryChats
 		&& value.chats.every(chat => isRecord(chat)
@@ -1035,6 +1064,17 @@ function isHistoryState(value: unknown): boolean {
 			&& typeof chat.preview === 'string'
 			&& chat.preview.length <= 240
 			&& isBoundedString(chat.title, 120));
+}
+
+function isHistoryDeletionConfirmation(value: unknown): value is AiHistoryDeletionConfirmation {
+	return isRecord(value)
+		&& hasExactKeys(value, ['authorizationToken', 'confirmLabel', 'message', 'scope', 'title'])
+		&& isBoundedString(value.authorizationToken, 200)
+		&& value.authorizationToken.startsWith('history-deletion-token:')
+		&& isBoundedString(value.confirmLabel, 80)
+		&& isBoundedString(value.message, 1000)
+		&& ['all', 'chat', 'conversation'].includes(value.scope as string)
+		&& isBoundedString(value.title, 200);
 }
 
 export function isAiAssistPanelState(value: unknown): value is AiAssistPanelState {
