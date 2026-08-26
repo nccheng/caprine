@@ -337,6 +337,21 @@ export class MessengerMediaResolver {
 		}
 	}
 
+	async inspectFile<T>(
+		handleId: string,
+		messageId: string,
+		snapshot: Readonly<ConversationSnapshot>,
+		callback: (filePath: string, media: ResolvedMedia) => Promise<T>,
+	): Promise<T> {
+		const stored = this.handles.get(handleId);
+		if (!stored || stored.messageId !== messageId || !sameSnapshot(stored.snapshot, snapshot)) {
+			throw new MediaResolverError('stale-handle', 'Media handle no longer belongs to this conversation.');
+		}
+
+		const {filePath, snapshot: _snapshot, ...media} = stored;
+		return callback(filePath, media);
+	}
+
 	describeHandle(
 		handleId: string,
 		messageId: string,

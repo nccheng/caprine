@@ -14,6 +14,7 @@ const contextItems = document.querySelector('#context-items');
 const imageSelectionSummary = document.querySelector('#image-selection-summary');
 const imageSelectionNotice = document.querySelector('#image-selection-notice');
 const reviewedImages = document.querySelector('#reviewed-images');
+const reviewedTranscripts = document.querySelector('#reviewed-transcripts');
 const newMessages = document.querySelector('#new-messages');
 const refreshContextButton = document.querySelector('#refresh-context-button');
 const messageAnchor = document.querySelector('#message-anchor');
@@ -61,6 +62,7 @@ let renderedAnswerSignature;
 let renderedHistoryDeletionToken;
 const contextReviewRows = new Map();
 const reviewedImageRows = new Map();
+const reviewedTranscriptRows = new Map();
 
 function shouldClearPrompt(state) {
 	return state.conversation.status !== 'ready'
@@ -334,7 +336,237 @@ function createContextReviewRow(reviewed, index, reviewSequence, locked) {
 	return row;
 }
 
-function renderContextReview(review, isRequesting) {
+function transcriptTime(seconds) {
+	const minutes = Math.floor(seconds / 60);
+	const remainder = seconds - (minutes * 60);
+	return `${String(minutes).padStart(2, '0')}:${remainder.toFixed(3).padStart(6, '0')}`;
+}
+
+function transcriptStatus(item) {
+	switch (item.status) {
+		case 'available':
+		case 'removed': {
+			return 'Not prepared. Nothing has been sent to OpenAI.';
+		}
+
+		case 'preparing': {
+			return 'Preparing voice-message metadata locally. Nothing has been sent to OpenAI.';
+		}
+
+		case 'ready': {
+			return 'Ready for explicit transcription consent.';
+		}
+
+		case 'transcribing': {
+			return 'Sending this selected media to OpenAI for transcription…';
+		}
+
+		case 'completed': {
+			return item.editedSegments ? 'Edited transcript is selected for the AI request.' : 'Original transcript is selected for the AI request.';
+		}
+
+		case 'canceled': {
+			return item.notice ?? 'Transcription canceled. Text-only context remains available.';
+		}
+
+		case 'oversized': {
+			return item.notice ?? 'This voice message exceeds the transcription limit.';
+		}
+
+		case 'unsupported': {
+			return item.notice ?? 'This voice message format is unsupported.';
+		}
+
+		case 'timed-out': {
+			return item.notice ?? 'Transcription timed out. Text-only context remains available.';
+		}
+
+		default: {
+			return item.notice ?? 'Transcription failed. Text-only context remains available.';
+		}
+	}
+}
+
+function rebuildTranscriptSegments(row, item) {
+	const segments = item.editedSegments ?? item.originalSegments ?? [];
+	const signature = JSON.stringify({edited: Boolean(item.editedSegments), segments});
+	if (row.segmentSignature === signature) {
+		return;
+	}
+
+	row.segmentSignature = signature;
+	row.segmentContainer.textContent = '';
+	row.editors = [];
+	for (const [index, segment] of segments.entries()) {
+		const wrapper = document.createElement('label');
+		wrapper.className = 'transcript-segment';
+		const timestamp = document.createElement('time');
+		timestamp.textContent = `${transcriptTime(segment.startSeconds)}–${transcriptTime(segment.endSeconds)}`;
+		const editor = document.createElement('textarea');
+		editor.rows = 2;
+		editor.maxLength = 20_000;
+		editor.value = segment.text;
+		editor.setAttribute('aria-label', `Edit transcript segment ${index + 1}`);
+		wrapper.append(timestamp, editor);
+		row.segmentContainer.append(wrapper);
+		row.editors.push(editor);
+	}
+}
+
+function updateReviewedTranscriptRow(row, item, reviewSequence, locked, credentialsConfigured) {
+	row.item = item;
+	row.reviewSequence = reviewSequence;
+	row.heading.textContent = item.senderLabel;
+	row.metadata.textContent = [
+		item.durationSeconds === undefined ? undefined : `${item.durationSeconds.toFixed(1)} seconds`,
+		item.byteLength === undefined ? undefined : `${item.byteLength.toLocaleString()} bytes`,
+		item.mimeType,
+	].filter(Boolean).join(' · ');
+	row.disclosure.textContent = item.status === 'ready' || item.status === 'transcribing'
+		? 'This media will be sent to OpenAI for transcription'
+		: '';
+	row.status.textContent = transcriptStatus(item);
+	const completed = item.status === 'completed';
+	row.marker.hidden = !completed;
+	row.marker.textContent = item.editedSegments ? 'Edited transcript' : 'Original transcript';
+	row.segmentContainer.hidden = !completed;
+	row.save.hidden = !completed;
+	row.remove.hidden = !completed;
+	if (completed) {
+		rebuildTranscriptSegments(row, item);
+	} else {
+		row.segmentSignature = undefined;
+		row.segmentContainer.textContent = '';
+		row.editors = [];
+	}
+
+	for (const editor of row.editors) {
+		editor.disabled = locked;
+	}
+
+	row.save.disabled = locked;
+	row.remove.disabled = locked;
+	row.action.hidden = completed;
+	row.action.disabled = locked || ['preparing', 'transcribing', 'oversized', 'unsupported'].includes(item.status)
+		|| (item.status === 'ready' && !credentialsConfigured);
+	switch (item.status) {
+		case 'ready': {
+			row.action.textContent = 'Transcribe and review';
+			break;
+		}
+
+		case 'transcribing': {
+			row.action.textContent = 'Cancel transcription';
+			break;
+		}
+
+		case 'preparing': {
+			row.action.textContent = 'Preparing…';
+			break;
+		}
+
+		default: {
+			row.action.textContent = 'Prepare voice message';
+		}
+	}
+
+	if (item.status === 'transcribing') {
+		row.action.disabled = locked;
+	}
+}
+
+function createReviewedTranscriptRow(item, reviewSequence, locked, credentialsConfigured) {
+	const article = document.createElement('article');
+	article.className = 'context-item';
+	const heading = document.createElement('h3');
+	const metadata = document.createElement('p');
+	const disclosure = document.createElement('p');
+	disclosure.className = 'context-availability';
+	const status = document.createElement('p');
+	status.setAttribute('role', 'status');
+	const marker = document.createElement('p');
+	marker.className = 'edited-marker';
+	const segmentContainer = document.createElement('div');
+	segmentContainer.className = 'transcript-segments';
+	const buttons = document.createElement('div');
+	buttons.className = 'button-row';
+	const action = document.createElement('button');
+	action.type = 'button';
+	const save = document.createElement('button');
+	save.type = 'button';
+	save.textContent = 'Save transcript edits';
+	const remove = document.createElement('button');
+	remove.type = 'button';
+	remove.className = 'danger';
+	remove.textContent = 'Remove transcript';
+	const row = {
+		action,
+		article,
+		disclosure,
+		editors: [],
+		heading,
+		item,
+		marker,
+		metadata,
+		remove,
+		reviewSequence,
+		save,
+		segmentContainer,
+		segmentSignature: undefined,
+		status,
+	};
+	action.addEventListener('click', async () => {
+		let nextState;
+		if (row.item.status === 'ready') {
+			nextState = await window.caprineAiAssist.transcribeReviewedMedia(row.reviewSequence, row.item.id);
+		} else if (row.item.status === 'transcribing') {
+			nextState = await window.caprineAiAssist.cancelTranscription(row.reviewSequence, row.item.id);
+		} else {
+			nextState = await window.caprineAiAssist.prepareTranscript(row.reviewSequence, row.item.id);
+		}
+
+		render(nextState);
+	});
+	save.addEventListener('click', async () => {
+		const texts = row.editors.map(editor => editor.value);
+		if (texts.every(text => text.trim())) {
+			render(await window.caprineAiAssist.editTranscript(row.reviewSequence, row.item.id, texts));
+		}
+	});
+	remove.addEventListener('click', async () => {
+		render(await window.caprineAiAssist.removeTranscript(row.reviewSequence, row.item.id));
+		row.action.focus?.();
+	});
+	buttons.append(action, save, remove);
+	article.append(heading, metadata, disclosure, status, marker, segmentContainer, buttons);
+	updateReviewedTranscriptRow(row, item, reviewSequence, locked, credentialsConfigured);
+	return row;
+}
+
+function renderReviewedTranscripts(review, isRequesting, credentialsConfigured) {
+	const presentIds = new Set();
+	for (const item of review?.transcripts ?? []) {
+		presentIds.add(item.id);
+		const locked = review.locked || isRequesting || !review.editable;
+		let row = reviewedTranscriptRows.get(item.id);
+		if (!row) {
+			row = createReviewedTranscriptRow(item, review.sequence, locked, credentialsConfigured);
+			reviewedTranscriptRows.set(item.id, row);
+			reviewedTranscripts.append(row.article);
+		}
+
+		updateReviewedTranscriptRow(row, item, review.sequence, locked, credentialsConfigured);
+	}
+
+	for (const [id, row] of reviewedTranscriptRows) {
+		if (!presentIds.has(id)) {
+			row.article.remove();
+			reviewedTranscriptRows.delete(id);
+		}
+	}
+}
+
+function renderContextReview(review, isRequesting, credentialsConfigured) {
 	newMessages.hidden = !review?.newMessagesAvailable;
 	if (!review) {
 		contextSourceDisclosure.textContent = 'No context source selected.';
@@ -345,6 +577,7 @@ function renderContextReview(review, isRequesting) {
 
 		contextReviewRows.clear();
 		renderReviewedImages(undefined, isRequesting);
+		renderReviewedTranscripts(undefined, isRequesting, credentialsConfigured);
 		return;
 	}
 
@@ -381,6 +614,7 @@ function renderContextReview(review, isRequesting) {
 	}
 
 	renderReviewedImages(review, isRequesting);
+	renderReviewedTranscripts(review, isRequesting, credentialsConfigured);
 }
 
 function imageStatusLabel(image) {
@@ -724,7 +958,7 @@ function render(state) {
 	renderMessageAnchor(state.anchor);
 	contextWindow.value = String(state.contextWindowSize);
 	webSearchMode.value = state.review?.browsingMode ?? state.webSearchMode;
-	renderContextReview(state.review, isRequesting);
+	renderContextReview(state.review, isRequesting, state.credentials.configured);
 	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
 		promptInput.value = state.invocation.prompt;
 		promptCaptureGeneration = state.conversation.captureGeneration;

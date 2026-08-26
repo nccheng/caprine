@@ -169,6 +169,21 @@ textarea:focus-visible {
 	gap: 10px;
 }
 
+.reviewed-transcripts {
+	display: grid;
+	gap: 12px;
+}
+
+.transcript-segments {
+	display: grid;
+	gap: 8px;
+}
+
+.transcript-segment {
+	display: grid;
+	gap: 4px;
+}
+
 .reviewed-image {
 	padding: 10px;
 	border: 1px solid #3c4250;

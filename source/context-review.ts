@@ -1,6 +1,7 @@
 import {ConversationContextItem} from './messenger-context';
 import {ConversationSnapshot} from './ai-assist-state';
 import {ReviewedImageItem} from './reviewed-images';
+import {ReviewedTranscriptItem, reviewedTranscriptExcerpt} from './reviewed-transcripts';
 
 export const contextWindowSizes = [10, 20, 50] as const;
 export type ContextWindowSize = typeof contextWindowSizes[number];
@@ -20,6 +21,7 @@ export type ContextReviewSnapshot = {
 	question: string;
 	requestedCount: ContextWindowSize;
 	snapshot: Readonly<ConversationSnapshot>;
+	transcripts: ReviewedTranscriptItem[];
 };
 
 export type ContextBackfillStopReason = 'cancelled' | 'complete' | 'conversation-changed' | 'no-more-history' | 'timeout';
@@ -338,8 +340,9 @@ export function contextItemExcerpt(item: Readonly<ConversationContextItem>): str
 }
 
 export function captureContextReviewSnapshot(
-	data: Omit<ContextReviewSnapshot, 'actualCount' | 'images' | 'newMessagesAvailable'> & {
+	data: Omit<ContextReviewSnapshot, 'actualCount' | 'images' | 'newMessagesAvailable' | 'transcripts'> & {
 		images?: ReviewedImageItem[];
+		transcripts?: ReviewedTranscriptItem[];
 	},
 ): Readonly<ContextReviewSnapshot> {
 	const captured = structuredClone({
@@ -347,22 +350,24 @@ export function captureContextReviewSnapshot(
 		actualCount: data.items.length,
 		images: data.images ?? [],
 		newMessagesAvailable: false,
+		transcripts: data.transcripts ?? [],
 	});
 	freezePlainValue(captured);
 	return captured;
 }
 
 export function restoreContextReviewSnapshot(
-	data: Readonly<ContextReviewSnapshot>,
+	data: Readonly<Omit<ContextReviewSnapshot, 'transcripts'> & {transcripts?: ReviewedTranscriptItem[]}>,
 ): Readonly<ContextReviewSnapshot> {
-	const restored = structuredClone(data);
+	const restored = structuredClone({...data, transcripts: data.transcripts ?? []});
 	freezePlainValue(restored);
 	return restored;
 }
 
 export function createUnlockedContextReview(
-	data: Omit<ContextReviewSnapshot, 'actualCount' | 'images' | 'newMessagesAvailable'> & {
+	data: Omit<ContextReviewSnapshot, 'actualCount' | 'images' | 'newMessagesAvailable' | 'transcripts'> & {
 		images?: ReviewedImageItem[];
+		transcripts?: ReviewedTranscriptItem[];
 	},
 ): {locked: false; snapshot: Readonly<ContextReviewSnapshot>} {
 	return {locked: false, snapshot: captureContextReviewSnapshot(data)};
@@ -370,7 +375,7 @@ export function createUnlockedContextReview(
 
 export function updateContextReview(
 	review: Readonly<ContextReviewSnapshot>,
-	updates: Partial<Pick<ContextReviewSnapshot, 'images' | 'items' | 'newMessagesAvailable' | 'question'>>,
+	updates: Partial<Pick<ContextReviewSnapshot, 'images' | 'items' | 'newMessagesAvailable' | 'question' | 'transcripts'>>,
 ): Readonly<ContextReviewSnapshot> {
 	const captured = structuredClone({
 		...review,
@@ -390,6 +395,7 @@ export function removeContextReviewItem(
 
 	return updateContextReview(review, {
 		items: review.items.filter(item => item.id !== itemId),
+		transcripts: review.transcripts.filter(item => item.contextItemId !== itemId),
 	});
 }
 
@@ -410,13 +416,18 @@ export function editContextReviewItem(
 }
 
 export function buildReviewedPrompt(review: Readonly<ContextReviewSnapshot>): string {
+	const transcriptsByContextItem = new Map(review.transcripts.map(transcript => [
+		transcript.contextItemId,
+		reviewedTranscriptExcerpt(transcript),
+	]));
 	const context = review.items
 		.filter(({item}) => item.omittedReason === undefined)
-		.map(({editedExcerpt, item}, index) => {
+		.map(({editedExcerpt, id, item}, index) => {
 			const sender = item.sender.role === 'outgoing'
 				? 'Derek'
 				: (item.sender.displayName ?? 'Messenger participant');
-			const excerpt = editedExcerpt ?? contextItemExcerpt(item);
+			const transcript = transcriptsByContextItem.get(id);
+			const excerpt = [editedExcerpt ?? contextItemExcerpt(item), transcript].filter(Boolean).join('\n');
 			return `[${index + 1}] ${sender}${item.timestamp ? ` at ${item.timestamp}` : ''}\n${excerpt}`;
 		})
 		.join('\n\n');

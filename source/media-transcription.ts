@@ -382,7 +382,7 @@ function validateMedia(media: ResolvedMedia): asserts media is ResolvedMedia & {
 	}
 }
 
-async function inspectAudioDuration(filePath: string): Promise<number> {
+export async function inspectAudioDuration(filePath: string): Promise<number> {
 	try {
 		const {stdout} = await execFileAsync('/usr/bin/afinfo', [filePath], {
 			encoding: 'utf8',

@@ -72,7 +72,7 @@ test('original history replay restores the exact frozen context onto only the cu
 	const restored = restoreOriginalHistoryReview(stored, snapshot);
 
 	assert.deepEqual(restored, {
-		...stored.context, images: [], newMessagesAvailable: false, snapshot,
+		...stored.context, images: [], newMessagesAvailable: false, snapshot, transcripts: [],
 	});
 	assert.notEqual(restored.items, stored.context.items);
 	assert.equal(Object.isFrozen(restored), true);

@@ -17,6 +17,7 @@ const sendCommand = async (command: AiAssistPanelCommand): Promise<AiAssistPanel
 
 contextBridge.exposeInMainWorld('caprineAiAssist', {
 	cancel: async () => sendCommand({type: 'cancel'}),
+	cancelTranscription: async (reviewSequence: number, transcriptId: string) => sendCommand({reviewSequence, transcriptId, type: 'cancel-transcription'}),
 	cancelHistoryDeletion: async (authorizationToken: string) => sendCommand({authorizationToken, type: 'cancel-history-deletion'}),
 	close: async () => sendCommand({type: 'close'}),
 	confirmHistoryDeletion: async (authorizationToken: string) => sendCommand({authorizationToken, type: 'confirm-history-deletion'}),
@@ -26,6 +27,12 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 		itemId,
 		reviewSequence,
 		type: 'edit-context-item',
+	}),
+	editTranscript: async (reviewSequence: number, transcriptId: string, texts: string[]) => sendCommand({
+		reviewSequence,
+		texts,
+		transcriptId,
+		type: 'edit-transcript',
 	}),
 	getState: async () => sendCommand({type: 'get-state'}),
 	includeReviewedImage: async (reviewSequence: number, itemId: string, processedHandleId: string) => sendCommand({
@@ -53,6 +60,7 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 		scope,
 		type: 'prepare-history-deletion',
 	}),
+	prepareTranscript: async (reviewSequence: number, transcriptId: string) => sendCommand({reviewSequence, transcriptId, type: 'prepare-transcript'}),
 	refreshContext: async () => sendCommand({type: 'refresh-context'}),
 	refreshConversation: async () => sendCommand({type: 'refresh-conversation'}),
 	removeContextItem: async (reviewSequence: number, itemId: string) => sendCommand({itemId, reviewSequence, type: 'remove-context-item'}),
@@ -62,6 +70,7 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 		reviewSequence,
 		type: 'remove-reviewed-image',
 	}),
+	removeTranscript: async (reviewSequence: number, transcriptId: string) => sendCommand({reviewSequence, transcriptId, type: 'remove-transcript'}),
 	resolveMedia: async (messageId: string, kind: 'audio' | 'video') => sendCommand({type: 'resolve-media', kind, messageId}),
 	saveApiKey: async (apiKey: string) => sendCommand({type: 'save-api-key', apiKey}),
 	searchHistory: async (query: string) => sendCommand({query, type: 'search-history'}),
@@ -70,6 +79,7 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 	setWebSearchMode: async (mode: 'always' | 'auto' | 'off') => sendCommand({mode, type: 'set-web-search-mode'}),
 	submitPrompt: async (prompt: string) => sendCommand({type: 'submit-prompt', prompt}),
 	testApiKey: async () => sendCommand({type: 'test-api-key'}),
+	transcribeReviewedMedia: async (reviewSequence: number, transcriptId: string) => sendCommand({reviewSequence, transcriptId, type: 'transcribe-reviewed-media'}),
 	onStateChanged(callback: (state: AiAssistPanelState) => void) {
 		const listener = (_event: Electron.IpcRendererEvent, state: AiAssistPanelState): void => {
 			if (isAiAssistPanelState(state)) {

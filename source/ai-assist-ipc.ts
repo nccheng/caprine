@@ -44,6 +44,11 @@ import {AiHistoryChatView, maximumHistoryChats, maximumHistoryInteractionsPerCha
 import {AiHistoryDeletionConfirmation, AiHistoryDeletionScope} from './ai-history-deletion';
 import {ReviewedImageItem, ReviewedImageSelectionSummary} from './reviewed-images';
 import {
+	maximumReviewedTranscriptCharacters,
+	ReviewedTranscriptItem,
+	ReviewedTranscriptStatus,
+} from './reviewed-transcripts';
+import {
 	MessengerImageCaptureFailureReason,
 	MessengerImageCaptureTarget,
 	validateMessengerImageCaptureRectangle,
@@ -105,6 +110,7 @@ export type AiAssistPanelState = {
 		question: string;
 		requestedCount: ContextWindowSize;
 		sequence: number;
+		transcripts: ReviewedTranscriptItem[];
 	};
 	request: {
 		answer?: OpenAiAnswer;
@@ -137,16 +143,20 @@ export type AiAssistPanelCommand =
 	| {type: 'close'}
 	| {authorizationToken: string; type: 'confirm-history-deletion'}
 	| {type: 'delete-api-key'}
+	| {reviewSequence: number; transcriptId: string; type: 'cancel-transcription'}
 	| {editedExcerpt: string; itemId: string; reviewSequence: number; type: 'edit-context-item'}
+	| {reviewSequence: number; texts: string[]; transcriptId: string; type: 'edit-transcript'}
 	| {type: 'get-state'}
 	| {itemId: string; processedHandleId: string; reviewSequence: number; type: 'include-reviewed-image'}
 	| {chatId: string; contextSource: 'current' | 'original'; interactionId: string; type: 'prepare-history-replay'}
 	| {chatId?: string; scope: AiHistoryDeletionScope; type: 'prepare-history-deletion'}
 	| {type: 'new-history-chat'}
 	| {type: 'open-citation'; url: string}
+	| {reviewSequence: number; transcriptId: string; type: 'prepare-transcript'}
 	| {answerGeneration: number; authorizationToken: string; conversationId: string; type: 'insert-answer'}
 	| {itemId: string; reviewSequence: number; type: 'remove-context-item'}
 	| {itemId: string; processedHandleId: string; reviewSequence: number; type: 'remove-reviewed-image'}
+	| {reviewSequence: number; transcriptId: string; type: 'remove-transcript'}
 	| {type: 'refresh-context'}
 	| {type: 'refresh-conversation'}
 	| {type: 'resolve-media'; kind: MediaKind; messageId: string}
@@ -156,7 +166,8 @@ export type AiAssistPanelCommand =
 	| {requestedCount: ContextWindowSize; type: 'set-context-window'}
 	| {mode: WebSearchMode; type: 'set-web-search-mode'}
 	| {type: 'submit-prompt'; prompt: string}
-	| {type: 'test-api-key'};
+	| {type: 'test-api-key'}
+	| {reviewSequence: number; transcriptId: string; type: 'transcribe-reviewed-media'};
 
 export type AiAssistMessengerCommand =
 	| {requestId: string; type: 'cancel-context-capture'}
@@ -652,6 +663,25 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 			&& (value.reviewSequence as number) > 0;
 	}
 
+	if (['cancel-transcription', 'prepare-transcript', 'remove-transcript', 'transcribe-reviewed-media'].includes(value.type)) {
+		return hasExactKeys(value, ['reviewSequence', 'transcriptId', 'type'])
+			&& isBoundedString(value.transcriptId, 200)
+			&& Number.isSafeInteger(value.reviewSequence)
+			&& (value.reviewSequence as number) > 0;
+	}
+
+	if (value.type === 'edit-transcript') {
+		return hasExactKeys(value, ['reviewSequence', 'texts', 'transcriptId', 'type'])
+			&& isBoundedString(value.transcriptId, 200)
+			&& Number.isSafeInteger(value.reviewSequence)
+			&& (value.reviewSequence as number) > 0
+			&& Array.isArray(value.texts)
+			&& value.texts.length > 0
+			&& value.texts.length <= 1000
+			&& value.texts.every(text => isBoundedString(text, 20_000))
+			&& (value.texts as string[]).reduce((total, text) => total + text.length, 0) <= maximumReviewedTranscriptCharacters;
+	}
+
 	if (value.type === 'include-reviewed-image' || value.type === 'remove-reviewed-image') {
 		return hasExactKeys(value, ['itemId', 'processedHandleId', 'reviewSequence', 'type'])
 			&& isBoundedString(value.itemId, 200)
@@ -814,6 +844,84 @@ function isReviewedImageItem(value: unknown): boolean {
 		&& value.thumbnailDataUrl.length <= 28 * 1024 * 1024;
 }
 
+function isTranscriptSegment(value: unknown): boolean {
+	return isRecord(value)
+		&& hasExactKeys(value, ['endSeconds', 'startSeconds', 'text'])
+		&& typeof value.startSeconds === 'number'
+		&& Number.isFinite(value.startSeconds)
+		&& value.startSeconds >= 0
+		&& typeof value.endSeconds === 'number'
+		&& Number.isFinite(value.endSeconds)
+		&& value.endSeconds > value.startSeconds
+		&& isBoundedString(value.text, 20_000);
+}
+
+function isTranscriptSegments(value: unknown): value is Array<{endSeconds: number; startSeconds: number; text: string}> {
+	return Array.isArray(value)
+		&& value.length > 0
+		&& value.length <= 1000
+		&& value.every(segment => isTranscriptSegment(segment))
+		&& (value as Array<{text: string}>).reduce((total, segment) => total + segment.text.length, 0) <= maximumReviewedTranscriptCharacters;
+}
+
+function isReviewedTranscriptItem(value: unknown): value is ReviewedTranscriptItem {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['contextItemId', 'id', 'messageId', 'senderLabel', 'status'];
+	for (const key of ['byteLength', 'durationSeconds', 'editedSegments', 'mimeType', 'notice', 'originalSegments']) {
+		if (value[key] !== undefined) {
+			keys.push(key);
+		}
+	}
+
+	const validStatuses: ReviewedTranscriptStatus[] = [
+		'available',
+		'preparing',
+		'ready',
+		'transcribing',
+		'completed',
+		'canceled',
+		'oversized',
+		'unsupported',
+		'timed-out',
+		'failed',
+		'removed',
+	];
+	if (!hasExactKeys(value, keys)
+		|| !isBoundedString(value.contextItemId, 200)
+		|| !isBoundedString(value.id, 200)
+		|| !isMessageId(value.messageId)
+		|| !isBoundedString(value.senderLabel, 200)
+		|| !validStatuses.includes(value.status as ReviewedTranscriptStatus)
+		|| (value.byteLength !== undefined && (!Number.isSafeInteger(value.byteLength) || (value.byteLength as number) <= 0))
+		|| !isDuration(value.durationSeconds)
+		|| (value.mimeType !== undefined && !isMimeType(value.mimeType))
+		|| (value.notice !== undefined && !isBoundedString(value.notice, 1000))) {
+		return false;
+	}
+
+	for (const key of ['originalSegments', 'editedSegments']) {
+		const segments = value[key];
+		if (segments !== undefined && !isTranscriptSegments(segments)) {
+			return false;
+		}
+	}
+
+	const {editedSegments, originalSegments} = value;
+	return (value.status !== 'completed' || isTranscriptSegments(originalSegments))
+		&& (editedSegments === undefined || (
+			isTranscriptSegments(originalSegments)
+			&& isTranscriptSegments(editedSegments)
+			&& editedSegments.length === originalSegments.length
+			&& editedSegments.every((segment, index) => (
+				segment.startSeconds === originalSegments[index].startSeconds
+				&& segment.endSeconds === originalSegments[index].endSeconds
+			))
+		));
+}
+
 function isImageSelectionSummary(value: unknown): boolean {
 	if (!isRecord(value)) {
 		return false;
@@ -838,7 +946,7 @@ function isReviewState(value: unknown): boolean {
 		return false;
 	}
 
-	const keys = ['actualCount', 'browsingMode', 'contextSource', 'editable', 'items', 'locked', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence'];
+	const keys = ['actualCount', 'browsingMode', 'contextSource', 'editable', 'items', 'locked', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence', 'transcripts'];
 	if (value.images !== undefined || value.imageSelection !== undefined) {
 		keys.push('imageSelection', 'images');
 	}
@@ -854,6 +962,9 @@ function isReviewState(value: unknown): boolean {
 		&& Array.isArray(value.items)
 		&& value.items.length <= (value.actualCount as number)
 		&& value.items.every(item => isReviewedContextItem(item))
+		&& Array.isArray(value.transcripts)
+		&& value.transcripts.length <= 50
+		&& value.transcripts.every(item => isReviewedTranscriptItem(item))
 		&& (value.images === undefined || (
 			Array.isArray(value.images)
 			&& value.images.length <= 50

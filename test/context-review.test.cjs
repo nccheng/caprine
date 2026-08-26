@@ -523,6 +523,19 @@ test('review mutations target immutable item IDs across removals and reject stal
 		items: messages(2).map((item, index) => ({id: `item-${index + 1}`, item})),
 		question: 'What happened?',
 		requestedCount: 10,
+		transcripts: [{
+			contextItemId: 'item-1',
+			id: 'transcript:item-1',
+			messageId: 'message-1',
+			senderLabel: 'Voice message received from Alex',
+			status: 'ready',
+		}, {
+			contextItemId: 'item-2',
+			id: 'transcript:item-2',
+			messageId: 'message-2',
+			senderLabel: 'Voice message received from Alex',
+			status: 'ready',
+		}],
 		snapshot: {
 			captureGeneration: 1,
 			conversationId: 'messenger-thread:123',
@@ -535,6 +548,7 @@ test('review mutations target immutable item IDs across removals and reject stal
 	const afterEdit = editContextReviewItem(afterRemoval, 'item-2', 'Redacted second message');
 	assert.ok(afterEdit);
 	assert.deepEqual(afterEdit.items.map(item => item.id), ['item-2']);
+	assert.deepEqual(afterEdit.transcripts.map(item => item.id), ['transcript:item-2']);
 	assert.equal(afterEdit.items[0].editedExcerpt, 'Redacted second message');
 	assert.equal(removeContextReviewItem(afterEdit, 'item-1'), undefined);
 	assert.equal(editContextReviewItem(afterEdit, 'item-1', 'Wrong target'), undefined);
@@ -566,4 +580,36 @@ test('reviewed prompts include only frozen selected sendable items', () => {
 	assert.match(prompt, /Only this reviewed excerpt/);
 	assert.doesNotMatch(prompt, /unsupported-message/);
 	assert.doesNotMatch(prompt, /Message 1/);
+});
+
+test('reviewed prompts include only completed selected transcript snapshots', () => {
+	const review = captureContextReviewSnapshot({
+		contextVersion: 'message:message-1',
+		items: [{id: 'item-1', item: {...messages(1)[0], attachments: [{kind: 'audio'}]}}],
+		question: 'Summarize the voice message',
+		requestedCount: 10,
+		snapshot: {
+			captureGeneration: 1,
+			conversationId: 'messenger-thread:123',
+			messengerWebContentsId: 2,
+			sessionId: 'ai-session-1',
+		},
+		transcripts: [{
+			byteLength: 42,
+			contextItemId: 'item-1',
+			durationSeconds: 1,
+			id: 'transcript:item-1',
+			messageId: 'message-1',
+			mimeType: 'audio/ogg',
+			originalSegments: [{endSeconds: 1, startSeconds: 0, text: 'Private reviewed words'}],
+			senderLabel: 'Voice message received from Alex',
+			status: 'completed',
+		}],
+	});
+	assert.match(buildReviewedPrompt(review), /Original transcript:/);
+	assert.match(buildReviewedPrompt(review), /Private reviewed words/);
+	const removed = updateContextReview(review, {
+		transcripts: [{...review.transcripts[0], originalSegments: undefined, status: 'removed'}],
+	});
+	assert.doesNotMatch(buildReviewedPrompt(removed), /Private reviewed words/);
 });
