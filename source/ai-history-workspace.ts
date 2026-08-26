@@ -1,4 +1,6 @@
 import {AiHistoryChat, AiHistoryChatSummary, AiHistoryInteraction} from './ai-history-store';
+import {originalHistoryReplayAvailability} from './ai-history-replay';
+import {openAiResponseModel} from './openai-client';
 
 export const maximumHistoryChats = 100;
 export const maximumHistoryInteractionsPerChat = 25;
@@ -21,6 +23,7 @@ export type AiHistoryInteractionView = {
 	draftStatus: 'inserted' | 'not-inserted';
 	id: string;
 	model: string;
+	originalReplay: {available: true} | {available: false; reason: 'missing-artifacts' | 'unsupported-metadata'};
 	question: string;
 	shareStatus: 'private' | 'shared';
 	webSearchRan: boolean;
@@ -103,6 +106,7 @@ function interactionView(interaction: AiHistoryInteraction): AiHistoryInteractio
 		draftStatus: interaction.draftStatus,
 		id: interaction.id,
 		model: boundedText(interaction.model, 200),
+		originalReplay: originalHistoryReplayAvailability(interaction, openAiResponseModel),
 		question: boundedText(interaction.question),
 		shareStatus: interaction.shareStatus,
 		webSearchRan: interaction.webSearch.ran,

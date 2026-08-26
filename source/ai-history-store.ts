@@ -237,6 +237,27 @@ export class AiHistoryStore {
 		}));
 	}
 
+	loadInteraction(conversationId: string, chatId: string, interactionId: string): AiHistoryInteraction | undefined {
+		requireIdentifier(conversationId, 'conversationId');
+		requireIdentifier(chatId, 'chatId');
+		requireIdentifier(interactionId, 'interactionId');
+		const row = this.database.prepare(`
+			SELECT
+				i.id, i.requested_at, i.completed_at, i.context_json, i.provider, i.model,
+				i.browsing_mode, i.web_search_ran, i.web_search_citations_json,
+				i.web_search_sources_json, i.draft_status, i.share_status,
+				i.artifact_references_json, i.outcome,
+				MAX(CASE WHEN t.role = 'user' THEN t.content END) AS question,
+				MAX(CASE WHEN t.role = 'assistant' THEN t.content END) AS answer
+			FROM ai_history_interactions i
+			JOIN ai_history_chats c ON c.id = i.chat_id
+			JOIN ai_history_turns t ON t.interaction_id = i.id
+			WHERE c.conversation_id = ? AND c.id = ? AND i.id = ?
+			GROUP BY i.id
+		`).get(conversationId, chatId, interactionId) as InteractionRow | undefined;
+		return row ? interactionFromRow(row) : undefined;
+	}
+
 	loadConversationSummaries(conversationId: string, query = ''): AiHistoryChatSummary[] {
 		requireIdentifier(conversationId, 'conversationId');
 		if (query.length > 200) {

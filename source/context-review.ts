@@ -352,6 +352,14 @@ export function captureContextReviewSnapshot(
 	return captured;
 }
 
+export function restoreContextReviewSnapshot(
+	data: Readonly<ContextReviewSnapshot>,
+): Readonly<ContextReviewSnapshot> {
+	const restored = structuredClone(data);
+	freezePlainValue(restored);
+	return restored;
+}
+
 export function createUnlockedContextReview(
 	data: Omit<ContextReviewSnapshot, 'actualCount' | 'images' | 'newMessagesAvailable'> & {
 		images?: ReviewedImageItem[];

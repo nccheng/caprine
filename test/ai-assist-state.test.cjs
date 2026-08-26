@@ -153,6 +153,18 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({chatId: '', type: 'select-history-chat'}), false);
 	assert.equal(isAiAssistPanelCommand({query: 'source title', type: 'search-history'}), true);
 	assert.equal(isAiAssistPanelCommand({query: 'x'.repeat(201), type: 'search-history'}), false);
+	assert.equal(isAiAssistPanelCommand({
+		chatId: 'chat-1',
+		contextSource: 'original',
+		interactionId: 'interaction-1',
+		type: 'prepare-history-replay',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({
+		chatId: 'chat-1',
+		contextSource: 'silent',
+		interactionId: 'interaction-1',
+		type: 'prepare-history-replay',
+	}), false);
 	const insertionToken = 'draft-insertion-token:00000000-0000-4000-8000-000000000001';
 	assert.equal(isAiAssistPanelCommand({
 		answerGeneration: 3,
@@ -444,6 +456,9 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		...panelStateWithHandle,
 		review: {
 			actualCount: 3,
+			browsingMode: 'always',
+			contextSource: 'current',
+			editable: true,
 			items: [{editedExcerpt: 'Reviewed excerpt', id: 'context-capture-1:0', item: anchorRequest.item}],
 			locked: false,
 			newMessagesAvailable: true,
@@ -769,6 +784,45 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(element('refresh-context-button').disabled, true);
 	assert.equal(element('ask-button').disabled, true);
 	assert.equal(element('cancel-button').disabled, false);
+	renderState({
+		...state('ready', 3),
+		review: {
+			actualCount: 0,
+			browsingMode: 'always',
+			contextSource: 'historical-original',
+			editable: false,
+			items: [],
+			locked: false,
+			newMessagesAvailable: false,
+			question: 'Historical question?',
+			requestedCount: 10,
+			sequence: 99,
+		},
+	});
+	assert.equal(context.document.activeElement, element('ask-button'));
+	assert.equal(prompt.disabled, true);
+	assert.equal(element('context-window').disabled, true);
+	assert.equal(element('web-search-mode').disabled, true);
+	assert.equal(element('refresh-context-button').disabled, true);
+	assert.equal(element('ask-button').disabled, false);
+	renderState({
+		...state('ready', 3),
+		credentials: {configured: false, secureStorageAvailable: true},
+		review: {
+			actualCount: 0,
+			browsingMode: 'always',
+			contextSource: 'historical-original',
+			editable: false,
+			items: [],
+			locked: false,
+			newMessagesAvailable: false,
+			question: 'Historical question?',
+			requestedCount: 10,
+			sequence: 100,
+		},
+	});
+	assert.equal(element('ask-button').disabled, true);
+	assert.equal(context.document.activeElement, element('api-key'));
 	renderState({
 		...state('ready', 3),
 		review: {

@@ -58,8 +58,14 @@ import {
 	openAiResponseModel,
 	OpenAiErrorCode,
 	OpenAiRequestError,
+	WebSearchMode,
 } from './openai-client';
 import {AiHistoryInteractionInput, AiHistoryStore} from './ai-history-store';
+import {
+	captureHistoryDestinationChatId,
+	originalHistoryReplayAvailability,
+	restoreOriginalHistoryReview,
+} from './ai-history-replay';
 import {buildAiHistoryChatViews} from './ai-history-workspace';
 import {
 	buildReviewedPrompt,
@@ -93,6 +99,13 @@ import {
 } from './draft-insertion';
 
 const panelPartition = 'ai-assist';
+type ReviewContextSource = 'current' | 'historical-current' | 'historical-original';
+type OpenAiRequestRunOptions = {
+	isConnectionTest: boolean;
+	reviewedImages?: ReadonlyArray<Readonly<ReviewedImageItem>>;
+	reviewSnapshot?: Readonly<ConversationSnapshot>;
+	searchMode?: WebSearchMode;
+};
 
 class AiAssistController {
 	private answerGeneration = 0;
@@ -104,6 +117,7 @@ class AiAssistController {
 	private anchorSequence = 0;
 	private activeRequest?: {
 		abortController: AbortController;
+		historyChatId?: string;
 		id: number;
 		snapshot: Readonly<ConversationSnapshot>;
 	};
@@ -154,6 +168,7 @@ class AiAssistController {
 
 	private pendingContextCapture?: {
 		anchorMessageId?: string;
+		contextSource: Exclude<ReviewContextSource, 'historical-original'>;
 		question: string;
 		requestId: string;
 		requestedCount: ContextWindowSize;
@@ -172,6 +187,9 @@ class AiAssistController {
 
 	private requestCounter = 0;
 	private review?: {
+		browsingMode: WebSearchMode;
+		contextSource: ReviewContextSource;
+		editable: boolean;
 		locked: boolean;
 		sequence: number;
 		snapshot: Readonly<ContextReviewSnapshot>;
@@ -274,6 +292,9 @@ class AiAssistController {
 			...(this.review && this.isRequestSnapshotCurrent(this.review.snapshot.snapshot) ? {
 				review: {
 					actualCount: this.review.snapshot.actualCount,
+					browsingMode: this.review.browsingMode,
+					contextSource: this.review.contextSource,
+					editable: this.review.editable,
 					imageSelection: reviewedImageSelectionSummary(this.review.snapshot.images),
 					images: this.review.snapshot.images,
 					items: this.review.snapshot.items,
@@ -437,6 +458,11 @@ class AiAssistController {
 				break;
 			}
 
+			case 'prepare-history-replay': {
+				await this.prepareHistoryReplay(value.chatId, value.interactionId, value.contextSource);
+				break;
+			}
+
 			case 'open-citation': {
 				await openCitationExternal(value.url, async url => shell.openExternal(url));
 				break;
@@ -448,9 +474,16 @@ class AiAssistController {
 			}
 
 			case 'refresh-context': {
+				if (this.review?.contextSource === 'historical-original') {
+					this.notice = 'This is the immutable original history snapshot. Choose current context from History for a fresh capture.';
+					this.broadcastState();
+					break;
+				}
+
 				await this.requestContextReview(
 					this.review?.snapshot.question ?? this.invocation?.prompt ?? '',
 					this.anchor?.snapshot.item.messageId,
+					this.review?.contextSource ?? 'current',
 				);
 				break;
 			}
@@ -486,20 +519,27 @@ class AiAssistController {
 			}
 
 			case 'set-context-window': {
+				if (this.review?.contextSource === 'historical-original') {
+					break;
+				}
+
 				config.set('aiAssistContextWindowSize', value.requestedCount);
 				await this.requestContextReview(
 					this.review?.snapshot.question ?? this.invocation?.prompt ?? '',
 					this.anchor?.snapshot.item.messageId,
+					this.review?.contextSource ?? 'current',
 				);
 				break;
 			}
 
 			case 'set-web-search-mode': {
-				if (this.sessionState.snapshot.status === 'requesting' || this.review?.locked) {
+				if (this.sessionState.snapshot.status === 'requesting' || this.review?.locked === true || this.review?.contextSource === 'historical-original') {
 					break;
 				}
 
 				config.set('aiAssistWebSearchMode', value.mode);
+				this.review &&= {...this.review, browsingMode: value.mode};
+
 				this.clearAnswer();
 				this.error = undefined;
 				this.notice = `Web search mode set to ${value.mode}.`;
@@ -508,7 +548,7 @@ class AiAssistController {
 			}
 
 			case 'test-api-key': {
-				await this.runOpenAiRequest('Reply with exactly: OK', true);
+				await this.runOpenAiRequest('Reply with exactly: OK', {isConnectionTest: true});
 				break;
 			}
 
@@ -567,12 +607,12 @@ class AiAssistController {
 				this.mediaCandidates = value.mediaCandidates ?? [];
 				if (
 					this.review
+					&& this.review.contextSource !== 'historical-original'
 					&& value.contextVersion
 					&& value.contextVersion !== this.review.snapshot.contextVersion
 				) {
 					this.review = {
-						locked: this.review.locked,
-						sequence: this.review.sequence,
+						...this.review,
 						snapshot: updateContextReview(this.review.snapshot, {newMessagesAvailable: true}),
 					};
 				}
@@ -781,7 +821,11 @@ class AiAssistController {
 		return true;
 	}
 
-	private async requestContextReview(question: string, anchorMessageId?: string): Promise<void> {
+	private async requestContextReview(
+		question: string,
+		anchorMessageId?: string,
+		contextSource: Exclude<ReviewContextSource, 'historical-original'> = 'current',
+	): Promise<void> {
 		this.cancelPendingContextCapture();
 		const snapshot = this.conversationBinding.currentSnapshot;
 		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot)) {
@@ -812,6 +856,7 @@ class AiAssistController {
 			}, 3500);
 			this.pendingContextCapture = {
 				...(anchorMessageId ? {anchorMessageId} : {}),
+				contextSource,
 				question,
 				requestId,
 				requestedCount,
@@ -860,6 +905,9 @@ class AiAssistController {
 		}
 
 		this.review = {
+			browsingMode: config.get('aiAssistWebSearchMode'),
+			contextSource: pending.contextSource,
+			editable: true,
 			...createUnlockedContextReview({
 				contextVersion: value.contextVersion,
 				items: value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item})),
@@ -1034,6 +1082,7 @@ class AiAssistController {
 	private removeContextItem(reviewSequence: number, itemId: string): void {
 		if (
 			!this.review
+			|| !this.review.editable
 			|| this.review.locked
 			|| this.review.sequence !== reviewSequence
 			|| this.sessionState.snapshot.status === 'requesting'
@@ -1048,8 +1097,8 @@ class AiAssistController {
 		}
 
 		this.review = {
+			...this.review,
 			locked: false,
-			sequence: this.review.sequence,
 			snapshot,
 		};
 		this.notice = 'Context item removed from this request.';
@@ -1059,6 +1108,7 @@ class AiAssistController {
 	private editContextItem(reviewSequence: number, itemId: string, editedExcerpt: string): void {
 		if (
 			!this.review
+			|| !this.review.editable
 			|| this.review.locked
 			|| this.review.sequence !== reviewSequence
 			|| this.sessionState.snapshot.status === 'requesting'
@@ -1073,8 +1123,8 @@ class AiAssistController {
 		}
 
 		this.review = {
+			...this.review,
 			locked: false,
-			sequence: this.review.sequence,
 			snapshot,
 		};
 		this.notice = 'Edited excerpt saved for this request.';
@@ -1089,6 +1139,7 @@ class AiAssistController {
 	): void {
 		if (
 			!this.review
+			|| !this.review.editable
 			|| this.review.locked
 			|| this.review.sequence !== reviewSequence
 			|| this.sessionState.snapshot.status === 'requesting'
@@ -1109,8 +1160,8 @@ class AiAssistController {
 		}
 
 		this.review = {
+			...this.review,
 			locked: false,
-			sequence: this.review.sequence,
 			snapshot: updateContextReview(this.review.snapshot, {images: [...update.items]}),
 		};
 		if (update.releasedHandleId) {
@@ -1666,6 +1717,10 @@ class AiAssistController {
 			return;
 		}
 
+		const submittedQuestion = this.review.contextSource === 'historical-original'
+			? this.review.snapshot.question
+			: question;
+
 		const submissionDecision = contextReviewSubmissionDecision(this.review.locked);
 		if (!submissionDecision.allowed) {
 			this.notice = submissionDecision.notice;
@@ -1693,9 +1748,10 @@ class AiAssistController {
 		}
 
 		this.review = {
+			...this.review,
 			locked: false,
 			sequence: ++this.reviewSequence,
-			snapshot: updateContextReview(this.review.snapshot, {question}),
+			snapshot: updateContextReview(this.review.snapshot, {question: submittedQuestion}),
 		};
 		const prompt = buildReviewedPrompt(this.review.snapshot);
 		if (prompt.length > openAiPromptCharacterLimit) {
@@ -1723,9 +1779,12 @@ class AiAssistController {
 		try {
 			await this.runOpenAiRequest(
 				prompt,
-				false,
-				lockedReview.snapshot.images,
-				lockedReview.snapshot.snapshot,
+				{
+					isConnectionTest: false,
+					reviewedImages: lockedReview.snapshot.images,
+					reviewSnapshot: lockedReview.snapshot.snapshot,
+					searchMode: lockedReview.browsingMode,
+				},
 			);
 		} finally {
 			releaseReviewedImageHandles(
@@ -1740,11 +1799,10 @@ class AiAssistController {
 
 	private async runOpenAiRequest(
 		prompt: string,
-		isConnectionTest: boolean,
-		reviewedImages: ReadonlyArray<Readonly<ReviewedImageItem>> = [],
-		reviewSnapshot?: Readonly<ConversationSnapshot>,
+		options: Readonly<OpenAiRequestRunOptions>,
 	): Promise<void> {
-		const searchMode = isConnectionTest ? 'off' : config.get('aiAssistWebSearchMode');
+		const reviewedImages = options.reviewedImages ?? [];
+		const searchMode = options.isConnectionTest ? 'off' : (options.searchMode ?? config.get('aiAssistWebSearchMode'));
 		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
 		const reportedGeneration = await this.requestConversationState();
 		if (reportedGeneration === undefined) {
@@ -1790,17 +1848,18 @@ class AiAssistController {
 
 		const request = {
 			abortController: new AbortController(),
+			historyChatId: captureHistoryDestinationChatId(this.historyChat, conversationSnapshot),
 			id: ++this.requestCounter,
 			requestedAt: Date.now(),
 			snapshot: conversationSnapshot,
 		};
 		this.activeRequest = request;
-		this.notice = isConnectionTest ? 'Testing the saved OpenAI API key…' : undefined;
+		this.notice = options.isConnectionTest ? 'Testing the saved OpenAI API key…' : undefined;
 		this.sessionState.beginRequest();
 		this.broadcastState();
 
 		try {
-			const answer = isConnectionTest
+			const answer = options.isConnectionTest
 				? await this.openAiClient.createResponse(apiKey, prompt, searchMode, request.abortController.signal)
 				: await withSelectedReviewedImageInputs({
 					items: reviewedImages,
@@ -1810,7 +1869,7 @@ class AiAssistController {
 						searchMode,
 						{images, signal: request.abortController.signal},
 					),
-					snapshot: reviewSnapshot ?? request.snapshot,
+					snapshot: options.reviewSnapshot ?? request.snapshot,
 					store: this.processedImages,
 				});
 			if (this.activeRequest?.id !== request.id) {
@@ -1823,12 +1882,13 @@ class AiAssistController {
 				return;
 			}
 
-			if (isConnectionTest) {
+			if (options.isConnectionTest) {
 				this.error = undefined;
 				this.notice = 'OpenAI API key works.';
 			} else {
 				const historyInteractionId = this.persistCompletedInteraction(
 					answer,
+					request.historyChatId,
 					request.requestedAt,
 					request.snapshot,
 				);
@@ -1888,6 +1948,7 @@ class AiAssistController {
 
 	private persistCompletedInteraction(
 		answer: OpenAiAnswer,
+		historyChatId: string | undefined,
 		requestedAt: number,
 		snapshot: Readonly<ConversationSnapshot>,
 	): string {
@@ -1919,32 +1980,99 @@ class AiAssistController {
 					sources: answer.webSearch.sources,
 				},
 			};
-			if (
-				!this.historyChat
-				|| this.historyChat.conversationId !== snapshot.conversationId
-				|| this.historyChat.sessionId !== snapshot.sessionId
-			) {
+			if (!historyChatId) {
 				const result = this.historyStore.createChatWithCompletedInteraction(
 					snapshot.conversationId,
 					input,
 				);
-				this.historyChat = {
-					chatId: result.chatId,
-					conversationId: snapshot.conversationId,
-					sessionId: snapshot.sessionId,
-				};
-				this.selectedHistoryChatId = result.chatId;
+				if (!captureHistoryDestinationChatId(this.historyChat, snapshot)) {
+					this.historyChat = {
+						chatId: result.chatId,
+						conversationId: snapshot.conversationId,
+						sessionId: snapshot.sessionId,
+					};
+					this.selectedHistoryChatId = result.chatId;
+				}
+
 				return result.interactionId;
 			}
 
-			this.selectedHistoryChatId = this.historyChat.chatId;
-			return this.historyStore.appendCompletedInteraction(this.historyChat.chatId, input);
+			return this.historyStore.appendCompletedInteraction(historyChatId, input);
 		} catch {
 			throw new OpenAiRequestError(
 				'provider-unavailable',
 				'OpenAI answered, but Caprine could not save the completed interaction. Nothing was shown.',
 			);
 		}
+	}
+
+	private async prepareHistoryReplay(
+		chatId: string,
+		interactionId: string,
+		contextSource: 'current' | 'original',
+	): Promise<void> {
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (
+			!snapshot
+			|| !this.isRequestSnapshotCurrent(snapshot)
+			|| !this.historyStore
+			|| this.sessionState.snapshot.status === 'requesting'
+		) {
+			return;
+		}
+
+		let interaction;
+		try {
+			interaction = this.historyStore.loadInteraction(snapshot.conversationId, chatId, interactionId);
+		} catch {
+			this.notice = 'That historical interaction could not be read safely. The original record was not changed.';
+			this.broadcastState();
+			return;
+		}
+
+		if (!interaction) {
+			this.notice = 'That historical interaction is no longer available in this Messenger conversation.';
+			this.broadcastState();
+			return;
+		}
+
+		this.cancelPendingContextCapture();
+		this.clearAnswer();
+		this.error = undefined;
+		this.anchor = undefined;
+		this.historyChat = {chatId, conversationId: snapshot.conversationId, sessionId: snapshot.sessionId};
+		this.historyConversationId = snapshot.conversationId;
+		this.selectedHistoryChatId = chatId;
+		this.invocation = {prompt: interaction.question, sequence: ++this.invocationSequence};
+
+		if (contextSource === 'current') {
+			this.notice = 'Capturing current Messenger context for this historical question. Review it before Ask.';
+			this.broadcastState();
+			await this.requestContextReview(interaction.question, undefined, 'historical-current');
+			return;
+		}
+
+		const availability = originalHistoryReplayAvailability(interaction, openAiResponseModel);
+		if (!availability.available) {
+			this.clearContextReview();
+			this.notice = availability.reason === 'missing-artifacts'
+				? 'The original request used media or saved artifacts that are not available for exact replay. Choose current context instead.'
+				: 'The original provider or model metadata is no longer supported for exact replay. Choose current context instead.';
+			this.broadcastState();
+			return;
+		}
+
+		this.clearContextReview();
+		this.review = {
+			browsingMode: interaction.browsingMode,
+			contextSource: 'historical-original',
+			editable: false,
+			locked: false,
+			sequence: ++this.reviewSequence,
+			snapshot: restoreOriginalHistoryReview(interaction, snapshot),
+		};
+		this.notice = 'Original frozen context and browsing mode restored. Review them, then select Ask to create a new result.';
+		this.broadcastState();
 	}
 
 	private createHistoryChat(): void {
