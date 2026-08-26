@@ -1126,6 +1126,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		contextItemId: 'context-capture-2:0',
 		durationSeconds: 2.5,
 		id: 'transcript:context-capture-2:0',
+		kind: 'audio',
 		messageId: 'message-voice',
 		mimeType: 'audio/ogg',
 		senderLabel: 'Voice message received from Alex',
@@ -1177,6 +1178,39 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(transcribeButton.textContent, 'Cancel transcription');
 	await transcribeButton.listeners.get('click')();
 	assert.deepEqual(transcriptCommands.at(-1), ['cancel', 2, 'transcript:context-capture-2:0']);
+	const videoTranscript = {
+		...transcriptBase,
+		id: 'transcript:context-capture-2:video',
+		kind: 'video',
+		messageId: 'message-video',
+		mimeType: 'video/mp4',
+		senderLabel: 'Video received from Alex',
+		status: 'extracting',
+	};
+	const extractingState = {
+		...transcriptReviewState,
+		review: {
+			...transcriptReviewState.review,
+			transcripts: [videoTranscript],
+		},
+	};
+	commandState.current = extractingState;
+	renderState(extractingState);
+	const cancelExtractionButton = [...elements.values()].find(node => node.textContent === 'Cancel extraction');
+	assert.ok(cancelExtractionButton);
+	assert.match([...elements.values()].find(node => /Extracting bounded video audio locally/.test(node.textContent)).textContent, /Nothing has been sent/);
+	await cancelExtractionButton.listeners.get('click')();
+	assert.deepEqual(transcriptCommands.at(-1), ['cancel', 2, 'transcript:context-capture-2:video']);
+	const noAudioState = {
+		...extractingState,
+		review: {
+			...extractingState.review,
+			transcripts: [{...videoTranscript, notice: 'No audio track. The video remains available for visual processing.', status: 'no-audio'}],
+		},
+	};
+	commandState.current = noAudioState;
+	renderState(noAudioState);
+	assert.ok([...elements.values()].some(node => node.textContent === 'No audio track. The video remains available for visual processing.'));
 	const completedTranscriptState = {
 		...transcriptReviewState,
 		review: {
@@ -1196,8 +1230,8 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.ok([...elements.values()].some(node => node.textContent === '00:00.000–00:01.250'));
 	const firstTranscriptEditor = [...elements.values()].find(node => node.attributes.get('aria-label') === 'Edit transcript segment 1');
 	firstTranscriptEditor.value = 'Edited first segment';
-	const saveTranscriptButton = [...elements.values()].find(node => node.textContent === 'Save transcript edits');
-	const removeTranscriptButton = [...elements.values()].find(node => node.textContent === 'Remove transcript');
+	const saveTranscriptButton = [...elements.values()].reverse().find(node => node.textContent === 'Save transcript edits');
+	const removeTranscriptButton = [...elements.values()].reverse().find(node => node.textContent === 'Remove transcript');
 	await saveTranscriptButton.listeners.get('click')();
 	await removeTranscriptButton.listeners.get('click')();
 	assert.deepEqual(transcriptCommands.slice(-2), [

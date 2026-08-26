@@ -3,7 +3,9 @@ import {execFile} from 'node:child_process';
 import {readFile} from 'node:fs/promises';
 import {promisify} from 'node:util';
 import {ConversationSnapshot} from './ai-assist-state';
+import {MediaKind} from './media-contract';
 import {ResolvedMedia, MessengerMediaResolver, MediaResolverError} from './media-resolver';
+import {VideoAudioExtractor, VideoToolError} from './video-toolchain';
 
 export const openAiTranscriptionModel = 'whisper-1';
 export const maximumTranscriptionBytes = 20 * 1024 * 1024;
@@ -34,11 +36,25 @@ export type MediaTranscription = OpenAiTranscription & {
 	source: {
 		byteLength: number;
 		durationSeconds: number;
-		kind: 'audio';
+		kind: MediaKind;
 		messageId: string;
 		mimeType: string;
 	};
 };
+
+export type NoAudioMediaTranscription = {
+	status: 'no-audio';
+	source: {
+		byteLength: number;
+		durationSeconds: number;
+		kind: 'video';
+		messageId: string;
+		mimeType: string;
+	};
+};
+
+export type MediaTranscriptionResult = MediaTranscription | NoAudioMediaTranscription;
+export type MediaTranscriptionPhase = 'extracting-audio' | 'transcribing';
 
 export const transcriptCacheSchemaVersion = 1;
 
@@ -61,6 +77,7 @@ export const transcriptionErrorCodes = [
 	'duration-exceeded',
 	'invalid-consent',
 	'item-limit',
+	'local-tools-unavailable',
 	'malformed-cache',
 	'malformed-response',
 	'missing-key',
@@ -102,10 +119,16 @@ export type MediaTranscriptionRequest = {
 
 type MediaHandleStore = Pick<MessengerMediaResolver, 'describeHandle' | 'releaseHandle' | 'withFile'>;
 type MediaDurationInspector = (filePath: string) => Promise<number>;
-type ResolvedMediaFile = {
+type TranscribableMediaFile = {
 	bytes: Uint8Array;
 	durationSeconds: number;
-	media: ResolvedMedia & {kind: 'audio'};
+	media: ResolvedMedia;
+	providerMimeType: string;
+};
+type ResolvedMediaFile = TranscribableMediaFile | {
+	durationSeconds: number;
+	media: ResolvedMedia & {kind: 'video'};
+	status: 'no-audio';
 };
 type MediaFilesContext<T> = {
 	callback: (files: ResolvedMediaFile[]) => Promise<T>;
@@ -113,7 +136,10 @@ type MediaFilesContext<T> = {
 	index: number;
 	inspectDuration: MediaDurationInspector;
 	mediaHandles: MediaHandleStore;
+	onPhase?: (phase: MediaTranscriptionPhase) => void;
 	request: Readonly<MediaTranscriptionRequest>;
+	signal?: AbortSignal;
+	videoAudioExtractor: VideoAudioExtractor;
 };
 
 const execFileAsync = promisify(execFile);
@@ -424,12 +450,16 @@ export class OpenAiTranscriptionClient {
 	}
 }
 
-function validateMedia(media: ResolvedMedia): asserts media is ResolvedMedia & {kind: 'audio'} {
-	if (media.kind !== 'audio' || !transcriptionFileExtension(media.mimeType)) {
-		throw new TranscriptionError('unsupported-media', 'This media item is not a supported voice message.');
+function validateMedia(media: ResolvedMedia): void {
+	if (media.kind === 'audio' && !transcriptionFileExtension(media.mimeType)) {
+		throw new TranscriptionError('unsupported-media', 'This media item is not supported audio.');
 	}
 
-	if (media.byteLength <= 0 || media.byteLength > maximumTranscriptionBytes) {
+	if (media.kind === 'video' && !media.mimeType.startsWith('video/')) {
+		throw new TranscriptionError('unsupported-media', 'This media item is not a supported video.');
+	}
+
+	if (media.byteLength <= 0 || (media.kind === 'audio' && media.byteLength > maximumTranscriptionBytes)) {
 		throw new TranscriptionError('oversized', 'Audio exceeds the 20 MB transcription limit.');
 	}
 }
@@ -462,7 +492,11 @@ function validateDuration(durationSeconds: number): void {
 }
 
 async function withMediaFiles<T>(context: MediaFilesContext<T>): Promise<T> {
-	const {callback, files, index, inspectDuration, mediaHandles, request} = context;
+	const {callback, files, index, inspectDuration, mediaHandles, onPhase, request, signal, videoAudioExtractor} = context;
+	if (signal?.aborted) {
+		throw new TranscriptionError('cancelled', 'Transcription cancelled.');
+	}
+
 	if (index === request.items.length) {
 		return callback(files);
 	}
@@ -470,6 +504,31 @@ async function withMediaFiles<T>(context: MediaFilesContext<T>): Promise<T> {
 	const item = request.items[index];
 	return mediaHandles.withFile(item.handleId, item.messageId, request.snapshot, async (filePath, media) => {
 		validateMedia(media);
+		if (media.kind === 'video') {
+			const videoMedia = media as ResolvedMedia & {kind: 'video'};
+			const extraction = await videoAudioExtractor.extract(filePath, {
+				onPhase(phase) {
+					if (phase === 'extracting-audio') {
+						onPhase?.(phase);
+					}
+				},
+				signal,
+			});
+			if (!extraction.audioTrackAvailable) {
+				files.push({durationSeconds: extraction.durationSeconds, media: videoMedia, status: 'no-audio'});
+				return withMediaFiles({...context, index: index + 1});
+			}
+
+			validateDuration(extraction.durationSeconds);
+			files.push({
+				bytes: extraction.bytes,
+				durationSeconds: extraction.durationSeconds,
+				media: videoMedia,
+				providerMimeType: extraction.mimeType,
+			});
+			return withMediaFiles({...context, index: index + 1});
+		}
+
 		const [fileBytes, durationSeconds] = await Promise.all([
 			readFile(filePath),
 			inspectDuration(filePath),
@@ -480,7 +539,12 @@ async function withMediaFiles<T>(context: MediaFilesContext<T>): Promise<T> {
 		}
 
 		validateDuration(durationSeconds);
-		files.push({bytes, durationSeconds, media});
+		files.push({
+			bytes,
+			durationSeconds,
+			media,
+			providerMimeType: media.mimeType,
+		});
 		return withMediaFiles({...context, index: index + 1});
 	});
 }
@@ -502,12 +566,41 @@ function mapResolverError(error: unknown): never {
 		throw new TranscriptionError('stale-media', 'The selected media no longer belongs to this conversation.');
 	}
 
+	if (error instanceof VideoToolError) {
+		switch (error.code) {
+			case 'cancelled': {
+				throw new TranscriptionError('cancelled', 'Transcription cancelled.');
+			}
+
+			case 'duration-exceeded': {
+				throw new TranscriptionError('duration-exceeded', error.message);
+			}
+
+			case 'output-too-large': {
+				throw new TranscriptionError('oversized', 'Extracted video audio exceeds the transcription limit.');
+			}
+
+			case 'timeout': {
+				throw new TranscriptionError('timeout', 'Video audio extraction timed out. Try again.');
+			}
+
+			case 'tools-unavailable': {
+				throw new TranscriptionError('local-tools-unavailable', error.message);
+			}
+
+			default: {
+				throw new TranscriptionError('unsupported-media', 'This video audio track is corrupt or unsupported.');
+			}
+		}
+	}
+
 	throw new TranscriptionError('stale-media', 'The selected media is no longer available for transcription.');
 }
 
 export class MediaTranscriptionService {
 	private readonly inspectDuration: MediaDurationInspector;
 	private readonly transcriptCache?: TranscriptCacheStore;
+	private readonly videoAudioExtractor: VideoAudioExtractor;
 
 	constructor(
 		private readonly mediaHandles: MediaHandleStore,
@@ -516,22 +609,26 @@ export class MediaTranscriptionService {
 		options: MediaDurationInspector | {
 			inspectDuration?: MediaDurationInspector;
 			transcriptCache?: TranscriptCacheStore;
+			videoAudioExtractor?: VideoAudioExtractor;
 		} = {},
 	) {
 		if (typeof options === 'function') {
 			this.inspectDuration = options;
+			this.videoAudioExtractor = new VideoAudioExtractor();
 			return;
 		}
 
 		this.inspectDuration = options.inspectDuration ?? inspectAudioDuration;
 		this.transcriptCache = options.transcriptCache;
+		this.videoAudioExtractor = options.videoAudioExtractor ?? new VideoAudioExtractor();
 	}
 
 	async transcribeBatch(
 		apiKey: string | (() => string),
 		request: Readonly<MediaTranscriptionRequest>,
 		signal?: AbortSignal,
-	): Promise<MediaTranscription[]> {
+		onPhase?: (phase: MediaTranscriptionPhase) => void,
+	): Promise<MediaTranscriptionResult[]> {
 		try {
 			if (request.consent !== 'transcribe-and-review') {
 				throw new TranscriptionError('invalid-consent', 'Choose Transcribe and review before sending media to OpenAI.');
@@ -561,6 +658,10 @@ export class MediaTranscriptionService {
 
 			return await withMediaFiles({
 				callback: async files => {
+					if (signal?.aborted) {
+						throw new TranscriptionError('cancelled', 'Transcription cancelled.');
+					}
+
 					if (!sameSnapshot(request.snapshot, this.currentSnapshot())) {
 						throw new TranscriptionError('stale-media', 'The selected media no longer belongs to this conversation.');
 					}
@@ -569,13 +670,27 @@ export class MediaTranscriptionService {
 						this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
 					}
 
-					const transcriptions: MediaTranscription[] = [];
+					const transcriptions: MediaTranscriptionResult[] = [];
 					const pendingCacheWrites: Array<{mediaSha256: string; record: TranscriptCacheRecord}> = [];
 					const transcriptCacheGeneration = this.transcriptCache?.getTranscriptCacheGeneration();
 					let providerApiKey: string | undefined;
 					for (const [index, file] of files.entries()) {
 						const item = request.items[index];
 						this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
+						if ('status' in file) {
+							transcriptions.push({
+								source: {
+									byteLength: file.media.byteLength,
+									durationSeconds: file.durationSeconds,
+									kind: 'video',
+									messageId: file.media.messageId,
+									mimeType: file.media.mimeType,
+								},
+								status: 'no-audio',
+							});
+							continue;
+						}
+
 						const mediaSha256 = createHash('sha256').update(file.bytes).digest('hex');
 						let cacheHit = false;
 						let transcript: OpenAiTranscription | undefined;
@@ -601,8 +716,9 @@ export class MediaTranscriptionService {
 
 						if (!transcript) {
 							providerApiKey ??= typeof apiKey === 'function' ? apiKey() : apiKey;
+							onPhase?.('transcribing');
 							// eslint-disable-next-line no-await-in-loop
-							transcript = await this.client.transcribe(providerApiKey, file.bytes, file.media.mimeType, signal);
+							transcript = await this.client.transcribe(providerApiKey, file.bytes, file.providerMimeType, signal);
 						}
 
 						if (signal?.aborted) {
@@ -629,11 +745,11 @@ export class MediaTranscriptionService {
 							...transcript,
 							mediaSha256,
 							source: {
-								byteLength: file.media.byteLength,
+								byteLength: file.bytes.byteLength,
 								durationSeconds: file.durationSeconds,
-								kind: 'audio',
+								kind: file.media.kind,
 								messageId: file.media.messageId,
-								mimeType: file.media.mimeType,
+								mimeType: file.providerMimeType,
 							},
 						});
 					}
@@ -656,7 +772,10 @@ export class MediaTranscriptionService {
 				index: 0,
 				inspectDuration: this.inspectDuration,
 				mediaHandles: this.mediaHandles,
+				onPhase,
 				request,
+				signal,
+				videoAudioExtractor: this.videoAudioExtractor,
 			});
 		} catch (error) {
 			mapResolverError(error);

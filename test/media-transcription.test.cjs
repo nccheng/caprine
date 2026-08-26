@@ -14,6 +14,7 @@ const {
 	TranscriptionError,
 } = require('../dist-js/media-transcription.js');
 const {MessengerMediaResolver} = require('../dist-js/media-resolver.js');
+const {VideoToolError} = require('../dist-js/video-toolchain.js');
 
 const snapshot = {
 	captureGeneration: 3,
@@ -250,7 +251,7 @@ test('media transcription rejects consent, batch, size, type, and stale snapshot
 			],
 		}, supportedMedia, snapshot, 'item-limit'],
 		[{}, {...supportedMedia, byteLength: maximumTranscriptionBytes + 1}, snapshot, 'oversized'],
-		[{}, {...supportedMedia, kind: 'video', mimeType: 'video/mp4'}, snapshot, 'unsupported-media'],
+		[{}, {...supportedMedia, kind: 'video', mimeType: 'audio/mp4'}, snapshot, 'unsupported-media'],
 		[{}, supportedMedia, {...snapshot, conversationId: 'messenger-thread:other'}, 'stale-media'],
 	]) {
 		const handles = fakeHandles(media);
@@ -644,4 +645,185 @@ test('media transcription processes one authoritative two-item batch and release
 		},
 	]);
 	assert.deepEqual(await readdir(directory), []);
+});
+
+test('video transcription extracts bounded audio, exposes fixed progress, and uploads only normalized audio bytes', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const media = await resolver.resolveBlob(
+		new Uint8Array([70, 71, 72, 73]).buffer,
+		'video/mp4',
+		'video',
+		'message-video',
+		snapshot,
+		4,
+	);
+	const phases = [];
+	let providerInput;
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe(apiKey, bytes, mimeType) {
+			providerInput = {apiKey, bytes: [...bytes], mimeType};
+			return {
+				model: openAiTranscriptionModel,
+				segments: [{endSeconds: 4, startSeconds: 0, text: 'Video audio'}],
+			};
+		},
+	}, () => snapshot, {
+		videoAudioExtractor: {
+			async extract(_filePath, options) {
+				options.onPhase('extracting-audio');
+				return {
+					audioTrackAvailable: true,
+					bytes: new Uint8Array([8, 9, 10]),
+					durationSeconds: 4,
+					mimeType: 'audio/mpeg',
+				};
+			},
+		},
+	});
+
+	const [transcript] = await service.transcribeBatch(
+		'sk-private',
+		request({items: [{handleId: media.handleId, messageId: media.messageId}]}),
+		undefined,
+		phase => phases.push(phase),
+	);
+	assert.deepEqual(phases, ['extracting-audio', 'transcribing']);
+	assert.deepEqual(providerInput, {apiKey: 'sk-private', bytes: [8, 9, 10], mimeType: 'audio/mpeg'});
+	assert.equal(transcript.source.kind, 'video');
+	assert.equal(transcript.source.mimeType, 'audio/mpeg');
+	assert.equal(transcript.source.durationSeconds, 4);
+	assert.equal(transcript.mediaSha256, createHash('sha256').update(new Uint8Array([8, 9, 10])).digest('hex'));
+	assert.deepEqual(await readdir(directory), []);
+});
+
+test('silent video returns an explicit no-audio result without reading a key or calling the provider', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const media = await resolver.resolveBlob(
+		new Uint8Array([80, 81]).buffer,
+		'video/webm',
+		'video',
+		'message-silent',
+		snapshot,
+		2,
+	);
+	let providerCalls = 0;
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe() {
+			providerCalls += 1;
+			throw new Error('unexpected provider call');
+		},
+	}, () => snapshot, {
+		videoAudioExtractor: {
+			async extract() {
+				return {audioTrackAvailable: false, durationSeconds: 2};
+			},
+		},
+	});
+
+	const [result] = await service.transcribeBatch(() => {
+		throw new Error('silent video must not read the API key');
+	}, request({items: [{handleId: media.handleId, messageId: media.messageId}]}));
+	assert.deepEqual(result, {
+		source: {
+			byteLength: 2,
+			durationSeconds: 2,
+			kind: 'video',
+			messageId: 'message-silent',
+			mimeType: 'video/webm',
+		},
+		status: 'no-audio',
+	});
+	assert.equal(providerCalls, 0);
+	assert.deepEqual(await readdir(directory), []);
+});
+
+test('late video extraction results are rejected after cancellation and conversation invalidation', async () => {
+	await Promise.all(['cancelled', 'stale'].map(async scenario => {
+		const directory = await fixtureDirectory();
+		const resolver = new MessengerMediaResolver(directory, async () => {
+			throw new Error('unexpected Messenger fetch');
+		});
+		await resolver.cleanupRestartArtifacts();
+		const media = await resolver.resolveBlob(
+			new Uint8Array([90, 91]).buffer,
+			'video/mp4',
+			'video',
+			`message-${scenario}`,
+			snapshot,
+			2,
+		);
+		let current = snapshot;
+		const cancellation = new AbortController();
+		const service = new MediaTranscriptionService(resolver, {
+			async transcribe() {
+				throw new Error('unexpected provider call');
+			},
+		}, () => current, {
+			videoAudioExtractor: {
+				async extract() {
+					if (scenario === 'cancelled') {
+						cancellation.abort();
+					} else {
+						current = {...snapshot, conversationId: 'messenger-thread:other'};
+					}
+
+					return {audioTrackAvailable: false, durationSeconds: 2};
+				},
+			},
+		});
+		await expectCode(service.transcribeBatch(
+			'sk-private',
+			request({items: [{handleId: media.handleId, messageId: media.messageId}]}),
+			cancellation.signal,
+		), scenario === 'cancelled' ? 'cancelled' : 'stale-media');
+		assert.deepEqual(await readdir(directory), []);
+	}));
+});
+
+test('video extraction maps cancellation, timeout, corrupt input, and unavailable tools to typed failures', async () => {
+	for (const [videoCode, expectedCode] of [
+		['cancelled', 'cancelled'],
+		['timeout', 'timeout'],
+		['unsupported-video', 'unsupported-media'],
+		['tools-unavailable', 'local-tools-unavailable'],
+	]) {
+		const media = {...supportedMedia, kind: 'video', mimeType: 'video/mp4'};
+		let releases = 0;
+		const handles = {
+			describeHandle() {
+				return media;
+			},
+			get releases() {
+				return releases;
+			},
+			async releaseHandle() {
+				releases += 1;
+			},
+			async withFile(_handleId, _messageId, _snapshot, callback) {
+				return callback('/private/tmp/caprine-video.mp4', media);
+			},
+		};
+		const service = new MediaTranscriptionService(handles, {
+			async transcribe() {
+				throw new Error('unexpected provider call');
+			},
+		}, () => snapshot, {
+			videoAudioExtractor: {
+				async extract() {
+					throw new VideoToolError(videoCode, 'sanitized video failure');
+				},
+			},
+		});
+		// eslint-disable-next-line no-await-in-loop
+		await expectCode(service.transcribeBatch('sk-private', request()), expectedCode);
+		assert.equal(handles.releases, 1);
+	}
 });
