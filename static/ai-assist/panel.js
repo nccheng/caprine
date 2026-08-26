@@ -728,7 +728,10 @@ function render(state) {
 	if (isOriginalHistoryReplay) {
 		if (renderedOriginalReplaySequence !== state.review.sequence) {
 			renderedOriginalReplaySequence = state.review.sequence;
-			askButton.focus?.();
+			const replayFocusTarget = askButton.disabled
+				? (apiKeyInput.disabled ? closeButton : apiKeyInput)
+				: askButton;
+			replayFocusTarget.focus?.();
 		}
 	} else {
 		renderedOriginalReplaySequence = undefined;

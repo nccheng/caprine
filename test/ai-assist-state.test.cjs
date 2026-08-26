@@ -807,6 +807,24 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(element('ask-button').disabled, false);
 	renderState({
 		...state('ready', 3),
+		credentials: {configured: false, secureStorageAvailable: true},
+		review: {
+			actualCount: 0,
+			browsingMode: 'always',
+			contextSource: 'historical-original',
+			editable: false,
+			items: [],
+			locked: false,
+			newMessagesAvailable: false,
+			question: 'Historical question?',
+			requestedCount: 10,
+			sequence: 100,
+		},
+	});
+	assert.equal(element('ask-button').disabled, true);
+	assert.equal(context.document.activeElement, element('api-key'));
+	renderState({
+		...state('ready', 3),
 		review: {
 			actualCount: 1,
 			imageSelection: {aggregateBytes: 0, selectedCount: 0},
