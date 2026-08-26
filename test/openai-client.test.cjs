@@ -1,9 +1,12 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+	buildOpenAiInput,
 	OpenAiClient,
 	OpenAiRequestError,
 	openAiAnswerCharacterLimit,
+	openAiImageAggregateByteLimit,
+	openAiImageCountLimit,
 	openAiResponseModel,
 	openAiSourceLimit,
 } = require('../dist-js/openai-client.js');
@@ -40,6 +43,82 @@ async function expectCode(promise, code) {
 		return true;
 	});
 }
+
+test('OpenAI input builder preserves text-only requests and ordered reviewed PNG bytes', () => {
+	assert.equal(buildOpenAiInput('Text only'), 'Text only');
+	assert.deepEqual(buildOpenAiInput('Question', [{
+		bytes: Uint8Array.of(1, 2, 3),
+		label: 'Received from Alex',
+		mimeType: 'image/png',
+	}, {
+		bytes: Uint8Array.of(4, 5),
+		label: 'Sent by you',
+		mimeType: 'image/png',
+	}]), [{
+		content: [
+			{text: 'Question', type: 'input_text'},
+			{text: 'Reviewed image 1 — Received from Alex', type: 'input_text'},
+			// Provider-owned request field names are snake_case.
+			// eslint-disable-next-line camelcase
+			{image_url: 'data:image/png;base64,AQID', type: 'input_image'},
+			{text: 'Reviewed image 2 — Sent by you', type: 'input_text'},
+			// Provider-owned request field names are snake_case.
+			// eslint-disable-next-line camelcase
+			{image_url: 'data:image/png;base64,BAU=', type: 'input_image'},
+		],
+		role: 'user',
+	}]);
+});
+
+test('OpenAI input builder revalidates image count, per-image, aggregate, MIME, and labels', () => {
+	const image = {
+		bytes: Uint8Array.of(1),
+		label: 'Reviewed source',
+		mimeType: 'image/png',
+	};
+	assert.throws(
+		() => buildOpenAiInput('Question', Array.from({length: openAiImageCountLimit + 1}, () => image)),
+		error => error instanceof OpenAiRequestError && error.code === 'input-too-large',
+	);
+	assert.throws(
+		() => buildOpenAiInput('Question', [{...image, bytes: new Uint8Array(openAiImageAggregateByteLimit + 1)}]),
+		error => error instanceof OpenAiRequestError && error.code === 'input-too-large',
+	);
+	assert.throws(
+		() => buildOpenAiInput('Question', [{...image, mimeType: 'image/jpeg'}]),
+		error => error instanceof OpenAiRequestError && error.code === 'input-too-large',
+	);
+	assert.throws(
+		() => buildOpenAiInput('Question', [{...image, label: ' '}]),
+		error => error instanceof OpenAiRequestError && error.code === 'input-too-large',
+	);
+});
+
+test('OpenAI client submits exact multimodal input only when reviewed images are supplied', async () => {
+	const bodies = [];
+	const client = new OpenAiClient({
+		async fetchImplementation(_url, options) {
+			bodies.push(JSON.parse(options.body));
+			return openAiResponse('Private answer');
+		},
+	});
+	await client.createResponse('sk-private', 'Text only', 'off');
+	await client.createResponse('sk-private', 'With image', 'off', {
+		images: [{
+			bytes: Uint8Array.of(9, 8, 7),
+			label: 'Received from Alex',
+			mimeType: 'image/png',
+		}],
+	});
+	assert.equal(bodies[0].input, 'Text only');
+	assert.deepEqual(bodies[1].input[0].content, [
+		{text: 'With image', type: 'input_text'},
+		{text: 'Reviewed image 1 — Received from Alex', type: 'input_text'},
+		// Provider-owned request field names are snake_case.
+		// eslint-disable-next-line camelcase
+		{image_url: 'data:image/png;base64,CQgH', type: 'input_image'},
+	]);
+});
 
 test('OpenAI client maps Always, Auto, and Off to the only supported hosted tool', async () => {
 	const requests = [];

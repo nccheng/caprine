@@ -3,14 +3,21 @@ import {
 	MessengerImageCaptureResult,
 } from './messenger-image-capture';
 import {
+	maximumProcessedMessengerImageBytes,
 	MessengerImageNormalizationResult,
 	ProcessedMessengerImageDescription,
 } from './messenger-image-normalization';
+import {
+	OpenAiImageInput,
+	openAiImageAggregateByteLimit,
+	openAiImageCountLimit,
+	OpenAiRequestError,
+} from './openai-client';
 import {ConversationContextItem} from './messenger-context';
 
 export const defaultReviewedImageSelectionCount = 3;
-export const maximumReviewedImageCount = 4;
-export const maximumReviewedImageAggregateBytes = 20 * 1024 * 1024;
+export const maximumReviewedImageCount = openAiImageCountLimit;
+export const maximumReviewedImageAggregateBytes = openAiImageAggregateByteLimit;
 export const maximumReviewedImageCandidates = 10;
 
 export type ReviewedImageFailureStage = 'capture' | 'normalization';
@@ -89,6 +96,116 @@ export type ReviewedImagePipeline = {
 		callback: (bytes: Uint8Array, description: ProcessedMessengerImageDescription) => Promise<T> | T,
 	) => Promise<T>;
 };
+
+type ReviewedImageHandleStore = {
+	describeHandle: (
+		handleId: string,
+		messageId: string,
+		snapshot: Readonly<ConversationSnapshot>,
+	) => ProcessedMessengerImageDescription | undefined;
+	releaseHandle: (handleId: string) => boolean;
+	withProcessedImage: <T>(
+		handleId: string,
+		messageId: string,
+		snapshot: Readonly<ConversationSnapshot>,
+		callback: (bytes: Uint8Array, description: ProcessedMessengerImageDescription) => Promise<T>,
+	) => Promise<T>;
+};
+
+function isMatchingProcessedImage(
+	item: Readonly<ProcessedReviewedImage>,
+	description: Readonly<ProcessedMessengerImageDescription> | undefined,
+): description is Readonly<ProcessedMessengerImageDescription> {
+	return description !== undefined
+		&& description.status === 'processed'
+		&& description.handleId === item.processedHandleId
+		&& description.messageId === item.messageId
+		&& description.mimeType === item.mimeType
+		&& description.byteLength === item.byteLength
+		&& description.width === item.width
+		&& description.height === item.height;
+}
+
+export async function withSelectedReviewedImageInputs<T>(input: Readonly<{
+	items: ReadonlyArray<Readonly<ReviewedImageItem>>;
+	run: (images: ReadonlyArray<Readonly<OpenAiImageInput>>) => Promise<T>;
+	snapshot: Readonly<ConversationSnapshot>;
+	store: ReviewedImageHandleStore;
+}>): Promise<T> {
+	const selected = selectedItems(input.items);
+	const handles = new Set(selected.map(item => item.processedHandleId));
+	try {
+		const summary = reviewedImageSelectionSummary(input.items);
+		if (summary.blockingNotice) {
+			throw new OpenAiRequestError('input-too-large', summary.blockingNotice);
+		}
+
+		if (handles.size !== selected.length) {
+			throw new OpenAiRequestError(
+				'provider-unavailable',
+				'A selected image is no longer available for this conversation. Refresh context before asking again.',
+			);
+		}
+
+		for (const item of selected) {
+			if (
+				item.byteLength > maximumProcessedMessengerImageBytes
+				|| !isMatchingProcessedImage(
+					item,
+					input.store.describeHandle(item.processedHandleId, item.messageId, input.snapshot),
+				)
+			) {
+				throw new OpenAiRequestError(
+					'provider-unavailable',
+					'A selected image is no longer available for this conversation. Refresh context before asking again.',
+				);
+			}
+		}
+
+		const providerImages: OpenAiImageInput[] = [];
+		const consume = async (index: number): Promise<T> => {
+			if (index === selected.length) {
+				return input.run(Object.freeze([...providerImages]));
+			}
+
+			const item = selected[index];
+			return input.store.withProcessedImage(
+				item.processedHandleId,
+				item.messageId,
+				input.snapshot,
+				async (bytes, description) => {
+					if (
+						!isMatchingProcessedImage(item, description)
+						|| bytes.byteLength !== item.byteLength
+						|| bytes.byteLength > maximumProcessedMessengerImageBytes
+					) {
+						throw new OpenAiRequestError(
+							'provider-unavailable',
+							'A selected image is no longer available for this conversation. Refresh context before asking again.',
+						);
+					}
+
+					providerImages.push({
+						bytes,
+						label: item.senderLabel,
+						mimeType: item.mimeType,
+					});
+					try {
+						return await consume(index + 1);
+					} finally {
+						providerImages.pop();
+					}
+				},
+			);
+		};
+
+		return await consume(0);
+	} finally {
+		for (const handleId of handles) {
+			input.store.releaseHandle(handleId);
+		}
+	}
+}
 
 function reviewedImageSource(item: Readonly<ConversationContextItem>, id: string): ReviewedImageSource {
 	const senderLabel = item.sender.role === 'outgoing'

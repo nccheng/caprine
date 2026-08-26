@@ -75,8 +75,10 @@ import {
 	createReviewedImageItems,
 	finalizeReviewedImageSelection,
 	releaseReviewedImageHandles,
+	ReviewedImageItem,
 	reviewedImageSelectionSummary,
 	updateReviewedImageSelection,
+	withSelectedReviewedImageInputs,
 } from './reviewed-images';
 import {
 	MessengerImageCaptureStore,
@@ -1717,10 +1719,31 @@ class AiAssistController {
 		};
 		this.broadcastState();
 
-		await this.runOpenAiRequest(prompt, false);
+		const lockedReview = this.review;
+		try {
+			await this.runOpenAiRequest(
+				prompt,
+				false,
+				lockedReview.snapshot.images,
+				lockedReview.snapshot.snapshot,
+			);
+		} finally {
+			releaseReviewedImageHandles(
+				lockedReview.snapshot.images,
+				handleId => {
+					this.processedImages.releaseHandle(handleId);
+				},
+				'all',
+			);
+		}
 	}
 
-	private async runOpenAiRequest(prompt: string, isConnectionTest: boolean): Promise<void> {
+	private async runOpenAiRequest(
+		prompt: string,
+		isConnectionTest: boolean,
+		reviewedImages: ReadonlyArray<Readonly<ReviewedImageItem>> = [],
+		reviewSnapshot?: Readonly<ConversationSnapshot>,
+	): Promise<void> {
 		const searchMode = isConnectionTest ? 'off' : config.get('aiAssistWebSearchMode');
 		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
 		const reportedGeneration = await this.requestConversationState();
@@ -1777,7 +1800,19 @@ class AiAssistController {
 		this.broadcastState();
 
 		try {
-			const answer = await this.openAiClient.createResponse(apiKey, prompt, searchMode, request.abortController.signal);
+			const answer = isConnectionTest
+				? await this.openAiClient.createResponse(apiKey, prompt, searchMode, request.abortController.signal)
+				: await withSelectedReviewedImageInputs({
+					items: reviewedImages,
+					run: async images => this.openAiClient.createResponse(
+						apiKey,
+						prompt,
+						searchMode,
+						{images, signal: request.abortController.signal},
+					),
+					snapshot: reviewSnapshot ?? request.snapshot,
+					store: this.processedImages,
+				});
 			if (this.activeRequest?.id !== request.id) {
 				return;
 			}

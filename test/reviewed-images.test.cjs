@@ -12,7 +12,9 @@ const {
 	reviewedImageSelectionSummary,
 	selectDefaultReviewedImages,
 	updateReviewedImageSelection,
+	withSelectedReviewedImageInputs,
 } = require('../dist-js/reviewed-images.js');
+const {OpenAiClient, OpenAiRequestError} = require('../dist-js/openai-client.js');
 
 const snapshot = {
 	captureGeneration: 1,
@@ -40,6 +42,66 @@ function processed(index, byteLength = 12) {
 		messageId: `message-${index}`,
 		senderLabel: index % 2 === 0 ? 'Sent by you' : 'Received from Alex',
 	});
+}
+
+function selected(...items) {
+	return items.map(item => ({...item, status: 'selected'}));
+}
+
+function handleStore(items, candidateSnapshot = snapshot) {
+	const retained = new Map(items.map(item => [item.processedHandleId, {
+		bytes: Uint8Array.from({length: item.byteLength}, (_, index) => (Number(item.processedHandleId.split('-').at(-1)) + index) % 256),
+		description: {
+			byteLength: item.byteLength,
+			handleId: item.processedHandleId,
+			height: item.height,
+			messageId: item.messageId,
+			mimeType: item.mimeType,
+			snapshot: candidateSnapshot,
+			status: 'processed',
+			width: item.width,
+		},
+	}]));
+	const released = [];
+	return {
+		describeHandle(handleId, messageId, requestedSnapshot) {
+			const entry = retained.get(handleId);
+			return entry
+				&& entry.description.messageId === messageId
+				&& entry.description.snapshot.conversationId === requestedSnapshot.conversationId
+				&& entry.description.snapshot.captureGeneration === requestedSnapshot.captureGeneration
+				? entry.description
+				: undefined;
+		},
+		releaseHandle(handleId) {
+			const entry = retained.get(handleId);
+			if (!entry) {
+				return false;
+			}
+
+			entry.bytes.fill(0);
+			retained.delete(handleId);
+			released.push(handleId);
+			return true;
+		},
+		released,
+		retained,
+		async withProcessedImage(handleId, messageId, requestedSnapshot, callback) {
+			const description = this.describeHandle(handleId, messageId, requestedSnapshot);
+			const entry = retained.get(handleId);
+			if (!description || !entry) {
+				throw new TypeError('stale handle');
+			}
+
+			retained.delete(handleId);
+			try {
+				return await callback(entry.bytes, description);
+			} finally {
+				entry.bytes.fill(0);
+				released.push(handleId);
+			}
+		},
+	};
 }
 
 test('review items preserve exact processed bytes and reject mismatched descriptions', () => {
@@ -317,4 +379,167 @@ test('finalizing and refreshing release the correct temporary handles once', () 
 		'processed-image-1',
 	]);
 	assert.deepEqual(released, ['processed-image-1']);
+});
+
+test('provider handoff resolves selected handles in review order and clears bytes after success', async () => {
+	const items = selected(processed(1, 4), processed(2, 3));
+	const store = handleStore(items);
+	let firstReference;
+	let secondReference;
+	const result = await withSelectedReviewedImageInputs({
+		items,
+		async run(images) {
+			firstReference = images[0].bytes;
+			secondReference = images[1].bytes;
+			assert.deepEqual(images.map(image => ({
+				bytes: [...image.bytes],
+				label: image.label,
+				mimeType: image.mimeType,
+			})), [{
+				bytes: [1, 2, 3, 4],
+				label: 'Received from Alex',
+				mimeType: 'image/png',
+			}, {
+				bytes: [2, 3, 4],
+				label: 'Sent by you',
+				mimeType: 'image/png',
+			}]);
+			return 'submitted';
+		},
+		snapshot,
+		store,
+	});
+	assert.equal(result, 'submitted');
+	assert.equal(firstReference.every(byte => byte === 0), true);
+	assert.equal(secondReference.every(byte => byte === 0), true);
+	assert.deepEqual(store.released, ['processed-image-2', 'processed-image-1']);
+	assert.equal(store.retained.size, 0);
+});
+
+test('provider handoff keeps text-only fallback and clears acquired bytes on provider failure', async () => {
+	const textOnlyStore = handleStore([]);
+	assert.equal(await withSelectedReviewedImageInputs({
+		items: [createFailedReviewedImage({
+			failureReason: 'hidden',
+			id: 'failed-image',
+			messageContext: 'Image attachment',
+			messageId: 'message-failed',
+			senderLabel: 'Sender unknown',
+			stage: 'capture',
+		})],
+		async run(images) {
+			assert.deepEqual(images, []);
+			return 'text-only';
+		},
+		snapshot,
+		store: textOnlyStore,
+	}), 'text-only');
+
+	const items = selected(processed(3, 4));
+	const store = handleStore(items);
+	let byteReference;
+	await assert.rejects(withSelectedReviewedImageInputs({
+		items,
+		async run(images) {
+			byteReference = images[0].bytes;
+			throw new Error('provider failed');
+		},
+		snapshot,
+		store,
+	}), /provider failed/);
+	assert.equal(byteReference.every(byte => byte === 0), true);
+	assert.deepEqual(store.released, ['processed-image-3']);
+});
+
+test('provider handoff clears exact image bytes after cancellation and timeout', async () => {
+	const waitForAbort = async (_url, options) => new Promise((_resolve, reject) => {
+		options.signal.addEventListener('abort', () => {
+			reject(new DOMException('aborted', 'AbortError'));
+		}, {once: true});
+	});
+
+	const cancellationItems = selected(processed(5, 4));
+	const cancellationStore = handleStore(cancellationItems);
+	const cancellation = new AbortController();
+	const cancelled = withSelectedReviewedImageInputs({
+		items: cancellationItems,
+		async run(images) {
+			return new OpenAiClient({fetchImplementation: waitForAbort}).createResponse(
+				'sk-private',
+				'Question',
+				'off',
+				{images, signal: cancellation.signal},
+			);
+		},
+		snapshot,
+		store: cancellationStore,
+	});
+	cancellation.abort();
+	await assert.rejects(cancelled, error => error instanceof OpenAiRequestError && error.code === 'cancelled');
+	assert.deepEqual(cancellationStore.released, ['processed-image-5']);
+
+	const timeoutItems = selected(processed(6, 4));
+	const timeoutStore = handleStore(timeoutItems);
+	await assert.rejects(withSelectedReviewedImageInputs({
+		items: timeoutItems,
+		async run(images) {
+			return new OpenAiClient({fetchImplementation: waitForAbort, timeoutMilliseconds: 5}).createResponse(
+				'sk-private',
+				'Question',
+				'off',
+				{images},
+			);
+		},
+		snapshot,
+		store: timeoutStore,
+	}), error => error instanceof OpenAiRequestError && error.code === 'timeout');
+	assert.deepEqual(timeoutStore.released, ['processed-image-6']);
+});
+
+test('provider handoff rejects duplicate released mismatched and wrong-conversation handles before submission', async () => {
+	const first = processed(4, 4);
+	const duplicateItems = selected(first, {...first, id: 'duplicate-review-image'});
+	let submissions = 0;
+	const run = async () => {
+		submissions += 1;
+	};
+
+	const duplicateStore = handleStore([first]);
+
+	await assert.rejects(withSelectedReviewedImageInputs({
+		items: duplicateItems,
+		run,
+		snapshot,
+		store: duplicateStore,
+	}), error => error instanceof OpenAiRequestError && error.code === 'provider-unavailable');
+	assert.equal(duplicateStore.retained.size, 0);
+
+	const releasedStore = handleStore([first]);
+	releasedStore.releaseHandle(first.processedHandleId);
+	await assert.rejects(withSelectedReviewedImageInputs({
+		items: selected(first),
+		run,
+		snapshot,
+		store: releasedStore,
+	}), error => error instanceof OpenAiRequestError && error.code === 'provider-unavailable');
+
+	const mismatchedStore = handleStore([first]);
+	mismatchedStore.retained.get(first.processedHandleId).description.width += 1;
+	await assert.rejects(withSelectedReviewedImageInputs({
+		items: selected(first),
+		run,
+		snapshot,
+		store: mismatchedStore,
+	}), error => error instanceof OpenAiRequestError && error.code === 'provider-unavailable');
+	assert.equal(mismatchedStore.retained.size, 0);
+
+	const wrongConversationStore = handleStore([first], {...snapshot, conversationId: 'messenger-thread:other'});
+	await assert.rejects(withSelectedReviewedImageInputs({
+		items: selected(first),
+		run,
+		snapshot,
+		store: wrongConversationStore,
+	}), error => error instanceof OpenAiRequestError && error.code === 'provider-unavailable');
+	assert.equal(wrongConversationStore.retained.size, 0);
+	assert.equal(submissions, 0);
 });

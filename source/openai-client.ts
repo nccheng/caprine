@@ -3,6 +3,9 @@ export const openAiPromptCharacterLimit = 20_000;
 export const openAiAnswerCharacterLimit = 20_000;
 export const openAiCitationLimit = 100;
 export const openAiSourceLimit = 50;
+export const openAiImageCountLimit = 4;
+export const openAiImageAggregateByteLimit = 20 * 1024 * 1024;
+export const openAiImageByteLimit = 20 * 1024 * 1024;
 
 export const webSearchModes = ['always', 'auto', 'off'] as const;
 export type WebSearchMode = typeof webSearchModes[number];
@@ -31,6 +34,12 @@ export type OpenAiAnswer = {
 		ran: boolean;
 		sources: OpenAiWebSource[];
 	};
+};
+
+export type OpenAiImageInput = {
+	bytes: Uint8Array;
+	label: string;
+	mimeType: 'image/png';
 };
 
 const openAiResponsesEndpoint = 'https://api.openai.com/v1/responses';
@@ -67,6 +76,11 @@ export class OpenAiRequestError extends Error {
 type OpenAiClientOptions = {
 	fetchImplementation?: typeof fetch;
 	timeoutMilliseconds?: number;
+};
+
+type OpenAiResponseOptions = {
+	images?: ReadonlyArray<Readonly<OpenAiImageInput>>;
+	signal?: AbortSignal;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -317,6 +331,49 @@ function webSearchOptions(mode: WebSearchMode): Record<string, unknown> {
 	};
 }
 
+export function buildOpenAiInput(
+	prompt: string,
+	images: ReadonlyArray<Readonly<OpenAiImageInput>> = [],
+): string | Array<Record<string, unknown>> {
+	if (images.length === 0) {
+		return prompt;
+	}
+
+	if (images.length > openAiImageCountLimit) {
+		throw new OpenAiRequestError('input-too-large', `Requests are limited to ${openAiImageCountLimit} reviewed images.`);
+	}
+
+	let aggregateBytes = 0;
+	const content: Array<Record<string, unknown>> = [{text: prompt, type: 'input_text'}];
+	for (const [index, image] of images.entries()) {
+		if (
+			image.mimeType !== 'image/png'
+			|| !(image.bytes instanceof Uint8Array)
+			|| image.bytes.byteLength === 0
+			|| image.bytes.byteLength > openAiImageByteLimit
+			|| !image.label.trim()
+			|| image.label.length > maximumMetadataTextLength
+		) {
+			throw new OpenAiRequestError('input-too-large', 'A reviewed image no longer satisfies the provider input limits.');
+		}
+
+		aggregateBytes += image.bytes.byteLength;
+		if (aggregateBytes > openAiImageAggregateByteLimit) {
+			throw new OpenAiRequestError('input-too-large', `Reviewed images are limited to ${openAiImageAggregateByteLimit / (1024 * 1024)} MB per request.`);
+		}
+
+		content.push(
+			{text: `Reviewed image ${index + 1} — ${image.label}`, type: 'input_text'},
+			{
+				image_url: `data:${image.mimeType};base64,${Buffer.from(image.bytes).toString('base64')}`,
+				type: 'input_image',
+			},
+		);
+	}
+
+	return [{content, role: 'user'}];
+}
+
 export class OpenAiClient {
 	private readonly fetchImplementation: typeof fetch;
 	private readonly timeoutMilliseconds: number;
@@ -326,7 +383,16 @@ export class OpenAiClient {
 		this.timeoutMilliseconds = options.timeoutMilliseconds ?? defaultTimeoutMilliseconds;
 	}
 
-	async createResponse(apiKey: string, prompt: string, mode: WebSearchMode = 'always', signal?: AbortSignal): Promise<OpenAiAnswer> {
+	async createResponse(
+		apiKey: string,
+		prompt: string,
+		mode: WebSearchMode = 'always',
+		signalOrOptions?: AbortSignal | Readonly<OpenAiResponseOptions>,
+	): Promise<OpenAiAnswer> {
+		const options: Readonly<OpenAiResponseOptions> = signalOrOptions instanceof AbortSignal
+			? {signal: signalOrOptions}
+			: (signalOrOptions ?? {});
+		const {images = [], signal} = options;
 		if (!apiKey) {
 			throw new OpenAiRequestError('missing-key', 'Add an OpenAI API key in Settings first.');
 		}
@@ -369,7 +435,7 @@ export class OpenAiClient {
 					'Content-Type': 'application/json',
 				},
 				body: JSON.stringify({
-					input: prompt,
+					input: buildOpenAiInput(prompt, images),
 					max_output_tokens: 1024,
 					model: openAiResponseModel,
 					reasoning: {effort: 'low'},
