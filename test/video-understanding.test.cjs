@@ -208,6 +208,115 @@ test('two-pass analysis scans every broad frame, re-extracts bounded focused fra
 	assert.equal(result.answer.text, 'Alex lifts it [Video 00:05].');
 });
 
+test('timestamp follow-up reuses a saved timeline and performs only bounded focused extraction while source bytes remain active', async () => {
+	let scans = 0;
+	let answerPrompt = '';
+	const intervals = [];
+	const result = await new VideoUnderstandingService({
+		async scan() {
+			scans += 1;
+			return {};
+		},
+		async answer(_apiKey, prompt) {
+			answerPrompt = prompt;
+			return answer('The cup is blue [Video 00:05].');
+		},
+	}, {
+		async extract(value) {
+			intervals.push(...value);
+			return [frame(4.75, 4), frame(5, 5), frame(5.25, 6)];
+		},
+	}).analyze({
+		apiKey: 'sk-private',
+		artifact: artifact(),
+		question: 'What is the person holding around 00:05?',
+		savedTimeline: [{
+			description: 'Person holds a cup', endSeconds: 6, startSeconds: 4, timestamps: [5],
+		}],
+		sourceAvailable: true,
+		timestampQuestion: 'What is the person holding around 00:05?',
+		webSearchMode: 'off',
+	});
+
+	assert.equal(scans, 0);
+	assert.equal(intervals.length, 1);
+	assert.ok(intervals[0].startSeconds >= 4.2);
+	assert.ok(intervals[0].endSeconds <= 5.8);
+	assert.match(answerPrompt, /Person holds a cup/u);
+	assert.equal(result.focusedFrameCount, 3);
+});
+
+test('timestamp markers in reviewed evidence do not trigger targeted extraction unless the user question includes one', async () => {
+	let scans = 0;
+	let extracted = 0;
+	await new VideoUnderstandingService({
+		async scan() {
+			scans += 1;
+			return {events: [], focusIntervals: [], uncertaintyNotes: []};
+		},
+		async answer() {
+			return answer('The cup is blue [Video 00:05].');
+		},
+	}, {
+		async extract() {
+			extracted += 1;
+			return [];
+		},
+	}).analyze({
+		apiKey: 'sk-private',
+		artifact: artifact(),
+		question: 'Reviewed context includes transcript [00:00.000–00:01.000]. What color is the cup?',
+		savedTimeline: [{
+			description: 'Person holds a cup', endSeconds: 6, startSeconds: 4, timestamps: [5],
+		}],
+		sourceAvailable: true,
+		timestampQuestion: 'What color is the cup?',
+		webSearchMode: 'off',
+	});
+
+	assert.equal(scans, 1);
+	assert.equal(extracted, 0);
+});
+
+test('post-restart timestamp follow-up uses saved keyframes and discloses that new frames require source re-selection', async () => {
+	let scans = 0;
+	let extracted = 0;
+	let answerPrompt = '';
+	const result = await new VideoUnderstandingService({
+		async scan() {
+			scans += 1;
+			return {};
+		},
+		async answer(_apiKey, prompt, _mode, frames) {
+			answerPrompt = prompt;
+			assert.equal(frames.length, 3);
+			return answer('Saved evidence shows a red box [Video 00:05].');
+		},
+	}, {
+		async extract() {
+			extracted += 1;
+			return [];
+		},
+	}).analyze({
+		apiKey: 'sk-private',
+		artifact: artifact(),
+		question: 'What happens around 00:05?',
+		savedTimeline: [{
+			description: 'A red box is visible', endSeconds: 6, startSeconds: 4, timestamps: [5],
+		}],
+		sourceAvailable: false,
+		timestampQuestion: 'What happens around 00:05?',
+		webSearchMode: 'off',
+	});
+
+	assert.equal(scans, 0);
+	assert.equal(extracted, 0);
+	assert.match(answerPrompt, /original temporary video is no longer available/u);
+	assert.match(answerPrompt, /selecting the source video again/u);
+	assert.equal(result.focusedFrameCount, 0);
+	assert.deepEqual(result.timeline.uncertaintyNotes, ['Original source unavailable; no new frames were extracted.']);
+});
+
 test('silent sparse videos remain analyzable and disclose zero newly extracted frames', async () => {
 	const provider = {
 		async scan() {

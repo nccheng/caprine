@@ -60,6 +60,9 @@ export type VideoUnderstandingRequest = {
 	artifact: Readonly<VideoPreprocessingArtifact>;
 	question: string;
 	reviewedImages?: ReadonlyArray<Readonly<OpenAiImageInput>>;
+	savedTimeline?: ReadonlyArray<Readonly<VideoTimelineEvent>>;
+	sourceAvailable?: boolean;
+	timestampQuestion?: string;
 	webSearchMode: WebSearchMode;
 };
 
@@ -328,11 +331,24 @@ function buildAnswerPrompt(request: Readonly<VideoUnderstandingRequest>, scan: R
 		'The final answer must contain at least one valid [Video mm:ss] evidence marker, and every marker must refer to a timestamp inside this video.',
 		'Externally browsed facts must use [Web 1], [Web 2], and so on, and must never be presented as something visible or audible in the video.',
 		'Use both transcript and visual frames when they are relevant. Silent or no-speech video can be answered visually.',
+		...(request.sourceAvailable === false ? [
+			'The original temporary video is no longer available. Answer only from saved transcript/keyframes and state that new frames require selecting the source video again.',
+		] : []),
 		'Pass 1 structured timeline:',
 		JSON.stringify(scan),
 		'Timestamped transcript:',
 		transcriptText(request.artifact),
 	].join('\n\n');
+}
+
+function targetedTimestamp(question: string, durationSeconds: number): number | undefined {
+	const match = /(?:^|\D)(\d{1,3}):([0-5]\d(?:\.\d{1,3})?)(?:\D|$)/u.exec(question);
+	if (!match) {
+		return;
+	}
+
+	const seconds = (Number(match[1]) * 60) + Number(match[2]);
+	return Number.isFinite(seconds) && seconds <= durationSeconds ? seconds : undefined;
 }
 
 function validateVideoAnswer(answer: Readonly<OpenAiAnswer>, durationSeconds: number): void {
@@ -423,15 +439,33 @@ export class VideoUnderstandingService {
 		};
 
 		failIfUnavailable(options);
-		progress('pass-1', request.artifact.frameCount);
-		const rawScan = await this.provider.scan(
-			request.apiKey,
-			buildScanPrompt(request),
-			frameInputs(request.artifact.frameTimeline, 'low'),
-			options.signal,
-		);
-		failIfUnavailable(options);
-		const timeline = parseTimelineScan(rawScan, request.artifact.metadata.durationSeconds);
+		const requestedTimestamp = request.savedTimeline
+			? targetedTimestamp(request.timestampQuestion ?? request.question, request.artifact.metadata.durationSeconds)
+			: undefined;
+		let timeline: VideoTimelineScan;
+		if (requestedTimestamp === undefined) {
+			progress('pass-1', request.artifact.frameCount);
+			const rawScan = await this.provider.scan(
+				request.apiKey,
+				buildScanPrompt(request),
+				frameInputs(request.artifact.frameTimeline, 'low'),
+				options.signal,
+			);
+			failIfUnavailable(options);
+			timeline = parseTimelineScan(rawScan, request.artifact.metadata.durationSeconds);
+		} else {
+			timeline = {
+				events: request.savedTimeline!.map(event => ({...event, timestamps: [...event.timestamps]})),
+				focusIntervals: request.sourceAvailable === false ? [] : [{
+					endSeconds: Math.min(request.artifact.metadata.durationSeconds, requestedTimestamp + 0.75),
+					reason: `Targeted follow-up around ${timestamp(requestedTimestamp)}`,
+					startSeconds: Math.max(0, requestedTimestamp - 0.75),
+				}],
+				uncertaintyNotes: request.sourceAvailable === false
+					? ['Original source unavailable; no new frames were extracted.']
+					: [],
+			};
+		}
 
 		progress('extracting-focus', 0);
 		const extracted = timeline.focusIntervals.length > 0

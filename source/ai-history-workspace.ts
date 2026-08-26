@@ -26,6 +26,21 @@ export type AiHistoryInteractionView = {
 	originalReplay: {available: true} | {available: false; reason: 'missing-artifacts' | 'unsupported-metadata'};
 	question: string;
 	shareStatus: 'private' | 'shared';
+	videoArtifact?: {
+		coverage: 'balanced' | 'sparse';
+		durationSeconds: number;
+		focusedFrameCount: number;
+		keyframes: Array<{dataUrl: string; timestampSeconds: number}>;
+		sampledFrameCount: number;
+		timeline: Array<{
+			description: string;
+			endSeconds: number;
+			startSeconds: number;
+			timestamps: number[];
+		}>;
+		transcript: Array<{endSeconds: number; startSeconds: number; text: string}>;
+		uncertaintyNotes: string[];
+	};
 	webSearchRan: boolean;
 };
 
@@ -109,6 +124,23 @@ function interactionView(interaction: AiHistoryInteraction): AiHistoryInteractio
 		originalReplay: originalHistoryReplayAvailability(interaction, openAiResponseModel),
 		question: boundedText(interaction.question),
 		shareStatus: interaction.shareStatus,
+		...(interaction.videoArtifact ? {
+			videoArtifact: {
+				coverage: interaction.videoArtifact.coverage,
+				durationSeconds: interaction.videoArtifact.durationSeconds,
+				focusedFrameCount: interaction.videoArtifact.focusedFrameCount,
+				keyframes: interaction.videoArtifact.keyframes.map(keyframe => ({
+					dataUrl: `data:image/jpeg;base64,${Buffer.from(keyframe.bytes).toString('base64')}`,
+					timestampSeconds: keyframe.timestampSeconds,
+				})),
+				sampledFrameCount: interaction.videoArtifact.sampledFrameCount,
+				timeline: interaction.videoArtifact.timeline.map(event => ({...event, timestamps: [...event.timestamps]})),
+				transcript: interaction.videoArtifact.transcript.status === 'completed'
+					? interaction.videoArtifact.transcript.segments.map(segment => ({...segment}))
+					: [],
+				uncertaintyNotes: [...interaction.videoArtifact.uncertaintyNotes],
+			},
+		} : {}),
 		webSearchRan: interaction.webSearch.ran,
 	};
 }

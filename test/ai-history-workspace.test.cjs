@@ -90,3 +90,49 @@ test('empty durable chats remain visible as new chats', () => {
 		title: 'New AI chat',
 	});
 });
+
+test('history workspace exposes only bounded renderable video evidence and no local paths or raw provider records', () => {
+	const item = interaction({
+		artifactReferences: [],
+		videoArtifact: {
+			coverage: 'sparse',
+			durationSeconds: 20,
+			focusedFrameCount: 2,
+			id: 'video:thread:hash',
+			keyframes: [{bytes: Uint8Array.of(0xFF, 0xD8, 1, 0xFF, 0xD9), mimeType: 'image/jpeg', timestampSeconds: 5}],
+			mediaSha256: 'ab'.repeat(32),
+			model: 'gpt-5.6-luna',
+			provider: 'openai',
+			sampledFrameCount: 8,
+			samplingConfiguration: {maximumFrames: 180},
+			sourceConversationId: 'messenger-thread:one',
+			sourceMessageId: 'message-video',
+			timeline: [{
+				description: 'A box appears', endSeconds: 6, startSeconds: 4, timestamps: [5],
+			}],
+			transcript: {segments: [{endSeconds: 2, startSeconds: 1, text: 'Reviewed transcript'}], status: 'completed'},
+			uncertaintyNotes: ['Sparse coverage'],
+		},
+	});
+	const [view] = buildAiHistoryChatViews([{
+		badges: ['Video'],
+		contextCount: 1,
+		createdAt: 1,
+		id: 'chat-video',
+		interactionCount: 1,
+		lastActivityAt: 2,
+		preview: 'Video answer',
+		title: 'Video question',
+	}], {
+		conversationId: 'messenger-thread:one',
+		createdAt: 1,
+		id: 'chat-video',
+		interactions: [item],
+	});
+
+	assert.equal(view.interactions[0].videoArtifact.keyframes[0].dataUrl, 'data:image/jpeg;base64,/9gB/9k=');
+	assert.deepEqual(view.interactions[0].videoArtifact.timeline, item.videoArtifact.timeline);
+	assert.deepEqual(view.interactions[0].videoArtifact.transcript, item.videoArtifact.transcript.segments);
+	assert.equal(JSON.stringify(view).includes('mediaSha256'), false);
+	assert.equal(JSON.stringify(view).includes('sourceMessageId'), false);
+});

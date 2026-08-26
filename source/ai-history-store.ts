@@ -7,7 +7,48 @@ import {
 } from './media-transcription';
 import {OpenAiUrlCitation, OpenAiWebSource, WebSearchMode} from './openai-client';
 
-export const aiHistorySchemaVersion = 3;
+export const aiHistorySchemaVersion = 5;
+
+export const maximumVideoArtifactKeyframes = 12;
+export const maximumVideoArtifactKeyframeBytes = 512 * 1024;
+export const maximumVideoArtifactTotalKeyframeBytes = 4 * 1024 * 1024;
+
+export type AiHistoryVideoTranscript = {
+	status: 'no-audio';
+} | {
+	segments: Array<{endSeconds: number; startSeconds: number; text: string}>;
+	status: 'completed';
+};
+
+export type AiHistoryVideoArtifactInput = {
+	coverage: 'balanced' | 'sparse';
+	durationSeconds: number;
+	focusedFrameCount: number;
+	keyframes: Array<{
+		bytes: Uint8Array;
+		mimeType: 'image/jpeg';
+		timestampSeconds: number;
+	}>;
+	mediaSha256: string;
+	provider: 'openai';
+	model: string;
+	sampledFrameCount: number;
+	samplingConfiguration: unknown;
+	sourceConversationId: string;
+	sourceMessageId: string;
+	timeline: Array<{
+		description: string;
+		endSeconds: number;
+		startSeconds: number;
+		timestamps: number[];
+	}>;
+	transcript: AiHistoryVideoTranscript;
+	uncertaintyNotes: string[];
+};
+
+export type AiHistoryVideoArtifact = AiHistoryVideoArtifactInput & {
+	id: string;
+};
 
 export type AiHistoryArtifactReference = {
 	id: string;
@@ -39,6 +80,7 @@ export type AiHistoryInteractionInput = {
 		ran: boolean;
 		sources: OpenAiWebSource[];
 	};
+	videoArtifact?: AiHistoryVideoArtifactInput;
 };
 
 export type AiHistoryInteraction = AiHistoryInteractionInput & {
@@ -95,6 +137,30 @@ type InteractionRow = {
 	web_search_citations_json: string;
 	web_search_ran: 0 | 1;
 	web_search_sources_json: string;
+};
+
+type VideoArtifactRow = {
+	coverage: 'balanced' | 'sparse';
+	created_at: number;
+	duration_seconds: number;
+	focused_frame_count: number;
+	id: string;
+	interaction_transcript_json: string;
+	media_sha256: string;
+	model: string;
+	provider: 'openai';
+	sampled_frame_count: number;
+	sampling_configuration_json: string;
+	source_conversation_id: string;
+	source_message_id: string;
+	timeline_json: string;
+	uncertainty_notes_json: string;
+};
+
+type VideoKeyframeRow = {
+	bytes: Uint8Array;
+	mime_type: 'image/jpeg';
+	timestamp_seconds: number;
 };
 
 type SummaryRow = {
@@ -252,7 +318,7 @@ export class AiHistoryStore {
 			conversationId: chat.conversation_id,
 			createdAt: chat.created_at,
 			id: chat.id,
-			interactions: (loadInteractions.all(chat.id) as InteractionRow[]).map(row => interactionFromRow(row)),
+			interactions: (loadInteractions.all(chat.id) as InteractionRow[]).map(row => this.interactionWithVideoArtifact(row)),
 		}));
 	}
 
@@ -274,7 +340,7 @@ export class AiHistoryStore {
 			WHERE c.conversation_id = ? AND c.id = ? AND i.id = ?
 			GROUP BY i.id
 		`).get(conversationId, chatId, interactionId) as InteractionRow | undefined;
-		return row ? interactionFromRow(row) : undefined;
+		return row ? this.interactionWithVideoArtifact(row) : undefined;
 	}
 
 	loadConversationSummaries(conversationId: string, query = ''): AiHistoryChatSummary[] {
@@ -325,12 +391,22 @@ export class AiHistoryStore {
 							OR LOWER(search_i.context_json) LIKE ? ESCAPE '\\'
 							OR LOWER(search_i.web_search_citations_json) LIKE ? ESCAPE '\\'
 							OR LOWER(search_i.web_search_sources_json) LIKE ? ESCAPE '\\'
+							OR EXISTS (
+								SELECT 1
+								FROM ai_history_interaction_video_artifacts video_r
+								JOIN ai_video_analysis_artifacts video_a ON video_a.id = video_r.artifact_id
+								WHERE video_r.interaction_id = search_i.id
+									AND (
+										LOWER(video_r.transcript_json) LIKE ? ESCAPE '\\'
+										OR LOWER(video_r.timeline_json) LIKE ? ESCAPE '\\'
+									)
+							)
 						)
 				))
 			GROUP BY c.id
 			ORDER BY last_activity_at DESC, c.created_at DESC, c.id DESC
 			LIMIT 100
-		`).all(conversationId, normalizedQuery, pattern, pattern, pattern, pattern) as SummaryRow[];
+		`).all(conversationId, normalizedQuery, pattern, pattern, pattern, pattern, pattern, pattern) as SummaryRow[];
 
 		return rows.map(row => ({
 			badges: [
@@ -388,8 +464,24 @@ export class AiHistoryStore {
 			conversationId: chat.conversation_id,
 			createdAt: chat.created_at,
 			id: chat.id,
-			interactions: rows.map(row => interactionFromRow(row)),
+			interactions: rows.map(row => this.interactionWithVideoArtifact(row)),
 		};
+	}
+
+	loadVideoArtifactByMediaHash(conversationId: string, mediaSha256: string): AiHistoryVideoArtifact | undefined {
+		requireIdentifier(conversationId, 'conversationId');
+		requireMediaSha256(mediaSha256);
+		const row = this.database.prepare(`
+			SELECT a.*, r.focused_frame_count, r.timeline_json,
+				r.transcript_json AS interaction_transcript_json, r.uncertainty_notes_json
+			FROM ai_video_analysis_artifacts a
+			JOIN ai_history_interaction_video_artifacts r ON r.artifact_id = a.id
+			JOIN ai_history_interactions i ON i.id = r.interaction_id
+			WHERE a.source_conversation_id = ? AND a.media_sha256 = ?
+			ORDER BY i.completed_at DESC, i.id DESC
+			LIMIT 1
+		`).get(conversationId, mediaSha256) as VideoArtifactRow | undefined;
+		return row ? this.videoArtifactFromRow(row) : undefined;
 	}
 
 	searchConversation(conversationId: string, query: string): AiHistoryChat[] {
@@ -407,8 +499,18 @@ export class AiHistoryStore {
 					OR LOWER(i.context_json) LIKE ? ESCAPE '\\'
 					OR LOWER(i.web_search_citations_json) LIKE ? ESCAPE '\\'
 					OR LOWER(i.web_search_sources_json) LIKE ? ESCAPE '\\'
+					OR EXISTS (
+						SELECT 1
+						FROM ai_history_interaction_video_artifacts video_r
+						JOIN ai_video_analysis_artifacts video_a ON video_a.id = video_r.artifact_id
+						WHERE video_r.interaction_id = i.id
+							AND (
+								LOWER(video_r.transcript_json) LIKE ? ESCAPE '\\'
+								OR LOWER(video_r.timeline_json) LIKE ? ESCAPE '\\'
+							)
+					)
 				)
-		`).all(conversationId, pattern, pattern, pattern, pattern) as Array<{chat_id: string}>).map(row => row.chat_id));
+		`).all(conversationId, pattern, pattern, pattern, pattern, pattern, pattern) as Array<{chat_id: string}>).map(row => row.chat_id));
 
 		return this.loadConversation(conversationId).filter(chat => matchingChatIds.has(chat.id));
 	}
@@ -416,24 +518,33 @@ export class AiHistoryStore {
 	deleteChat(conversationId: string, chatId: string): boolean {
 		requireIdentifier(conversationId, 'conversationId');
 		requireIdentifier(chatId, 'chatId');
-		return this.database.prepare(`
-			DELETE FROM ai_history_chats
-			WHERE id = ? AND conversation_id = ?
-		`).run(chatId, conversationId).changes === 1;
+		return this.transaction(() => {
+			const deleted = this.database.prepare(`
+				DELETE FROM ai_history_chats
+				WHERE id = ? AND conversation_id = ?
+			`).run(chatId, conversationId).changes === 1;
+			this.deleteOrphanedVideoArtifacts();
+			return deleted;
+		});
 	}
 
 	clearConversation(conversationId: string): number {
 		requireIdentifier(conversationId, 'conversationId');
-		return Number(this.database.prepare(`
-			DELETE FROM ai_history_chats WHERE conversation_id = ?
-		`).run(conversationId).changes);
+		return this.transaction(() => {
+			const count = Number(this.database.prepare(`
+				DELETE FROM ai_history_chats WHERE conversation_id = ?
+			`).run(conversationId).changes);
+			this.deleteOrphanedVideoArtifacts();
+			return count;
+		});
 	}
 
 	clearAll(): number {
 		const deletedCount = this.transaction(() => {
 			const chatCount = Number(this.database.prepare('DELETE FROM ai_history_chats').run().changes);
 			const transcriptCount = Number(this.database.prepare('DELETE FROM ai_transcript_cache').run().changes);
-			return chatCount + transcriptCount;
+			const artifactCount = Number(this.database.prepare('DELETE FROM ai_video_analysis_artifacts').run().changes);
+			return chatCount + transcriptCount + artifactCount;
 		});
 		this.transcriptCacheGeneration += 1;
 		return deletedCount;
@@ -528,7 +639,128 @@ export class AiHistoryStore {
 			INSERT INTO ai_history_turns (id, interaction_id, role, content, created_at)
 			VALUES (?, ?, 'assistant', ?, ?)
 		`).run(answerTurnId, interactionId, input.answer, input.completedAt);
+		if (input.videoArtifact) {
+			this.upsertVideoArtifact(interactionId, input.videoArtifact);
+		}
+
 		return interactionId;
+	}
+
+	private interactionWithVideoArtifact(row: InteractionRow): AiHistoryInteraction {
+		const interaction = interactionFromRow(row);
+		const artifactRow = this.database.prepare(`
+			SELECT a.*, r.focused_frame_count, r.timeline_json,
+				r.transcript_json AS interaction_transcript_json, r.uncertainty_notes_json
+			FROM ai_history_interaction_video_artifacts r
+			JOIN ai_video_analysis_artifacts a ON a.id = r.artifact_id
+			WHERE r.interaction_id = ?
+		`).get(row.id) as VideoArtifactRow | undefined;
+		return artifactRow
+			? {...interaction, videoArtifact: this.videoArtifactFromRow(artifactRow)}
+			: interaction;
+	}
+
+	private videoArtifactFromRow(row: VideoArtifactRow): AiHistoryVideoArtifact {
+		const keyframes = this.database.prepare(`
+			SELECT timestamp_seconds, mime_type, bytes
+			FROM ai_video_analysis_keyframes
+			WHERE artifact_id = ?
+			ORDER BY timestamp_seconds, id
+		`).all(row.id) as VideoKeyframeRow[];
+		return {
+			coverage: row.coverage,
+			durationSeconds: row.duration_seconds,
+			focusedFrameCount: row.focused_frame_count,
+			id: row.id,
+			keyframes: keyframes.map(keyframe => ({
+				bytes: new Uint8Array(keyframe.bytes),
+				mimeType: keyframe.mime_type,
+				timestampSeconds: keyframe.timestamp_seconds,
+			})),
+			mediaSha256: row.media_sha256,
+			model: row.model,
+			provider: row.provider,
+			sampledFrameCount: row.sampled_frame_count,
+			samplingConfiguration: parseJson<unknown>(row.sampling_configuration_json),
+			sourceConversationId: row.source_conversation_id,
+			sourceMessageId: row.source_message_id,
+			timeline: parseJson<AiHistoryVideoArtifact['timeline']>(row.timeline_json),
+			transcript: parseJson<AiHistoryVideoTranscript>(row.interaction_transcript_json),
+			uncertaintyNotes: parseJson<string[]>(row.uncertainty_notes_json),
+		};
+	}
+
+	private upsertVideoArtifact(interactionId: string, artifact: AiHistoryVideoArtifactInput): void {
+		this.validateVideoArtifact(artifact);
+		const owner = this.database.prepare(`
+			SELECT c.conversation_id
+			FROM ai_history_interactions i
+			JOIN ai_history_chats c ON c.id = i.chat_id
+			WHERE i.id = ?
+		`).get(interactionId) as {conversation_id: string} | undefined;
+		if (owner?.conversation_id !== artifact.sourceConversationId) {
+			throw new TypeError('video artifact must belong to the interaction conversation');
+		}
+
+		const artifactId = `video:${artifact.sourceConversationId}:${artifact.mediaSha256}`;
+		const existing = this.database.prepare(`
+			SELECT id FROM ai_video_analysis_artifacts
+			WHERE source_conversation_id = ? AND media_sha256 = ?
+		`).get(artifact.sourceConversationId, artifact.mediaSha256) as {id: string} | undefined;
+		if (!existing) {
+			this.database.prepare(`
+				INSERT INTO ai_video_analysis_artifacts (
+					id, source_conversation_id, source_message_id, media_sha256,
+					duration_seconds, coverage, transcript_json, sampled_frame_count,
+					sampling_configuration_json, provider, model, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`).run(
+				artifactId,
+				artifact.sourceConversationId,
+				artifact.sourceMessageId,
+				artifact.mediaSha256,
+				artifact.durationSeconds,
+				artifact.coverage,
+				JSON.stringify(artifact.transcript),
+				artifact.sampledFrameCount,
+				JSON.stringify(artifact.samplingConfiguration),
+				artifact.provider,
+				artifact.model,
+				this.now(),
+			);
+			const insertKeyframe = this.database.prepare(`
+				INSERT INTO ai_video_analysis_keyframes (
+					id, artifact_id, timestamp_seconds, mime_type, bytes
+				) VALUES (?, ?, ?, 'image/jpeg', ?)
+			`);
+			for (const [index, keyframe] of artifact.keyframes.entries()) {
+				insertKeyframe.run(`${artifactId}:keyframe:${index}`, artifactId, keyframe.timestampSeconds, keyframe.bytes);
+			}
+		}
+
+		this.database.prepare(`
+			INSERT INTO ai_history_interaction_video_artifacts (
+				interaction_id, artifact_id, focused_frame_count, timeline_json,
+				transcript_json, uncertainty_notes_json
+			) VALUES (?, ?, ?, ?, ?, ?)
+		`).run(
+			interactionId,
+			existing?.id ?? artifactId,
+			artifact.focusedFrameCount,
+			JSON.stringify(artifact.timeline),
+			JSON.stringify(artifact.transcript),
+			JSON.stringify(artifact.uncertaintyNotes),
+		);
+	}
+
+	private deleteOrphanedVideoArtifacts(): void {
+		this.database.prepare(`
+			DELETE FROM ai_video_analysis_artifacts
+			WHERE NOT EXISTS (
+				SELECT 1 FROM ai_history_interaction_video_artifacts r
+				WHERE r.artifact_id = ai_video_analysis_artifacts.id
+			)
+		`).run();
 	}
 
 	private transaction<Result>(operation: () => Result): Result {
@@ -567,6 +799,107 @@ export class AiHistoryStore {
 		JSON.stringify(input.webSearch.citations);
 		JSON.stringify(input.webSearch.sources);
 		JSON.stringify(input.artifactReferences ?? []);
+		if (input.videoArtifact) {
+			this.validateVideoArtifact(input.videoArtifact);
+		}
+	}
+
+	private validateVideoArtifact(artifact: Readonly<AiHistoryVideoArtifactInput>): void {
+		requireIdentifier(artifact.sourceConversationId, 'video source conversation ID');
+		requireIdentifier(artifact.sourceMessageId, 'video source message ID');
+		requireMediaSha256(artifact.mediaSha256);
+		requireText(artifact.model, 'video model', 200);
+		if (artifact.provider !== 'openai'
+			|| !['balanced', 'sparse'].includes(artifact.coverage)
+			|| !Number.isFinite(artifact.durationSeconds)
+			|| artifact.durationSeconds <= 0
+			|| !Number.isSafeInteger(artifact.sampledFrameCount)
+			|| artifact.sampledFrameCount < 1
+			|| !Number.isSafeInteger(artifact.focusedFrameCount)
+			|| artifact.focusedFrameCount < 0
+			|| artifact.keyframes.length === 0
+			|| artifact.keyframes.length > maximumVideoArtifactKeyframes
+			|| artifact.timeline.length > 120
+			|| artifact.uncertaintyNotes.length > 60) {
+			throw new TypeError('video artifact is invalid or exceeds its durable bounds');
+		}
+
+		let totalBytes = 0;
+		let previousTimestamp = -1;
+		for (const keyframe of artifact.keyframes) {
+			totalBytes += keyframe.bytes.byteLength;
+			if (!(keyframe.bytes instanceof Uint8Array)
+				|| keyframe.mimeType !== 'image/jpeg'
+				|| keyframe.bytes.byteLength < 4
+				|| keyframe.bytes.byteLength > maximumVideoArtifactKeyframeBytes
+				|| keyframe.bytes[0] !== 0xFF
+				|| keyframe.bytes[1] !== 0xD8
+				|| keyframe.bytes.at(-2) !== 0xFF
+				|| keyframe.bytes.at(-1) !== 0xD9
+				|| !Number.isFinite(keyframe.timestampSeconds)
+				|| keyframe.timestampSeconds <= previousTimestamp
+				|| keyframe.timestampSeconds > artifact.durationSeconds) {
+				throw new TypeError('video keyframe is invalid or exceeds its durable bounds');
+			}
+
+			previousTimestamp = keyframe.timestampSeconds;
+		}
+
+		if (totalBytes > maximumVideoArtifactTotalKeyframeBytes) {
+			throw new TypeError('video keyframes exceed the durable byte limit');
+		}
+
+		if (artifact.transcript.status === 'completed') {
+			let transcriptCharacters = 0;
+			let previousEnd = 0;
+			if (artifact.transcript.segments.length > 1000) {
+				throw new TypeError('video transcript exceeds the durable segment limit');
+			}
+
+			for (const segment of artifact.transcript.segments) {
+				transcriptCharacters += segment.text.length;
+				if (!segment.text.trim()
+					|| segment.text.length > 20_000
+					|| !Number.isFinite(segment.startSeconds)
+					|| !Number.isFinite(segment.endSeconds)
+					|| segment.startSeconds < previousEnd
+					|| segment.endSeconds < segment.startSeconds
+					|| segment.endSeconds > artifact.durationSeconds) {
+					throw new TypeError('video transcript is invalid or exceeds its durable bounds');
+				}
+
+				previousEnd = segment.endSeconds;
+			}
+
+			if (transcriptCharacters > 100_000) {
+				throw new TypeError('video transcript exceeds the durable text limit');
+			}
+		}
+
+		for (const event of artifact.timeline) {
+			if (!event.description.trim()
+				|| event.description.length > 4000
+				|| !Number.isFinite(event.startSeconds)
+				|| !Number.isFinite(event.endSeconds)
+				|| event.startSeconds < 0
+				|| event.endSeconds < event.startSeconds
+				|| event.endSeconds > artifact.durationSeconds
+				|| event.timestamps.length === 0
+				|| event.timestamps.length > 20
+				|| event.timestamps.some(value => !Number.isFinite(value) || value < 0 || value > artifact.durationSeconds)) {
+				throw new TypeError('video timeline is invalid or exceeds its durable bounds');
+			}
+		}
+
+		if (artifact.uncertaintyNotes.some(note => !note.trim() || note.length > 2000)
+			|| JSON.stringify(artifact.samplingConfiguration).length > 20_000) {
+			throw new TypeError('video metadata is invalid or exceeds its durable bounds');
+		}
+
+		JSON.stringify(artifact.transcript);
+		JSON.stringify(artifact.samplingConfiguration);
+		JSON.stringify(artifact.timeline);
+		JSON.stringify(artifact.uncertaintyNotes);
 	}
 
 	private migrate(): void {
@@ -631,6 +964,59 @@ export class AiHistoryStore {
 							segments_json TEXT NOT NULL
 						) STRICT;
 					`);
+						break;
+					}
+
+					case 4: {
+						this.database.exec(`
+							CREATE TABLE ai_video_analysis_artifacts (
+								id TEXT PRIMARY KEY,
+								source_conversation_id TEXT NOT NULL,
+								source_message_id TEXT NOT NULL,
+								media_sha256 TEXT NOT NULL
+									CHECK (length(media_sha256) = 64 AND media_sha256 NOT GLOB '*[^0-9a-f]*'),
+								duration_seconds REAL NOT NULL CHECK (duration_seconds > 0),
+								coverage TEXT NOT NULL CHECK (coverage IN ('balanced', 'sparse')),
+								transcript_json TEXT NOT NULL,
+								sampled_frame_count INTEGER NOT NULL CHECK (sampled_frame_count > 0),
+								sampling_configuration_json TEXT NOT NULL,
+								provider TEXT NOT NULL CHECK (provider = 'openai'),
+								model TEXT NOT NULL,
+								created_at INTEGER NOT NULL,
+								UNIQUE (source_conversation_id, media_sha256)
+							) STRICT;
+							CREATE TABLE ai_video_analysis_keyframes (
+								id TEXT PRIMARY KEY,
+								artifact_id TEXT NOT NULL REFERENCES ai_video_analysis_artifacts(id) ON DELETE CASCADE,
+								timestamp_seconds REAL NOT NULL CHECK (timestamp_seconds >= 0),
+								mime_type TEXT NOT NULL CHECK (mime_type = 'image/jpeg'),
+								bytes BLOB NOT NULL,
+								UNIQUE (artifact_id, timestamp_seconds)
+							) STRICT;
+							CREATE TABLE ai_history_interaction_video_artifacts (
+								interaction_id TEXT PRIMARY KEY REFERENCES ai_history_interactions(id) ON DELETE CASCADE,
+								artifact_id TEXT NOT NULL REFERENCES ai_video_analysis_artifacts(id) ON DELETE RESTRICT,
+								focused_frame_count INTEGER NOT NULL CHECK (focused_frame_count >= 0),
+								timeline_json TEXT NOT NULL,
+								uncertainty_notes_json TEXT NOT NULL
+							) STRICT;
+							CREATE INDEX ai_history_video_artifacts_artifact
+								ON ai_history_interaction_video_artifacts (artifact_id);
+						`);
+						break;
+					}
+
+					case 5: {
+						this.database.exec(`
+							ALTER TABLE ai_history_interaction_video_artifacts
+								ADD COLUMN transcript_json TEXT NOT NULL DEFAULT '{"status":"no-audio"}';
+							UPDATE ai_history_interaction_video_artifacts
+							SET transcript_json = (
+								SELECT transcript_json
+								FROM ai_video_analysis_artifacts
+								WHERE id = ai_history_interaction_video_artifacts.artifact_id
+							);
+						`);
 						break;
 					}
 

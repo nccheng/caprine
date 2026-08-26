@@ -1,4 +1,5 @@
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
+import {createReadStream} from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {
@@ -60,7 +61,14 @@ import {
 	OpenAiRequestError,
 	WebSearchMode,
 } from './openai-client';
-import {AiHistoryInteractionInput, AiHistoryStore} from './ai-history-store';
+import {
+	AiHistoryInteractionInput,
+	AiHistoryStore,
+	AiHistoryVideoArtifact,
+	AiHistoryVideoArtifactInput,
+	maximumVideoArtifactKeyframes,
+	maximumVideoArtifactTotalKeyframeBytes,
+} from './ai-history-store';
 import {
 	AiHistoryDeletionAuthorizationState,
 	AiHistoryDeletionScope,
@@ -125,6 +133,7 @@ import {
 import {
 	OpenAiVideoUnderstandingProvider,
 	VideoUnderstandingProgress,
+	VideoUnderstandingResult,
 	VideoUnderstandingService,
 	videoTranscriptForReview,
 } from './video-understanding';
@@ -138,9 +147,62 @@ type OpenAiRequestRunOptions = {
 	searchMode?: WebSearchMode;
 	videoArtifact?: {
 		artifact: Readonly<VideoPreprocessingArtifact>;
-		handleId: string;
+		handleId?: string;
+		mediaSha256: string;
+		savedTimeline?: AiHistoryVideoArtifact['timeline'];
 	};
 };
+
+async function sha256File(filePath: string, signal?: AbortSignal): Promise<string> {
+	const hash = createHash('sha256');
+	const stream = createReadStream(filePath);
+	const cancel = (): void => {
+		stream.destroy(new OpenAiRequestError('cancelled', 'Video preparation cancelled.'));
+	};
+
+	signal?.addEventListener('abort', cancel, {once: true});
+	try {
+		for await (const chunk of stream) {
+			hash.update(chunk as Uint8Array);
+		}
+
+		return hash.digest('hex');
+	} finally {
+		signal?.removeEventListener('abort', cancel);
+	}
+}
+
+function durableVideoKeyframes(
+	artifact: Readonly<VideoPreprocessingArtifact>,
+): AiHistoryVideoArtifactInput['keyframes'] {
+	const frames = artifact.frameTimeline;
+	const indices = new Set<number>();
+	for (let index = 0; index < maximumVideoArtifactKeyframes; index += 1) {
+		indices.add(Math.round((index * (frames.length - 1)) / Math.max(1, maximumVideoArtifactKeyframes - 1)));
+	}
+
+	let totalBytes = 0;
+	const keyframes: AiHistoryVideoArtifactInput['keyframes'] = [];
+	for (const index of [...indices].sort((left, right) => left - right)) {
+		const frame = frames[index];
+		if (totalBytes + frame.bytes.byteLength > maximumVideoArtifactTotalKeyframeBytes) {
+			continue;
+		}
+
+		totalBytes += frame.bytes.byteLength;
+		keyframes.push({
+			bytes: new Uint8Array(frame.bytes),
+			mimeType: frame.mimeType,
+			timestampSeconds: frame.timestampSeconds,
+		});
+	}
+
+	if (keyframes.length === 0) {
+		throw new OpenAiRequestError('input-too-large', 'No bounded video keyframe could be preserved safely.');
+	}
+
+	return keyframes;
+}
 
 class AiAssistController {
 	private answerGeneration = 0;
@@ -183,7 +245,9 @@ class AiAssistController {
 	private videoAnalysis?: AiAssistPanelState['videoAnalysis'];
 	private readonly videoArtifacts = new Map<string, {
 		artifact: VideoPreprocessingArtifact;
-		handleId: string;
+		handleId?: string;
+		mediaSha256: string;
+		savedTimeline?: AiHistoryVideoArtifact['timeline'];
 		snapshot: Readonly<ConversationSnapshot>;
 	}>();
 
@@ -1741,6 +1805,17 @@ class AiAssistController {
 					notice: 'No audio track. The video remains available for visual processing.',
 					status: 'no-audio',
 				}));
+				if (transcript.kind === 'video') {
+					await this.prepareVideoArtifact(
+						transcriptId,
+						handle.handleId,
+						handle.messageId,
+						reviewSequence,
+						handle.snapshot,
+						{status: 'no-audio'},
+						pending.abortController.signal,
+					).catch(() => undefined);
+				}
 			} else {
 				this.updateTranscriptState(reviewSequence, transcriptId, item => completeReviewedTranscript(item, {
 					byteLength: result.source.byteLength,
@@ -1795,13 +1870,36 @@ class AiAssistController {
 		};
 		this.broadcastState();
 		try {
-			const artifact = await this.mediaResolver.inspectFile(
+			const prepared = await this.mediaResolver.inspectFile(
 				handleId,
 				messageId,
 				snapshot,
 				async filePath => {
+					const mediaSha256 = await sha256File(filePath, signal);
 					const metadata = await this.videoMetadataInspector.inspect(filePath, {signal});
-					return this.videoFramePreprocessor.preprocess(filePath, {
+					const saved = this.historyStore?.loadVideoArtifactByMediaHash(snapshot.conversationId, mediaSha256);
+					if (saved) {
+						return {
+							artifact: {
+								coverage: saved.coverage,
+								frameCount: saved.keyframes.length,
+								frameTimeline: saved.keyframes.map(keyframe => ({
+									bytes: keyframe.bytes,
+									mimeType: keyframe.mimeType,
+									reasons: ['sample' as const],
+									sourceMessageId: messageId,
+									timestampSeconds: keyframe.timestampSeconds,
+								})),
+								metadata,
+								samplingConfiguration: saved.samplingConfiguration as VideoPreprocessingArtifact['samplingConfiguration'],
+								transcript,
+							},
+							mediaSha256,
+							savedTimeline: saved.timeline,
+						};
+					}
+
+					const artifact = await this.videoFramePreprocessor.preprocess(filePath, {
 						metadata,
 						sourceMessageId: messageId,
 						transcript,
@@ -1818,12 +1916,13 @@ class AiAssistController {
 						},
 						signal,
 					});
+					return {artifact, mediaSha256};
 				},
 			);
-			this.videoArtifacts.set(transcriptId, {artifact, handleId, snapshot});
+			this.videoArtifacts.set(transcriptId, {handleId, snapshot, ...prepared});
 			this.videoAnalysis = {
-				coverage: artifact.coverage,
-				frameCount: artifact.frameCount,
+				coverage: prepared.artifact.coverage,
+				frameCount: prepared.artifact.frameCount,
 				phase: 'preprocessing',
 				status: 'ready',
 				transcriptAvailable: transcript.status === 'completed',
@@ -1876,7 +1975,7 @@ class AiAssistController {
 		const videoArtifact = this.videoArtifacts.get(transcriptId);
 		if (videoArtifact) {
 			this.videoArtifacts.delete(transcriptId);
-			if (videoArtifact.handleId !== handle?.handleId) {
+			if (videoArtifact.handleId && videoArtifact.handleId !== handle?.handleId) {
 				void this.mediaResolver.releaseHandle(videoArtifact.handleId);
 			}
 
@@ -2216,7 +2315,9 @@ class AiAssistController {
 			return;
 		}
 
-		const submittedQuestion = this.review.contextSource === 'historical-original'
+		const hasSavedHistoricalVideo = this.review.contextSource === 'historical-original'
+			&& this.review.snapshot.transcripts.some(item => this.videoArtifacts.has(item.id));
+		const submittedQuestion = this.review.contextSource === 'historical-original' && !hasSavedHistoricalVideo
 			? this.review.snapshot.question
 			: question;
 
@@ -2374,6 +2475,7 @@ class AiAssistController {
 
 		try {
 			let answer: OpenAiAnswer;
+			let videoResult: VideoUnderstandingResult | undefined;
 			if (options.isConnectionTest) {
 				answer = await this.openAiClient.createResponse(apiKey, prompt, searchMode, request.abortController.signal);
 			} else if (options.videoArtifact) {
@@ -2384,6 +2486,10 @@ class AiAssistController {
 							new OpenAiVideoUnderstandingProvider(this.openAiClient),
 							{
 								extract: async (intervals, signal) => {
+									if (!options.videoArtifact!.handleId) {
+										return [];
+									}
+
 									const {sourceMessageId} = options.videoArtifact!.artifact.frameTimeline[0];
 									return this.mediaResolver.inspectFile(
 										options.videoArtifact!.handleId,
@@ -2407,6 +2513,9 @@ class AiAssistController {
 							artifact: options.videoArtifact!.artifact,
 							question: prompt,
 							reviewedImages: images,
+							savedTimeline: options.videoArtifact!.savedTimeline,
+							sourceAvailable: options.videoArtifact!.handleId !== undefined,
+							timestampQuestion: this.review?.snapshot.question,
 							webSearchMode: searchMode,
 						}, {
 							isCurrent: () => this.activeRequest?.id === request.id && this.isRequestSnapshotCurrent(request.snapshot),
@@ -2416,6 +2525,7 @@ class AiAssistController {
 							},
 							signal: request.abortController.signal,
 						});
+						videoResult = result;
 						return result.answer;
 					},
 					snapshot: options.reviewSnapshot ?? request.snapshot,
@@ -2458,7 +2568,36 @@ class AiAssistController {
 					request.historyChatId,
 					request.requestedAt,
 					request.snapshot,
+					options.videoArtifact && videoResult ? {
+						coverage: videoResult.coverage,
+						durationSeconds: options.videoArtifact.artifact.metadata.durationSeconds,
+						focusedFrameCount: videoResult.focusedFrameCount,
+						keyframes: durableVideoKeyframes(options.videoArtifact.artifact),
+						mediaSha256: options.videoArtifact.mediaSha256,
+						model: openAiResponseModel,
+						provider: 'openai',
+						sampledFrameCount: videoResult.sampledFrameCount,
+						samplingConfiguration: options.videoArtifact.artifact.samplingConfiguration,
+						sourceConversationId: request.snapshot.conversationId,
+						sourceMessageId: options.videoArtifact.artifact.frameTimeline[0].sourceMessageId,
+						timeline: videoResult.timeline.events,
+						transcript: options.videoArtifact.artifact.transcript.status === 'completed'
+							? {
+								segments: options.videoArtifact.artifact.transcript.segments.map(segment => ({...segment})),
+								status: 'completed',
+							}
+							: {status: 'no-audio'},
+						uncertaintyNotes: videoResult.timeline.uncertaintyNotes,
+					} : undefined,
 				);
+				if (options.videoArtifact && videoResult && this.review) {
+					const selectedVideo = this.review.snapshot.transcripts.find(item => item.kind === 'video' && item.status !== 'removed');
+					const stored = selectedVideo ? this.videoArtifacts.get(selectedVideo.id) : undefined;
+					if (selectedVideo && stored) {
+						this.videoArtifacts.set(selectedVideo.id, {...stored, savedTimeline: videoResult.timeline.events});
+					}
+				}
+
 				if (!this.answer.store(
 					answer,
 					request.snapshot,
@@ -2551,6 +2690,7 @@ class AiAssistController {
 		historyChatId: string | undefined,
 		requestedAt: number,
 		snapshot: Readonly<ConversationSnapshot>,
+		videoArtifact?: AiHistoryVideoArtifactInput,
 	): string {
 		const review = this.review?.snapshot;
 		if (!review || review.question.length === 0 || !this.historyStore) {
@@ -2579,6 +2719,7 @@ class AiAssistController {
 					ran: answer.webSearch.ran,
 					sources: answer.webSearch.sources,
 				},
+				...(videoArtifact ? {videoArtifact} : {}),
 			};
 			if (!historyChatId) {
 				const result = this.historyStore.createChatWithCompletedInteraction(
@@ -2663,15 +2804,72 @@ class AiAssistController {
 		}
 
 		this.clearContextReview();
+		let restoredReview = restoreOriginalHistoryReview(interaction, snapshot);
+		if (interaction.videoArtifact) {
+			const video = interaction.videoArtifact;
+			const transcriptId = `history-video:${interaction.id}`;
+			restoredReview = updateContextReview(restoredReview, {
+				transcripts: [{
+					contextItemId: interaction.context.items.find(({item}) => item.messageId === video.sourceMessageId)?.id ?? transcriptId,
+					durationSeconds: video.durationSeconds,
+					id: transcriptId,
+					kind: 'video',
+					messageId: video.sourceMessageId,
+					...(video.transcript.status === 'completed'
+						? {originalSegments: video.transcript.segments.map(segment => ({...segment})), status: 'completed' as const}
+						: {notice: 'No audio track was present in the saved analysis.', status: 'no-audio' as const}),
+					senderLabel: 'Saved video from this Messenger conversation',
+				}],
+			});
+			this.videoArtifacts.set(transcriptId, {
+				artifact: {
+					coverage: video.coverage,
+					frameCount: video.keyframes.length,
+					frameTimeline: video.keyframes.map(keyframe => ({
+						bytes: keyframe.bytes,
+						mimeType: keyframe.mimeType,
+						reasons: ['sample'],
+						sourceMessageId: video.sourceMessageId,
+						timestampSeconds: keyframe.timestampSeconds,
+					})),
+					metadata: {
+						audioTrackAvailable: video.transcript.status === 'completed',
+						container: 'saved-keyframes',
+						durationSeconds: video.durationSeconds,
+						frameRate: 1,
+						height: 1,
+						videoCodec: 'saved-jpeg',
+						width: 1,
+					},
+					samplingConfiguration: video.samplingConfiguration as VideoPreprocessingArtifact['samplingConfiguration'],
+					transcript: video.transcript.status === 'completed'
+						? {segments: video.transcript.segments.map(segment => ({...segment})), status: 'completed'}
+						: {status: 'no-audio'},
+				},
+				mediaSha256: video.mediaSha256,
+				savedTimeline: video.timeline,
+				snapshot,
+			});
+			this.videoAnalysis = {
+				coverage: video.coverage,
+				frameCount: video.keyframes.length,
+				phase: 'preprocessing',
+				status: 'ready',
+				transcriptAvailable: video.transcript.status === 'completed',
+			};
+		}
+
 		this.review = {
 			browsingMode: interaction.browsingMode,
 			contextSource: 'historical-original',
 			editable: false,
 			locked: false,
 			sequence: ++this.reviewSequence,
-			snapshot: restoreOriginalHistoryReview(interaction, snapshot),
+			snapshot: restoredReview,
 		};
-		this.notice = 'Original frozen context and browsing mode restored. Review them, then select Ask to create a new result.';
+		this.notice = interaction.videoArtifact
+			? 'Saved transcript and keyframes restored. New frames require selecting the source video again.'
+			: 'Original frozen context and browsing mode restored. Review them, then select Ask to create a new result.';
 		this.broadcastState();
 	}
 
