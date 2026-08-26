@@ -434,6 +434,10 @@ function updateReviewedTranscriptRow(row, item, reviewSequence, locked, credenti
 	row.remove.hidden = !completed;
 	if (completed) {
 		rebuildTranscriptSegments(row, item);
+	} else {
+		row.segmentSignature = undefined;
+		row.segmentContainer.textContent = '';
+		row.editors = [];
 	}
 
 	for (const editor of row.editors) {

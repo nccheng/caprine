@@ -1204,6 +1204,19 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		['edit', 2, 'transcript:context-capture-2:0', ['Edited first segment', 'Second segment']],
 		['remove', 2, 'transcript:context-capture-2:0'],
 	]);
+	const removedTranscriptState = {
+		...transcriptReviewState,
+		review: {
+			...transcriptReviewState.review,
+			transcripts: [{...transcriptBase, status: 'removed'}],
+		},
+	};
+	commandState.current = removedTranscriptState;
+	renderState(removedTranscriptState);
+	commandState.current = completedTranscriptState;
+	renderState(completedTranscriptState);
+	const rebuiltTranscriptEditor = [...elements.values()].find(node => node.attributes.get('aria-label') === 'Edit transcript segment 1' && node.value === 'First segment');
+	assert.ok(rebuiltTranscriptEditor);
 	const completedState = {
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},

@@ -1185,6 +1185,13 @@ class AiAssistController {
 			return;
 		}
 
+		const transcriptIds = this.review.snapshot.transcripts
+			.filter(item => item.contextItemId === itemId)
+			.map(item => item.id);
+		for (const transcriptId of transcriptIds) {
+			this.releaseTranscriptResources(reviewSequence, transcriptId);
+		}
+
 		const snapshot = removeContextReviewItem(this.review.snapshot, itemId);
 		if (!snapshot) {
 			return;
@@ -1583,7 +1590,7 @@ class AiAssistController {
 		}
 
 		try {
-			const durationSeconds = await this.mediaResolver.withFile(
+			const durationSeconds = await this.mediaResolver.inspectFile(
 				resolution.handleId!,
 				resolution.messageId,
 				this.review.snapshot.snapshot,
@@ -1678,6 +1685,14 @@ class AiAssistController {
 	}
 
 	private removeTranscript(reviewSequence: number, transcriptId: string): void {
+		this.releaseTranscriptResources(reviewSequence, transcriptId);
+
+		if (this.updateTranscriptState(reviewSequence, transcriptId, item => removeReviewedTranscript(item))) {
+			this.broadcastState();
+		}
+	}
+
+	private releaseTranscriptResources(reviewSequence: number, transcriptId: string): void {
 		if (this.pendingTranscription?.reviewSequence === reviewSequence && this.pendingTranscription.transcriptId === transcriptId) {
 			this.pendingTranscription.abortController.abort();
 			this.pendingTranscription = undefined;
@@ -1690,10 +1705,6 @@ class AiAssistController {
 			if (this.mediaResolution?.handleId === handle.handleId) {
 				this.mediaResolution = undefined;
 			}
-		}
-
-		if (this.updateTranscriptState(reviewSequence, transcriptId, item => removeReviewedTranscript(item))) {
-			this.broadcastState();
 		}
 	}
 

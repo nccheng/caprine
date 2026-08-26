@@ -395,6 +395,7 @@ export function removeContextReviewItem(
 
 	return updateContextReview(review, {
 		items: review.items.filter(item => item.id !== itemId),
+		transcripts: review.transcripts.filter(item => item.contextItemId !== itemId),
 	});
 }
 

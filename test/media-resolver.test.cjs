@@ -76,6 +76,28 @@ test('HTTPS media follows only allowlisted redirects and removes files after han
 	assert.deepEqual(await readdir(directory), []);
 });
 
+test('local inspection retains the exact handle until provider handoff', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => new Response(new Uint8Array([1, 2, 3]), {
+		headers: {'content-length': '3', 'content-type': 'audio/mp4'},
+		status: 200,
+	}));
+	const media = await resolver.resolveHttps(
+		'https://www.facebook.com/voice-message',
+		'audio',
+		'message-voice',
+		snapshot,
+	);
+
+	await resolver.inspectFile(media.handleId, 'message-voice', snapshot, async filePath => {
+		const entries = await readdir(directory);
+		assert.equal(entries.includes(path.basename(filePath)), true);
+	});
+	assert.deepEqual(resolver.describeHandle(media.handleId, 'message-voice', snapshot), media);
+	await resolver.withFile(media.handleId, 'message-voice', snapshot, async () => {});
+	assert.deepEqual(await readdir(directory), []);
+});
+
 test('HTTPS media rejects external redirects, MIME mismatches, and oversized bodies', async () => {
 	const directory = await fixtureDirectory();
 	const external = new MessengerMediaResolver(directory, async () => new Response(null, {

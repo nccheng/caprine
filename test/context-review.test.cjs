@@ -523,6 +523,19 @@ test('review mutations target immutable item IDs across removals and reject stal
 		items: messages(2).map((item, index) => ({id: `item-${index + 1}`, item})),
 		question: 'What happened?',
 		requestedCount: 10,
+		transcripts: [{
+			contextItemId: 'item-1',
+			id: 'transcript:item-1',
+			messageId: 'message-1',
+			senderLabel: 'Voice message received from Alex',
+			status: 'ready',
+		}, {
+			contextItemId: 'item-2',
+			id: 'transcript:item-2',
+			messageId: 'message-2',
+			senderLabel: 'Voice message received from Alex',
+			status: 'ready',
+		}],
 		snapshot: {
 			captureGeneration: 1,
 			conversationId: 'messenger-thread:123',
@@ -535,6 +548,7 @@ test('review mutations target immutable item IDs across removals and reject stal
 	const afterEdit = editContextReviewItem(afterRemoval, 'item-2', 'Redacted second message');
 	assert.ok(afterEdit);
 	assert.deepEqual(afterEdit.items.map(item => item.id), ['item-2']);
+	assert.deepEqual(afterEdit.transcripts.map(item => item.id), ['transcript:item-2']);
 	assert.equal(afterEdit.items[0].editedExcerpt, 'Redacted second message');
 	assert.equal(removeContextReviewItem(afterEdit, 'item-1'), undefined);
 	assert.equal(editContextReviewItem(afterEdit, 'item-1', 'Wrong target'), undefined);
