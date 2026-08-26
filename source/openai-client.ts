@@ -6,6 +6,11 @@ export const openAiSourceLimit = 50;
 export const openAiImageCountLimit = 4;
 export const openAiImageAggregateByteLimit = 20 * 1024 * 1024;
 export const openAiImageByteLimit = 20 * 1024 * 1024;
+export const openAiVideoFrameCountLimit = 180;
+export const openAiVideoFrameByteLimit = 512 * 1024;
+export const openAiVideoFrameAggregateByteLimit = 48 * 1024 * 1024;
+export const openAiVideoRequestAggregateByteLimit = openAiVideoFrameAggregateByteLimit + openAiImageAggregateByteLimit;
+export const openAiVideoPromptCharacterLimit = 160_000;
 
 export const webSearchModes = ['always', 'auto', 'off'] as const;
 export type WebSearchMode = typeof webSearchModes[number];
@@ -40,6 +45,18 @@ export type OpenAiImageInput = {
 	bytes: Uint8Array;
 	label: string;
 	mimeType: 'image/png';
+};
+
+export type OpenAiVideoFrameInput = {
+	bytes: Uint8Array;
+	detail: 'high' | 'low';
+	label: string;
+	mimeType: 'image/jpeg' | 'image/png';
+};
+
+export type OpenAiJsonSchema = {
+	name: string;
+	schema: Record<string, unknown>;
 };
 
 const openAiResponsesEndpoint = 'https://api.openai.com/v1/responses';
@@ -374,6 +391,47 @@ export function buildOpenAiInput(
 	return [{content, role: 'user'}];
 }
 
+export function buildOpenAiVideoInput(
+	prompt: string,
+	frames: ReadonlyArray<Readonly<OpenAiVideoFrameInput>>,
+): Array<Record<string, unknown>> {
+	if (frames.length === 0 || frames.length > openAiVideoFrameCountLimit) {
+		throw new OpenAiRequestError('input-too-large', `Video analysis requires between 1 and ${openAiVideoFrameCountLimit} sampled frames.`);
+	}
+
+	let aggregateBytes = 0;
+	const content: Array<Record<string, unknown>> = [{text: prompt, type: 'input_text'}];
+	for (const frame of frames) {
+		if (
+			!['image/jpeg', 'image/png'].includes(frame.mimeType)
+			|| !(frame.bytes instanceof Uint8Array)
+			|| frame.bytes.byteLength === 0
+			|| frame.bytes.byteLength > (frame.mimeType === 'image/jpeg' ? openAiVideoFrameByteLimit : openAiImageByteLimit)
+			|| !['high', 'low'].includes(frame.detail)
+			|| !frame.label.trim()
+			|| frame.label.length > maximumMetadataTextLength
+		) {
+			throw new OpenAiRequestError('input-too-large', 'A sampled video frame no longer satisfies the provider input limits.');
+		}
+
+		aggregateBytes += frame.bytes.byteLength;
+		if (aggregateBytes > openAiVideoRequestAggregateByteLimit) {
+			throw new OpenAiRequestError('input-too-large', 'Video and reviewed images exceed the 68 MB request limit.');
+		}
+
+		content.push(
+			{text: frame.label, type: 'input_text'},
+			{
+				detail: frame.detail,
+				image_url: `data:${frame.mimeType};base64,${Buffer.from(frame.bytes).toString('base64')}`,
+				type: 'input_image',
+			},
+		);
+	}
+
+	return [{content, role: 'user'}];
+}
+
 export class OpenAiClient {
 	private readonly fetchImplementation: typeof fetch;
 	private readonly timeoutMilliseconds: number;
@@ -458,6 +516,139 @@ export class OpenAiClient {
 			}
 
 			return extractOutput(result, mode);
+		} catch (error) {
+			if (error instanceof OpenAiRequestError) {
+				throw error;
+			}
+
+			if (signal?.aborted) {
+				throw new OpenAiRequestError('cancelled', 'Request cancelled.');
+			}
+
+			if (timedOut) {
+				throw new OpenAiRequestError('timeout', 'OpenAI took too long to respond. Try again.');
+			}
+
+			throw new OpenAiRequestError('provider-unavailable', 'Could not reach OpenAI. Check your connection and try again.');
+		} finally {
+			clearTimeout(timeout);
+			signal?.removeEventListener('abort', cancelRequest);
+		}
+	}
+
+	async createStructuredVideoTimeline(
+		apiKey: string,
+		prompt: string,
+		frames: ReadonlyArray<Readonly<OpenAiVideoFrameInput>>,
+		format: Readonly<OpenAiJsonSchema>,
+		signal?: AbortSignal,
+	): Promise<unknown> {
+		this.validateVideoRequest(apiKey, prompt);
+		const value = await this.fetchResponse(apiKey, {
+			input: buildOpenAiVideoInput(prompt, frames),
+			max_output_tokens: 4096,
+			model: openAiResponseModel,
+			reasoning: {effort: 'low'},
+			store: false,
+			text: {
+				format: {
+					name: format.name,
+					schema: format.schema,
+					strict: true,
+					type: 'json_schema',
+				},
+				verbosity: 'low',
+			},
+		}, signal);
+		const {text} = extractOutput(value, 'off');
+		try {
+			return JSON.parse(text) as unknown;
+		} catch {
+			throw new OpenAiRequestError('malformed-response', 'OpenAI returned an unreadable video timeline. Try again.');
+		}
+	}
+
+	async createVideoAnswer(
+		apiKey: string,
+		prompt: string,
+		mode: WebSearchMode,
+		frames: ReadonlyArray<Readonly<OpenAiVideoFrameInput>>,
+		signal?: AbortSignal,
+	): Promise<OpenAiAnswer> {
+		this.validateVideoRequest(apiKey, prompt);
+		if (!webSearchModes.includes(mode)) {
+			throw new OpenAiRequestError('malformed-response', 'Select a supported web-search mode.');
+		}
+
+		const value = await this.fetchResponse(apiKey, {
+			input: buildOpenAiVideoInput(prompt, frames),
+			max_output_tokens: 4096,
+			model: openAiResponseModel,
+			reasoning: {effort: 'low'},
+			store: false,
+			text: {verbosity: 'low'},
+			...webSearchOptions(mode),
+		}, signal);
+		return extractOutput(value, mode);
+	}
+
+	private validateVideoRequest(apiKey: string, prompt: string): void {
+		if (!apiKey) {
+			throw new OpenAiRequestError('missing-key', 'Add an OpenAI API key in Settings first.');
+		}
+
+		if (!prompt.trim()) {
+			throw new OpenAiRequestError('malformed-response', 'Enter a prompt before asking OpenAI.');
+		}
+
+		if (prompt.length > openAiVideoPromptCharacterLimit) {
+			throw new OpenAiRequestError('input-too-large', `Video analysis prompts are limited to ${openAiVideoPromptCharacterLimit.toLocaleString()} characters.`);
+		}
+	}
+
+	private async fetchResponse(
+		apiKey: string,
+		body: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<unknown> {
+		const requestController = new AbortController();
+		let timedOut = false;
+		const cancelRequest = (): void => {
+			requestController.abort();
+		};
+
+		if (signal?.aborted) {
+			cancelRequest();
+		} else {
+			signal?.addEventListener('abort', cancelRequest, {once: true});
+		}
+
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			requestController.abort();
+		}, this.timeoutMilliseconds);
+
+		try {
+			const response = await this.fetchImplementation(openAiResponsesEndpoint, {
+				method: 'POST',
+				redirect: 'error',
+				headers: {
+					Authorization: `Bearer ${apiKey}`,
+					'Content-Type': 'application/json',
+				},
+				body: JSON.stringify(body),
+				signal: requestController.signal,
+			});
+
+			if (!response.ok) {
+				throw errorForStatus(response.status);
+			}
+
+			try {
+				return await response.json() as unknown;
+			} catch {
+				throw new OpenAiRequestError('malformed-response', 'OpenAI returned an unreadable response. Try again.');
+			}
 		} catch (error) {
 			if (error instanceof OpenAiRequestError) {
 				throw error;

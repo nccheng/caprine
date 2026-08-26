@@ -122,6 +122,14 @@ export type AiAssistPanelState = {
 		insertion?: DraftInsertionAuthorizationView;
 	};
 	session: AiSessionState;
+	videoAnalysis?: {
+		coverage?: 'balanced' | 'sparse';
+		focusedFrameCount?: number;
+		frameCount: number;
+		phase: 'extracting-focus' | 'pass-1' | 'pass-2' | 'preprocessing';
+		status: 'analyzing' | 'canceled' | 'failed' | 'ready';
+		transcriptAvailable: boolean;
+	};
 };
 
 export type AiComposerCommandRequest = {
@@ -1209,6 +1217,10 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		keys.push('review');
 	}
 
+	if (value.videoAnalysis !== undefined) {
+		keys.push('videoAnalysis');
+	}
+
 	return hasExactKeys(value, keys)
 		&& typeof value.contextCapturePending === 'boolean'
 		&& contextWindowSizes.includes(value.contextWindowSize as never)
@@ -1232,6 +1244,29 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		&& (value.invocation === undefined || isInvocationState(value.invocation))
 		&& isMediaState(value.media)
 		&& (value.review === undefined || isReviewState(value.review))
+		&& (value.videoAnalysis === undefined || (
+			isRecord(value.videoAnalysis)
+			&& hasExactKeys(value.videoAnalysis, [
+				'frameCount',
+				'phase',
+				'status',
+				'transcriptAvailable',
+				...(value.videoAnalysis.coverage === undefined ? [] : ['coverage']),
+				...(value.videoAnalysis.focusedFrameCount === undefined ? [] : ['focusedFrameCount']),
+			])
+			&& Number.isSafeInteger(value.videoAnalysis.frameCount)
+			&& (value.videoAnalysis.frameCount as number) >= 0
+			&& (value.videoAnalysis.frameCount as number) <= 180
+			&& ['extracting-focus', 'pass-1', 'pass-2', 'preprocessing'].includes(value.videoAnalysis.phase as string)
+			&& ['analyzing', 'canceled', 'failed', 'ready'].includes(value.videoAnalysis.status as string)
+			&& typeof value.videoAnalysis.transcriptAvailable === 'boolean'
+			&& (value.videoAnalysis.coverage === undefined || ['balanced', 'sparse'].includes(value.videoAnalysis.coverage as string))
+			&& (value.videoAnalysis.focusedFrameCount === undefined || (
+				Number.isSafeInteger(value.videoAnalysis.focusedFrameCount)
+				&& (value.videoAnalysis.focusedFrameCount as number) >= 0
+				&& (value.videoAnalysis.focusedFrameCount as number) <= 48
+			))
+		))
 		&& isRequestState(value.request)
 		&& isSessionState(value.session);
 }
