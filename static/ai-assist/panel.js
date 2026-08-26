@@ -784,6 +784,12 @@ function historyTime(timestamp) {
 	return new Date(timestamp).toLocaleString([], {dateStyle: 'medium', timeStyle: 'short'});
 }
 
+function videoTime(seconds) {
+	const minutes = Math.floor(seconds / 60);
+	const remainder = seconds - (minutes * 60);
+	return `${String(minutes).padStart(2, '0')}:${remainder.toFixed(3).padStart(6, '0')}`;
+}
+
 function appendHistoryDetail(chat, isRequesting) {
 	historyDetail.textContent = '';
 	if (!chat) {
@@ -871,6 +877,60 @@ function appendHistoryDetail(chat, isRequesting) {
 			}
 
 			article.append(citationsHeading, citations);
+		}
+
+		if (interaction.videoArtifact) {
+			const video = interaction.videoArtifact;
+			const videoDetails = document.createElement('details');
+			videoDetails.className = 'history-video-artifact';
+			const videoSummary = document.createElement('summary');
+			videoSummary.textContent = `Saved video evidence · ${video.coverage} coverage · ${video.sampledFrameCount} sampled frames`;
+			videoDetails.append(videoSummary);
+
+			const keyframes = document.createElement('div');
+			keyframes.className = 'history-video-keyframes';
+			for (const keyframe of video.keyframes) {
+				const figure = document.createElement('figure');
+				const image = document.createElement('img');
+				image.src = keyframe.dataUrl;
+				image.alt = `Saved video keyframe at ${videoTime(keyframe.timestampSeconds)}`;
+				const caption = document.createElement('figcaption');
+				caption.textContent = videoTime(keyframe.timestampSeconds);
+				figure.append(image, caption);
+				keyframes.append(figure);
+			}
+
+			videoDetails.append(keyframes);
+			if (video.transcript.length > 0) {
+				const transcriptHeading = document.createElement('h4');
+				transcriptHeading.textContent = 'Transcript';
+				const transcript = document.createElement('pre');
+				transcript.tabIndex = 0;
+				transcript.textContent = video.transcript.map(segment =>
+					`[${videoTime(segment.startSeconds)}–${videoTime(segment.endSeconds)}] ${segment.text}`).join('\n');
+				videoDetails.append(transcriptHeading, transcript);
+			}
+
+			if (video.timeline.length > 0) {
+				const timelineHeading = document.createElement('h4');
+				timelineHeading.textContent = 'Timeline';
+				const timeline = document.createElement('ul');
+				for (const event of video.timeline) {
+					const item = document.createElement('li');
+					item.textContent = `${videoTime(event.startSeconds)}–${videoTime(event.endSeconds)} · ${event.description}`;
+					timeline.append(item);
+				}
+
+				videoDetails.append(timelineHeading, timeline);
+			}
+
+			if (video.uncertaintyNotes.length > 0) {
+				const uncertainty = document.createElement('p');
+				uncertainty.textContent = `Uncertainty: ${video.uncertaintyNotes.join(' · ')}`;
+				videoDetails.append(uncertainty);
+			}
+
+			article.append(videoDetails);
 		}
 
 		const context = document.createElement('details');

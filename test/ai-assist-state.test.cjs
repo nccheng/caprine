@@ -539,6 +539,80 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), false);
 });
 
+test('history state validator accepts bounded saved video evidence and rejects non-JPEG renderer payloads', () => {
+	const videoArtifact = {
+		coverage: 'balanced',
+		durationSeconds: 10,
+		focusedFrameCount: 2,
+		keyframes: [{dataUrl: 'data:image/jpeg;base64,/9gB/9k=', timestampSeconds: 5}],
+		sampledFrameCount: 12,
+		timeline: [{
+			description: 'A cup appears', endSeconds: 6, startSeconds: 4, timestamps: [5],
+		}],
+		transcript: [{endSeconds: 2, startSeconds: 1, text: 'Reviewed words'}],
+		uncertaintyNotes: [],
+	};
+	const state = {
+		conversation: {captureGeneration: 2, displayName: 'Derek', status: 'ready'},
+		contextCapturePending: false,
+		contextWindowSize: 10,
+		credentials: {configured: true, secureStorageAvailable: true},
+		enabled: true,
+		history: {
+			chats: [{
+				badges: ['Video'],
+				contextCount: 0,
+				createdAt: 1,
+				id: 'chat-video',
+				interactionCount: 1,
+				interactions: [{
+					answer: 'Answer [Video 00:05].',
+					artifacts: [],
+					browsingMode: 'off',
+					citations: [],
+					completedAt: 2,
+					context: [],
+					draftStatus: 'not-inserted',
+					id: 'interaction-video',
+					model: 'gpt-5.6-luna',
+					originalReplay: {available: true},
+					question: 'What happens?',
+					shareStatus: 'private',
+					videoArtifact,
+					webSearchRan: false,
+				}],
+				lastActivityAt: 2,
+				preview: 'Answer',
+				title: 'Question',
+			}],
+			query: '',
+			selectedChatId: 'chat-video',
+			status: 'ready',
+		},
+		media: {candidates: []},
+		request: {},
+		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
+		webSearchMode: 'always',
+	};
+	assert.equal(isAiAssistPanelState(state), true);
+	assert.equal(isAiAssistPanelState({
+		...state,
+		history: {
+			...state.history,
+			chats: [{
+				...state.history.chats[0],
+				interactions: [{
+					...state.history.chats[0].interactions[0],
+					videoArtifact: {
+						...videoArtifact,
+						keyframes: [{dataUrl: 'data:text/html;base64,PHNjcmlwdD4=', timestampSeconds: 5}],
+					},
+				}],
+			}],
+		},
+	}), false);
+});
+
 test('captured message anchors detach and deeply freeze renderer data with the current snapshot', () => {
 	const rendererAnchor = {
 		item: {

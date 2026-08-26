@@ -81,6 +81,31 @@ function interaction(overrides = {}) {
 	};
 }
 
+function videoArtifact(overrides = {}) {
+	return {
+		coverage: 'balanced',
+		durationSeconds: 30,
+		focusedFrameCount: 3,
+		keyframes: [
+			{bytes: new Uint8Array([0xFF, 0xD8, 1, 0xFF, 0xD9]), mimeType: 'image/jpeg', timestampSeconds: 0},
+			{bytes: new Uint8Array([0xFF, 0xD8, 2, 0xFF, 0xD9]), mimeType: 'image/jpeg', timestampSeconds: 12},
+		],
+		mediaSha256: 'ef'.repeat(32),
+		model: 'gpt-5.6-luna',
+		provider: 'openai',
+		sampledFrameCount: 24,
+		samplingConfiguration: {maximumFrames: 180, sceneChangeThreshold: 0.35},
+		sourceConversationId: 'thread:video',
+		sourceMessageId: 'message-video-1',
+		timeline: [{
+			description: 'Person lifts a blue cup', endSeconds: 13, startSeconds: 11, timestamps: [12],
+		}],
+		transcript: {segments: [{endSeconds: 2, startSeconds: 0, text: 'Saved spoken phrase'}], status: 'completed'},
+		uncertaintyNotes: ['The logo is too small to read.'],
+		...overrides,
+	};
+}
+
 test('completed interactions round-trip exactly after close and reopen', () => {
 	const databasePath = temporaryDatabasePath();
 	const store = new AiHistoryStore({databasePath, generateId: idGenerator(), now: () => 500});
@@ -104,6 +129,66 @@ test('completed interactions round-trip exactly after close and reopen', () => {
 		}],
 	}]);
 	reopened.close();
+});
+
+test('video artifacts round-trip, search locally, reuse by hash, and keep shared keyframes until the final reference is deleted', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator(), now: () => 500});
+	const firstChat = store.createChat('thread:video');
+	const secondChat = store.createChat('thread:video');
+	const firstId = store.appendCompletedInteraction(firstChat, interaction({
+		artifactReferences: [],
+		videoArtifact: videoArtifact(),
+	}));
+	const secondArtifact = videoArtifact({
+		focusedFrameCount: 5,
+		timeline: [{
+			description: 'Follow-up finds the cup handle', endSeconds: 12.5, startSeconds: 11.5, timestamps: [12],
+		}],
+	});
+	store.appendCompletedInteraction(secondChat, interaction({
+		artifactReferences: [],
+		question: 'What is around 00:12?',
+		context: {...interaction().context, question: 'What is around 00:12?'},
+		videoArtifact: secondArtifact,
+	}));
+
+	assert.deepEqual(store.loadInteraction('thread:video', firstChat, firstId).videoArtifact, {
+		...videoArtifact(),
+		id: `video:thread:video:${'ef'.repeat(32)}`,
+	});
+	assert.equal(store.loadVideoArtifactByMediaHash('thread:video', 'ef'.repeat(32)).focusedFrameCount, 5);
+	assert.deepEqual(store.searchConversation('thread:video', 'spoken phrase').map(chat => chat.id), [firstChat, secondChat]);
+	assert.deepEqual(store.searchConversation('thread:video', 'cup handle').map(chat => chat.id), [secondChat]);
+	assert.equal(store.loadVideoArtifactByMediaHash('thread:other', 'ef'.repeat(32)), undefined);
+
+	assert.equal(store.deleteChat('thread:video', firstChat), true);
+	assert.ok(store.loadVideoArtifactByMediaHash('thread:video', 'ef'.repeat(32)));
+	assert.equal(store.deleteChat('thread:video', secondChat), true);
+	assert.equal(store.loadVideoArtifactByMediaHash('thread:video', 'ef'.repeat(32)), undefined);
+	store.close();
+
+	const database = new DatabaseSync(databasePath, {readOnly: true});
+	assert.equal(database.prepare('SELECT count(*) AS count FROM ai_video_analysis_keyframes').get().count, 0);
+	database.close();
+});
+
+test('video artifact persistence rejects cross-conversation ownership and non-JPEG durable bytes atomically', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
+	const chatId = store.createChat('thread:video');
+	assert.throws(() => store.appendCompletedInteraction(chatId, interaction({
+		artifactReferences: [],
+		videoArtifact: videoArtifact({sourceConversationId: 'thread:other'}),
+	})), /must belong to the interaction conversation/);
+	assert.throws(() => store.appendCompletedInteraction(chatId, interaction({
+		artifactReferences: [],
+		videoArtifact: videoArtifact({
+			keyframes: [{bytes: Uint8Array.of(1, 2, 3, 4), mimeType: 'image/jpeg', timestampSeconds: 0}],
+		}),
+	})), /video keyframe is invalid/);
+	assert.deepEqual(store.loadConversation('thread:video')[0].interactions, []);
+	store.close();
 });
 
 test('stable conversation IDs keep duplicate display names isolated', () => {

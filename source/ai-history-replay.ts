@@ -30,10 +30,11 @@ export function originalHistoryReplayAvailability(
 		return {available: false, reason: 'unsupported-metadata'};
 	}
 
-	if (
-		(interaction.artifactReferences?.length ?? 0) > 0
-		|| interaction.context.items.some(({item}) => (item.attachments?.length ?? 0) > 0)
-	) {
+	const videoSourceMessageId = interaction.videoArtifact?.sourceMessageId;
+	const unavailableAttachments = interaction.context.items.some(({item}) =>
+		(item.attachments ?? []).some(attachment =>
+			attachment.kind !== 'video' || item.messageId !== videoSourceMessageId));
+	if ((interaction.artifactReferences?.length ?? 0) > 0 || unavailableAttachments) {
 		return {available: false, reason: 'missing-artifacts'};
 	}
 

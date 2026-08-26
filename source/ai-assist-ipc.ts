@@ -1087,22 +1087,31 @@ function isSessionState(value: unknown): boolean {
 }
 
 function isHistoryInteraction(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = [
+		'answer',
+		'artifacts',
+		'browsingMode',
+		'citations',
+		'completedAt',
+		'context',
+		'draftStatus',
+		'id',
+		'model',
+		'originalReplay',
+		'question',
+		'shareStatus',
+		'webSearchRan',
+	];
+	if (value.videoArtifact !== undefined) {
+		keys.push('videoArtifact');
+	}
+
 	return isRecord(value)
-		&& hasExactKeys(value, [
-			'answer',
-			'artifacts',
-			'browsingMode',
-			'citations',
-			'completedAt',
-			'context',
-			'draftStatus',
-			'id',
-			'model',
-			'originalReplay',
-			'question',
-			'shareStatus',
-			'webSearchRan',
-		])
+		&& hasExactKeys(value, keys)
 		&& typeof value.answer === 'string'
 		&& value.answer.length <= 20_000
 		&& Array.isArray(value.artifacts)
@@ -1145,7 +1154,57 @@ function isHistoryInteraction(value: unknown): boolean {
 		&& typeof value.question === 'string'
 		&& value.question.length <= 20_000
 		&& ['private', 'shared'].includes(value.shareStatus as string)
+		&& (value.videoArtifact === undefined || isHistoryVideoArtifact(value.videoArtifact))
 		&& typeof value.webSearchRan === 'boolean';
+}
+
+function isHistoryVideoArtifact(value: unknown): boolean {
+	return isRecord(value)
+		&& hasExactKeys(value, [
+			'coverage',
+			'durationSeconds',
+			'focusedFrameCount',
+			'keyframes',
+			'sampledFrameCount',
+			'timeline',
+			'transcript',
+			'uncertaintyNotes',
+		])
+		&& ['balanced', 'sparse'].includes(value.coverage as string)
+		&& isDuration(value.durationSeconds)
+		&& Number.isSafeInteger(value.focusedFrameCount)
+		&& (value.focusedFrameCount as number) >= 0
+		&& Array.isArray(value.keyframes)
+		&& value.keyframes.length > 0
+		&& value.keyframes.length <= 12
+		&& value.keyframes.every(keyframe => isRecord(keyframe)
+			&& hasExactKeys(keyframe, ['dataUrl', 'timestampSeconds'])
+			&& typeof keyframe.dataUrl === 'string'
+			&& keyframe.dataUrl.startsWith('data:image/jpeg;base64,')
+			&& keyframe.dataUrl.length <= 700_000
+			&& isDuration(keyframe.timestampSeconds))
+		&& Number.isSafeInteger(value.sampledFrameCount)
+		&& (value.sampledFrameCount as number) > 0
+		&& Array.isArray(value.timeline)
+		&& value.timeline.length <= 120
+		&& value.timeline.every(event => isRecord(event)
+			&& hasExactKeys(event, ['description', 'endSeconds', 'startSeconds', 'timestamps'])
+			&& isBoundedString(event.description, 4000)
+			&& isDuration(event.startSeconds)
+			&& isDuration(event.endSeconds)
+			&& Array.isArray(event.timestamps)
+			&& event.timestamps.length <= 20
+			&& event.timestamps.every(timestamp => isDuration(timestamp)))
+		&& Array.isArray(value.transcript)
+		&& value.transcript.length <= 1000
+		&& value.transcript.every(segment => isRecord(segment)
+			&& hasExactKeys(segment, ['endSeconds', 'startSeconds', 'text'])
+			&& isDuration(segment.startSeconds)
+			&& isDuration(segment.endSeconds)
+			&& isBoundedString(segment.text, 20_000))
+		&& Array.isArray(value.uncertaintyNotes)
+		&& value.uncertaintyNotes.length <= 60
+		&& value.uncertaintyNotes.every(note => isBoundedString(note, 2000));
 }
 
 function isHistoryState(value: unknown): boolean {
