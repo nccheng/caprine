@@ -41,6 +41,7 @@ import {
 	MediaSourceType,
 } from './media-contract';
 import {AiHistoryChatView, maximumHistoryChats, maximumHistoryInteractionsPerChat} from './ai-history-workspace';
+import {ReviewedImageItem, ReviewedImageSelectionSummary} from './reviewed-images';
 
 export const aiAssistIpcChannels = {
 	composerCommand: 'ai-assist:composer-command',
@@ -86,6 +87,8 @@ export type AiAssistPanelState = {
 	};
 	review?: {
 		actualCount: number;
+		imageSelection: ReviewedImageSelectionSummary;
+		images: ReviewedImageItem[];
 		items: ReviewedContextItem[];
 		locked: boolean;
 		newMessagesAvailable: boolean;
@@ -124,10 +127,12 @@ export type AiAssistPanelCommand =
 	| {type: 'delete-api-key'}
 	| {editedExcerpt: string; itemId: string; reviewSequence: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
+	| {itemId: string; processedHandleId: string; reviewSequence: number; type: 'include-reviewed-image'}
 	| {type: 'new-history-chat'}
 	| {type: 'open-citation'; url: string}
 	| {answerGeneration: number; authorizationToken: string; conversationId: string; type: 'insert-answer'}
 	| {itemId: string; reviewSequence: number; type: 'remove-context-item'}
+	| {itemId: string; processedHandleId: string; reviewSequence: number; type: 'remove-reviewed-image'}
 	| {type: 'refresh-context'}
 	| {type: 'refresh-conversation'}
 	| {type: 'resolve-media'; kind: MediaKind; messageId: string}
@@ -540,6 +545,14 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 			&& (value.reviewSequence as number) > 0;
 	}
 
+	if (value.type === 'include-reviewed-image' || value.type === 'remove-reviewed-image') {
+		return hasExactKeys(value, ['itemId', 'processedHandleId', 'reviewSequence', 'type'])
+			&& isBoundedString(value.itemId, 200)
+			&& /^processed-image-\d+$/.test(value.processedHandleId as string)
+			&& Number.isSafeInteger(value.reviewSequence)
+			&& (value.reviewSequence as number) > 0;
+	}
+
 	if (value.type === 'edit-context-item') {
 		return hasExactKeys(value, ['editedExcerpt', 'itemId', 'reviewSequence', 'type'])
 			&& isBoundedString(value.itemId, 200)
@@ -647,15 +660,96 @@ function isReviewedContextItem(value: unknown): boolean {
 		&& (value.editedExcerpt === undefined || isBoundedString(value.editedExcerpt, 20_000));
 }
 
+function isReviewedImageItem(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const commonKeys = ['id', 'messageContext', 'messageId', 'senderLabel', 'status'];
+	if (value.status === 'capture-failed' || value.status === 'normalization-failed') {
+		return hasExactKeys(value, [...commonKeys, 'failureReason'])
+			&& isBoundedString(value.id, 200)
+			&& isMessageId(value.messageId)
+			&& typeof value.messageContext === 'string'
+			&& value.messageContext.length <= 1000
+			&& isBoundedString(value.senderLabel, 200)
+			&& isBoundedString(value.failureReason, 500);
+	}
+
+	return ['available', 'removed', 'selected'].includes(value.status as string)
+		&& hasExactKeys(value, [
+			...commonKeys,
+			'byteLength',
+			'height',
+			'mimeType',
+			'processedHandleId',
+			'thumbnailDataUrl',
+			'width',
+		])
+		&& isBoundedString(value.id, 200)
+		&& isMessageId(value.messageId)
+		&& typeof value.messageContext === 'string'
+		&& value.messageContext.length <= 1000
+		&& isBoundedString(value.senderLabel, 200)
+		&& value.mimeType === 'image/png'
+		&& /^processed-image-\d+$/.test(value.processedHandleId as string)
+		&& Number.isSafeInteger(value.byteLength)
+		&& (value.byteLength as number) > 0
+		&& (value.byteLength as number) <= 20 * 1024 * 1024
+		&& Number.isSafeInteger(value.width)
+		&& (value.width as number) > 0
+		&& (value.width as number) <= 2048
+		&& Number.isSafeInteger(value.height)
+		&& (value.height as number) > 0
+		&& (value.height as number) <= 2048
+		&& typeof value.thumbnailDataUrl === 'string'
+		&& value.thumbnailDataUrl.startsWith('data:image/png;base64,')
+		&& value.thumbnailDataUrl.length <= 28 * 1024 * 1024;
+}
+
+function isImageSelectionSummary(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['aggregateBytes', 'selectedCount'];
+	if (value.blockingNotice !== undefined) {
+		keys.push('blockingNotice');
+	}
+
+	return hasExactKeys(value, keys)
+		&& Number.isSafeInteger(value.aggregateBytes)
+		&& (value.aggregateBytes as number) >= 0
+		&& Number.isSafeInteger(value.selectedCount)
+		&& (value.selectedCount as number) >= 0
+		&& (value.selectedCount as number) <= 50
+		&& (value.blockingNotice === undefined || isBoundedString(value.blockingNotice, 500));
+}
+
 function isReviewState(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	const keys = ['actualCount', 'items', 'locked', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence'];
+	if (value.images !== undefined || value.imageSelection !== undefined) {
+		keys.push('imageSelection', 'images');
+	}
+
 	return isRecord(value)
-		&& hasExactKeys(value, ['actualCount', 'items', 'locked', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence'])
+		&& hasExactKeys(value, keys)
 		&& Number.isSafeInteger(value.actualCount)
 		&& (value.actualCount as number) >= 0
 		&& (value.actualCount as number) <= 50
 		&& Array.isArray(value.items)
 		&& value.items.length <= (value.actualCount as number)
 		&& value.items.every(item => isReviewedContextItem(item))
+		&& (value.images === undefined || (
+			Array.isArray(value.images)
+			&& value.images.length <= 50
+			&& value.images.every(item => isReviewedImageItem(item))
+			&& isImageSelectionSummary(value.imageSelection)
+		))
 		&& typeof value.locked === 'boolean'
 		&& typeof value.newMessagesAvailable === 'boolean'
 		&& typeof value.question === 'string'

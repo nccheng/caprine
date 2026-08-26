@@ -71,11 +71,21 @@ import {
 	updateContextReview,
 } from './context-review';
 import {
+	finalizeReviewedImageSelection,
+	releaseReviewedImageHandles,
+	reviewedImageSelectionSummary,
+	updateReviewedImageSelection,
+} from './reviewed-images';
+import {
 	draftInsertionTimeoutResult,
 	DraftInsertionAuthorizationState,
 	DraftInsertionFailureReason,
 	DraftInsertionResult,
 } from './draft-insertion';
+
+const ignoreReleasedProcessedImage = (handleId: string): void => {
+	void handleId;
+};
 
 const panelPartition = 'ai-assist';
 
@@ -159,7 +169,10 @@ class AiAssistController {
 	private panelReady?: Promise<boolean>;
 	private panelWindow?: BrowserWindow;
 
-	constructor(private readonly messengerWindow: BrowserWindow) {
+	constructor(
+		private readonly messengerWindow: BrowserWindow,
+		private readonly releaseProcessedImageHandle: (handleId: string) => void = ignoreReleasedProcessedImage,
+	) {
 		try {
 			this.historyStore = new AiHistoryStore({
 				databasePath: path.join(app.getPath('userData'), 'ai-assist-history.sqlite'),
@@ -232,6 +245,8 @@ class AiAssistController {
 			...(this.review && this.isRequestSnapshotCurrent(this.review.snapshot.snapshot) ? {
 				review: {
 					actualCount: this.review.snapshot.actualCount,
+					imageSelection: reviewedImageSelectionSummary(this.review.snapshot.images),
+					images: this.review.snapshot.images,
 					items: this.review.snapshot.items,
 					locked: this.review.locked,
 					newMessagesAvailable: this.review.snapshot.newMessagesAvailable,
@@ -347,7 +362,7 @@ class AiAssistController {
 				this.cancelPendingDraftInsertion('stale-authorization');
 				this.cancelMediaResolution();
 				this.sessionState.cancel();
-				this.review = undefined;
+				this.clearContextReview();
 				this.draftInsertionAuthorization.invalidate();
 				this.notice = 'Request cancelled.';
 				this.broadcastState();
@@ -383,6 +398,11 @@ class AiAssistController {
 				break;
 			}
 
+			case 'include-reviewed-image': {
+				this.updateReviewedImage(value.reviewSequence, value.itemId, value.processedHandleId, 'include');
+				break;
+			}
+
 			case 'new-history-chat': {
 				this.createHistoryChat();
 				break;
@@ -408,6 +428,11 @@ class AiAssistController {
 
 			case 'remove-context-item': {
 				this.removeContextItem(value.reviewSequence, value.itemId);
+				break;
+			}
+
+			case 'remove-reviewed-image': {
+				this.updateReviewedImage(value.reviewSequence, value.itemId, value.processedHandleId, 'remove');
 				break;
 			}
 
@@ -726,14 +751,14 @@ class AiAssistController {
 		this.cancelPendingContextCapture();
 		const snapshot = this.conversationBinding.currentSnapshot;
 		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot)) {
-			this.review = undefined;
+			this.clearContextReview();
 			this.error = undefined;
 			this.notice = 'Messenger context is unavailable. Refresh context and try again.';
 			this.broadcastState();
 			return;
 		}
 
-		this.review = undefined;
+		this.clearContextReview();
 		this.error = undefined;
 		const requestedCount = config.get('aiAssistContextWindowSize');
 		const requestId = `context-capture-${++this.contextCaptureCounter}`;
@@ -792,7 +817,7 @@ class AiAssistController {
 			|| (value.stopReason === 'complete' && value.items.length !== pending.requestedCount)
 			|| (pending.anchorMessageId && !value.items.some(item => item.messageId === pending.anchorMessageId))
 		) {
-			this.review = undefined;
+			this.clearContextReview();
 			this.error = undefined;
 			this.notice = 'Messenger context was unavailable or ambiguous. Nothing was sent. Select Refresh context to retry.';
 			this.broadcastState();
@@ -863,6 +888,48 @@ class AiAssistController {
 			snapshot,
 		};
 		this.notice = 'Edited excerpt saved for this request.';
+		this.broadcastState();
+	}
+
+	private updateReviewedImage(
+		reviewSequence: number,
+		itemId: string,
+		processedHandleId: string,
+		type: 'include' | 'remove',
+	): void {
+		if (
+			!this.review
+			|| this.review.locked
+			|| this.review.sequence !== reviewSequence
+			|| this.sessionState.snapshot.status === 'requesting'
+			|| !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)
+		) {
+			return;
+		}
+
+		const update = updateReviewedImageSelection(this.review.snapshot.images, {
+			itemId,
+			processedHandleId,
+			type,
+		});
+		if (!update.accepted) {
+			this.notice = update.notice;
+			this.broadcastState();
+			return;
+		}
+
+		this.review = {
+			locked: false,
+			sequence: this.review.sequence,
+			snapshot: updateContextReview(this.review.snapshot, {images: [...update.items]}),
+		};
+		if (update.releasedHandleId) {
+			this.releaseProcessedImageHandle(update.releasedHandleId);
+		}
+
+		this.notice = type === 'include'
+			? 'Image included in this reviewed request.'
+			: 'Image removed from this reviewed request; its temporary bytes were released.';
 		this.broadcastState();
 	}
 
@@ -1419,6 +1486,16 @@ class AiAssistController {
 			return;
 		}
 
+		const imageSelection = reviewedImageSelectionSummary(this.review.snapshot.images);
+		if (imageSelection.blockingNotice) {
+			this.error = {
+				code: 'input-too-large',
+				message: imageSelection.blockingNotice,
+			};
+			this.broadcastState();
+			return;
+		}
+
 		this.review = {
 			locked: false,
 			sequence: ++this.reviewSequence,
@@ -1434,7 +1511,16 @@ class AiAssistController {
 			return;
 		}
 
-		this.review = {...this.review, locked: true};
+		const finalizedImages = finalizeReviewedImageSelection(this.review.snapshot.images);
+		for (const handleId of finalizedImages.releasedHandleIds) {
+			this.releaseProcessedImageHandle(handleId);
+		}
+
+		this.review = {
+			...this.review,
+			locked: true,
+			snapshot: updateContextReview(this.review.snapshot, {images: [...finalizedImages.items]}),
+		};
 		this.broadcastState();
 
 		await this.runOpenAiRequest(prompt, false);
@@ -1692,8 +1778,20 @@ class AiAssistController {
 		this.anchor = undefined;
 		this.error = undefined;
 		this.invocation = undefined;
-		this.review = undefined;
+		this.clearContextReview();
 		this.notice = undefined;
+	}
+
+	private clearContextReview(): void {
+		if (this.review) {
+			releaseReviewedImageHandles(
+				this.review.snapshot.images,
+				this.releaseProcessedImageHandle,
+				'all',
+			);
+		}
+
+		this.review = undefined;
 	}
 
 	private clearMediaState(): void {

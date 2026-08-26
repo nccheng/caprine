@@ -476,6 +476,19 @@ test('review snapshots freeze context and expose edits without reviving raw chan
 	const source = messages(2);
 	const review = captureContextReviewSnapshot({
 		contextVersion: '2:message-2',
+		images: [{
+			byteLength: 4,
+			height: 1,
+			id: 'review-image-1',
+			messageContext: 'Message 1 image',
+			messageId: 'message-1',
+			mimeType: 'image/png',
+			processedHandleId: 'processed-image-1',
+			senderLabel: 'Received',
+			status: 'available',
+			thumbnailDataUrl: 'data:image/png;base64,AQIDBA==',
+			width: 1,
+		}],
 		items: source.map((item, index) => ({id: `item-${index}`, item})),
 		question: 'What happened?',
 		requestedCount: 10,
@@ -496,6 +509,12 @@ test('review snapshots freeze context and expose edits without reviving raw chan
 	assert.equal(edited.newMessagesAvailable, true);
 	assert.match(buildReviewedPrompt(edited), /Redacted excerpt/);
 	assert.doesNotMatch(buildReviewedPrompt(edited), /Message 1/);
+	const imageUpdated = updateContextReview(edited, {
+		images: [{...edited.images[0], status: 'selected'}],
+	});
+	assert.equal(imageUpdated.items[0].editedExcerpt, 'Redacted excerpt');
+	assert.equal(imageUpdated.images[0].status, 'selected');
+	assert.equal(imageUpdated.images[0].thumbnailDataUrl, 'data:image/png;base64,AQIDBA==');
 });
 
 test('review mutations target immutable item IDs across removals and reject stale IDs', () => {

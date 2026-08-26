@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 		type: 'edit-context-item',
 	}),
 	getState: async () => sendCommand({type: 'get-state'}),
+	includeReviewedImage: async (reviewSequence: number, itemId: string, processedHandleId: string) => sendCommand({
+		itemId,
+		processedHandleId,
+		reviewSequence,
+		type: 'include-reviewed-image',
+	}),
 	insertAnswer: async (answerGeneration: number, authorizationToken: string, conversationId: string) => sendCommand({
 		answerGeneration,
 		authorizationToken,
@@ -37,6 +43,12 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 	refreshContext: async () => sendCommand({type: 'refresh-context'}),
 	refreshConversation: async () => sendCommand({type: 'refresh-conversation'}),
 	removeContextItem: async (reviewSequence: number, itemId: string) => sendCommand({itemId, reviewSequence, type: 'remove-context-item'}),
+	removeReviewedImage: async (reviewSequence: number, itemId: string, processedHandleId: string) => sendCommand({
+		itemId,
+		processedHandleId,
+		reviewSequence,
+		type: 'remove-reviewed-image',
+	}),
 	resolveMedia: async (messageId: string, kind: 'audio' | 'video') => sendCommand({type: 'resolve-media', kind, messageId}),
 	saveApiKey: async (apiKey: string) => sendCommand({type: 'save-api-key', apiKey}),
 	searchHistory: async (query: string) => sendCommand({query, type: 'search-history'}),

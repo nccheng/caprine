@@ -187,6 +187,50 @@ test('normalization preserves source identity and exposes only a bounded local h
 	assert.equal(store.releaseHandle(result.handleId), false);
 });
 
+test('review preview exposes an exact disposable copy without consuming the processed handle', async () => {
+	const captures = captureStore();
+	const released = [];
+	const expected = [137, 80, 78, 71, 13, 10, 26, 10, 4, 5];
+	const store = new ProcessedMessengerImageStore(
+		captures,
+		() => true,
+		async () => ({
+			bytes: Uint8Array.from(expected),
+			height: 2,
+			mimeType: 'image/png',
+			width: 4,
+		}),
+		bytes => released.push([...bytes]),
+	);
+	const result = await store.normalize(
+		'image-capture-1',
+		'fixture-image',
+		snapshot,
+		new AbortController().signal,
+	);
+	let previewReference;
+	const preview = await store.withProcessedImagePreview(
+		result.handleId,
+		result.messageId,
+		snapshot,
+		bytes => {
+			previewReference = bytes;
+			return Buffer.from(bytes).toString('base64');
+		},
+	);
+	assert.equal(preview, Buffer.from(expected).toString('base64'));
+	assert.equal(previewReference.every(byte => byte === 0), true);
+	assert.deepEqual(store.describeHandle(result.handleId, result.messageId, snapshot), result);
+	assert.deepEqual(await store.withProcessedImage(
+		result.handleId,
+		result.messageId,
+		snapshot,
+		async bytes => [...bytes],
+	), expected);
+	assert.equal(released.length, 3);
+	assert.equal(released.every(bytes => bytes.every(byte => byte === 0)), true);
+});
+
 test('invalid and oversized sources fail before normalization and release the capture once', async () => {
 	await Promise.all([
 		{description: captureDescription({byteLength: 31}), expected: 'invalid-source'},
