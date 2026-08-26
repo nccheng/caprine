@@ -6,6 +6,7 @@ const test = require('node:test');
 const {
 	adaptiveVideoSampleTimestamps,
 	maximumVideoAnalysisFrames,
+	maximumVideoFocusedFrames,
 	parseShowInfoTimestamps,
 	VideoFramePreprocessor,
 	videoFrameSamplingBands,
@@ -438,4 +439,38 @@ test('invalid metadata, transcript, source message, and extracted timestamp orde
 	await expectCode(new VideoFramePreprocessor(runner, tools).preprocess(
 		'/private/tmp/source.mp4', request({}, {status: 'no-audio'}, 'bad\nmessage'),
 	), 'malformed-metadata');
+});
+
+test('focused extraction re-reads denser high-resolution frames only inside bounded pass-2 intervals', async () => {
+	await withInput(async ({directory, filePath}) => {
+		const invocations = [];
+		const runner = {
+			async run(executable, arguments_) {
+				invocations.push({arguments_, executable});
+				const outputPattern = arguments_.at(-1);
+				for (const index of [0, 1, 2]) {
+					// eslint-disable-next-line no-await-in-loop
+					await writeFile(
+						outputPattern.replace('%03d', String(index + 1).padStart(3, '0')),
+						Uint8Array.from([255, 216, index, 255, 217]),
+					);
+				}
+
+				return {stderr: showInfo([4.75, 5, 5.25]), stdout: ''};
+			},
+		};
+		const frames = await new VideoFramePreprocessor(runner, tools).extractFocusedFrames(
+			filePath,
+			'message-video-focus',
+			10,
+			[{endSeconds: 5.5, startSeconds: 4.5}],
+		);
+		assert.deepEqual(frames.map(item => item.timestampSeconds), [4.75, 5, 5.25]);
+		assert.ok(frames.every(item => item.sourceMessageId === 'message-video-focus'));
+		const filter = invocations[0].arguments_[invocations[0].arguments_.indexOf('-vf') + 1];
+		assert.match(filter, /^fps=4,select=/u);
+		assert.match(filter, /scale=w='min\(1280\\,iw\)'/u);
+		assert.equal(invocations[0].arguments_[invocations[0].arguments_.indexOf('-frames:v') + 1], String(maximumVideoFocusedFrames + 1));
+		assert.deepEqual(await readdir(directory), ['source.mp4']);
+	});
 });

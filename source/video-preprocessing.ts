@@ -18,6 +18,8 @@ import {
 export const maximumVideoAnalysisFrames = 180;
 export const maximumVideoAnalysisFrameBytes = 512 * 1024;
 export const maximumVideoAnalysisBytes = 48 * 1024 * 1024;
+export const maximumVideoFocusedFrames = 48;
+export const maximumVideoFocusIntervals = 6;
 export const videoSceneChangeThreshold = 0.35;
 
 export const videoFrameSamplingBands = [
@@ -90,6 +92,11 @@ export type VideoPreprocessingRequest = {
 	metadata: Readonly<VideoMetadata>;
 	sourceMessageId: string;
 	transcript: Readonly<VideoTranscriptState>;
+};
+
+export type VideoFocusIntervalRequest = {
+	endSeconds: number;
+	startSeconds: number;
 };
 
 type CandidateFrame = {
@@ -373,6 +380,41 @@ async function readFrames(
 	});
 }
 
+async function readFocusedFrames(
+	directory: string,
+	timestamps: readonly number[],
+	sourceMessageId: string,
+): Promise<VideoAnalysisFrame[]> {
+	const directoryEntries = await readdir(directory);
+	const names = directoryEntries.filter(name => /^focus-\d{3}\.jpg$/u.test(name)).sort();
+	if (names.length === 0 || names.length !== timestamps.length || names.length > maximumVideoFocusedFrames) {
+		throw new VideoToolError('process-failed', 'Focused video frames could not be extracted completely.');
+	}
+
+	let totalBytes = 0;
+	return Promise.all(names.map(async (name, index) => {
+		const bytes = new Uint8Array(await readFile(path.join(directory, name)));
+		totalBytes += bytes.byteLength;
+		if (bytes.byteLength === 0
+			|| bytes.byteLength > maximumVideoAnalysisFrameBytes
+			|| totalBytes > maximumVideoAnalysisBytes
+			|| bytes[0] !== 0xFF
+			|| bytes[1] !== 0xD8
+			|| bytes.at(-2) !== 0xFF
+			|| bytes.at(-1) !== 0xD9) {
+			throw new VideoToolError('output-too-large', 'Focused video frames exceed the analysis limit.');
+		}
+
+		return {
+			bytes,
+			mimeType: 'image/jpeg',
+			reasons: ['sample'],
+			sourceMessageId,
+			timestampSeconds: timestamps[index],
+		};
+	}));
+}
+
 function normalizeReasons(reasons: ReadonlySet<VideoFrameReason>): VideoFrameReason[] {
 	const order: VideoFrameReason[] = ['opening', 'closing', 'scene-change', 'sample'];
 	return order.filter(reason => reasons.has(reason));
@@ -595,6 +637,82 @@ export class VideoFramePreprocessor {
 				},
 				transcript: frozenTranscript,
 			};
+		} finally {
+			await rm(outputDirectory, {force: true, recursive: true});
+		}
+	}
+
+	async extractFocusedFrames(
+		filePath: string,
+		sourceMessageId: string,
+		durationSeconds: number,
+		intervals: ReadonlyArray<Readonly<VideoFocusIntervalRequest>>,
+		options: PreprocessVideoOptions = {},
+	): Promise<VideoAnalysisFrame[]> {
+		if (typeof filePath !== 'string'
+			|| !path.isAbsolute(filePath)
+			|| filePath.includes('\u0000')
+			|| !sourceMessageId
+			|| sourceMessageId.length > 512
+			|| !Number.isFinite(durationSeconds)
+			|| durationSeconds <= 0
+			|| intervals.length === 0
+			|| intervals.length > maximumVideoFocusIntervals) {
+			throw new VideoToolError('malformed-metadata', 'Focused video extraction parameters are invalid.');
+		}
+
+		for (const interval of intervals) {
+			if (!Number.isFinite(interval.startSeconds)
+				|| !Number.isFinite(interval.endSeconds)
+				|| interval.startSeconds < 0
+				|| interval.endSeconds < interval.startSeconds
+				|| interval.endSeconds > durationSeconds
+				|| interval.endSeconds - interval.startSeconds > 1.5) {
+				throw new VideoToolError('malformed-metadata', 'Focused video extraction intervals are invalid.');
+			}
+		}
+
+		failIfUnavailable(options);
+		const tools = await this.locateVideoTools();
+		const outputDirectory = path.join(path.dirname(filePath), `video-focus-${randomUUID()}`);
+		await mkdir(outputDirectory, {mode: 0o700});
+		try {
+			const selection = intervals
+				.map(interval => `between(t\\,${interval.startSeconds}\\,${interval.endSeconds})`)
+				.join('+');
+			const outputPattern = path.join(outputDirectory, 'focus-%03d.jpg');
+			const result = await this.runFfmpeg(tools.ffmpeg, [
+				'-nostdin',
+				'-v',
+				'info',
+				'-protocol_whitelist',
+				'file',
+				'-format_whitelist',
+				allowedVideoInputFormats,
+				'-i',
+				filePath,
+				'-map',
+				'0:v:0',
+				'-vf',
+				`fps=4,select='${selection}',scale=w='min(1280\\,iw)':h=-2:flags=lanczos,showinfo`,
+				'-an',
+				'-fps_mode',
+				'vfr',
+				'-frames:v',
+				String(maximumVideoFocusedFrames + 1),
+				'-q:v',
+				'3',
+				'-f',
+				'image2',
+				outputPattern,
+			], options);
+			const timestamps = parseShowInfoTimestamps(result.stderr);
+			if (timestamps.length > maximumVideoFocusedFrames) {
+				throw new VideoToolError('output-too-large', 'Focused video analysis selected too many frames.');
+			}
+
+			failIfUnavailable(options);
+			return await readFocusedFrames(outputDirectory, timestamps, sourceMessageId);
 		} finally {
 			await rm(outputDirectory, {force: true, recursive: true});
 		}

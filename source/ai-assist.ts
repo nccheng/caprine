@@ -86,6 +86,7 @@ import {
 	createReviewedImageItems,
 	finalizeReviewedImageSelection,
 	releaseReviewedImageHandles,
+	retireReviewedImagesAfterUse,
 	ReviewedImageItem,
 	reviewedImageSelectionSummary,
 	updateReviewedImageSelection,
@@ -116,6 +117,17 @@ import {
 	updateReviewedTranscript,
 } from './reviewed-transcripts';
 import {VideoMetadataInspector} from './video-toolchain';
+import {
+	VideoFramePreprocessor,
+	VideoPreprocessingArtifact,
+	VideoTranscriptState,
+} from './video-preprocessing';
+import {
+	OpenAiVideoUnderstandingProvider,
+	VideoUnderstandingProgress,
+	VideoUnderstandingService,
+	videoTranscriptForReview,
+} from './video-understanding';
 
 const panelPartition = 'ai-assist';
 type ReviewContextSource = 'current' | 'historical-current' | 'historical-original';
@@ -124,6 +136,10 @@ type OpenAiRequestRunOptions = {
 	reviewedImages?: ReadonlyArray<Readonly<ReviewedImageItem>>;
 	reviewSnapshot?: Readonly<ConversationSnapshot>;
 	searchMode?: WebSearchMode;
+	videoArtifact?: {
+		artifact: Readonly<VideoPreprocessingArtifact>;
+		handleId: string;
+	};
 };
 
 class AiAssistController {
@@ -163,6 +179,14 @@ class AiAssistController {
 	private readonly mediaResolver: MessengerMediaResolver;
 	private readonly mediaTranscriptionService: MediaTranscriptionService;
 	private readonly videoMetadataInspector = new VideoMetadataInspector();
+	private readonly videoFramePreprocessor = new VideoFramePreprocessor();
+	private videoAnalysis?: AiAssistPanelState['videoAnalysis'];
+	private readonly videoArtifacts = new Map<string, {
+		artifact: VideoPreprocessingArtifact;
+		handleId: string;
+		snapshot: Readonly<ConversationSnapshot>;
+	}>();
+
 	private readonly imageCaptures: MessengerImageCaptureStore;
 	private readonly processedImages: ProcessedMessengerImageStore;
 	private readonly historyStore?: AiHistoryStore;
@@ -318,7 +342,8 @@ class AiAssistController {
 			conversation: this.conversationBinding.panelState,
 			contextCapturePending: this.pendingContextCapture !== undefined
 				|| this.reviewedImageCapture !== undefined
-				|| this.pendingTranscription !== undefined,
+				|| this.pendingTranscription !== undefined
+				|| this.videoAnalysis?.status === 'analyzing',
 			contextWindowSize: config.get('aiAssistContextWindowSize'),
 			webSearchMode: config.get('aiAssistWebSearchMode'),
 			credentials: {
@@ -354,6 +379,7 @@ class AiAssistController {
 			} : {}),
 			request,
 			session: this.sessionState.snapshot,
+			...(this.videoAnalysis ? {videoAnalysis: this.videoAnalysis} : {}),
 		};
 	}
 
@@ -606,7 +632,7 @@ class AiAssistController {
 			}
 
 			case 'set-context-window': {
-				if (this.review?.contextSource === 'historical-original') {
+				if (this.review?.editable === false || this.review?.contextSource === 'historical-original') {
 					break;
 				}
 
@@ -620,7 +646,10 @@ class AiAssistController {
 			}
 
 			case 'set-web-search-mode': {
-				if (this.sessionState.snapshot.status === 'requesting' || this.review?.locked === true || this.review?.contextSource === 'historical-original') {
+				if (this.sessionState.snapshot.status === 'requesting'
+					|| this.review?.editable === false
+					|| this.review?.locked === true
+					|| this.review?.contextSource === 'historical-original') {
 					break;
 				}
 
@@ -1610,7 +1639,21 @@ class AiAssistController {
 					notice: 'No audio track. The video remains available for visual processing.',
 					status: 'no-audio',
 				}));
-				await this.mediaResolver.releaseHandle(resolution.handleId!);
+				if (transcript.kind === 'video') {
+					await this.prepareVideoArtifact(
+						transcriptId,
+						resolution.handleId!,
+						transcript.messageId,
+						reviewSequence,
+						this.review.snapshot.snapshot,
+						{status: 'no-audio'},
+					).catch(async () => {
+						await this.mediaResolver.releaseHandle(resolution.handleId!).catch(() => undefined);
+					});
+				} else {
+					await this.mediaResolver.releaseHandle(resolution.handleId!);
+				}
+
 				this.mediaResolution = undefined;
 				this.broadcastState();
 				return;
@@ -1705,19 +1748,99 @@ class AiAssistController {
 					mimeType: result.source.mimeType,
 					segments: result.segments,
 				}));
+				if (transcript.kind === 'video') {
+					await this.prepareVideoArtifact(
+						transcriptId,
+						handle.handleId,
+						handle.messageId,
+						reviewSequence,
+						handle.snapshot,
+						{segments: result.segments, status: 'completed'},
+						pending.abortController.signal,
+					).catch(() => undefined);
+				}
 			}
 		} catch (error) {
 			if (this.pendingTranscription === pending) {
 				this.updateTranscriptState(reviewSequence, transcriptId, item => transcriptFailure(item, error));
 			}
 		} finally {
-			await this.mediaResolver.releaseHandle(handle.handleId).catch(() => undefined);
+			if (this.videoArtifacts.get(transcriptId)?.handleId !== handle.handleId) {
+				await this.mediaResolver.releaseHandle(handle.handleId).catch(() => undefined);
+			}
+
 			this.transcriptHandles.delete(transcriptId);
 			if (this.pendingTranscription === pending) {
 				this.pendingTranscription = undefined;
 				this.mediaResolution = undefined;
 				this.broadcastState();
 			}
+		}
+	}
+
+	private async prepareVideoArtifact(
+		transcriptId: string,
+		handleId: string,
+		messageId: string,
+		reviewSequence: number,
+		snapshot: Readonly<ConversationSnapshot>,
+		transcript: Readonly<VideoTranscriptState>,
+		signal?: AbortSignal,
+	): Promise<void> {
+		this.videoAnalysis = {
+			frameCount: 0,
+			phase: 'preprocessing',
+			status: 'analyzing',
+			transcriptAvailable: transcript.status === 'completed',
+		};
+		this.broadcastState();
+		try {
+			const artifact = await this.mediaResolver.inspectFile(
+				handleId,
+				messageId,
+				snapshot,
+				async filePath => {
+					const metadata = await this.videoMetadataInspector.inspect(filePath, {signal});
+					return this.videoFramePreprocessor.preprocess(filePath, {
+						metadata,
+						sourceMessageId: messageId,
+						transcript,
+					}, {
+						isCurrent: () => this.review?.sequence === reviewSequence && this.isRequestSnapshotCurrent(snapshot),
+						onProgress: progress => {
+							this.videoAnalysis = {
+								frameCount: progress.completed,
+								phase: 'preprocessing',
+								status: 'analyzing',
+								transcriptAvailable: transcript.status === 'completed',
+							};
+							this.broadcastState();
+						},
+						signal,
+					});
+				},
+			);
+			this.videoArtifacts.set(transcriptId, {artifact, handleId, snapshot});
+			this.videoAnalysis = {
+				coverage: artifact.coverage,
+				frameCount: artifact.frameCount,
+				phase: 'preprocessing',
+				status: 'ready',
+				transcriptAvailable: transcript.status === 'completed',
+			};
+		} catch (error) {
+			if (this.review?.sequence === reviewSequence && this.isRequestSnapshotCurrent(snapshot) && !signal?.aborted) {
+				this.videoAnalysis = {
+					frameCount: 0,
+					phase: 'preprocessing',
+					status: 'failed',
+					transcriptAvailable: transcript.status === 'completed',
+				};
+			}
+
+			throw error;
+		} finally {
+			this.broadcastState();
 		}
 	}
 
@@ -1748,6 +1871,16 @@ class AiAssistController {
 			if (this.mediaResolution?.handleId === handle.handleId) {
 				this.mediaResolution = undefined;
 			}
+		}
+
+		const videoArtifact = this.videoArtifacts.get(transcriptId);
+		if (videoArtifact) {
+			this.videoArtifacts.delete(transcriptId);
+			if (videoArtifact.handleId !== handle?.handleId) {
+				void this.mediaResolver.releaseHandle(videoArtifact.handleId);
+			}
+
+			this.videoAnalysis = undefined;
 		}
 	}
 
@@ -2142,6 +2275,20 @@ class AiAssistController {
 		this.broadcastState();
 
 		const lockedReview = this.review;
+		const selectedVideoTranscript = lockedReview.snapshot.transcripts.find(item =>
+			item.kind === 'video' && ['completed', 'no-audio'].includes(item.status));
+		const storedVideoArtifact = selectedVideoTranscript
+			? this.videoArtifacts.get(selectedVideoTranscript.id)
+			: undefined;
+		const selectedVideoArtifact = selectedVideoTranscript && storedVideoArtifact
+			? {
+				...storedVideoArtifact,
+				artifact: {
+					...storedVideoArtifact.artifact,
+					transcript: videoTranscriptForReview(selectedVideoTranscript),
+				},
+			}
+			: undefined;
 		try {
 			await this.runOpenAiRequest(
 				prompt,
@@ -2150,6 +2297,7 @@ class AiAssistController {
 					reviewedImages: lockedReview.snapshot.images,
 					reviewSnapshot: lockedReview.snapshot.snapshot,
 					searchMode: lockedReview.browsingMode,
+					...(selectedVideoArtifact ? {videoArtifact: selectedVideoArtifact} : {}),
 				},
 			);
 		} finally {
@@ -2225,9 +2373,56 @@ class AiAssistController {
 		this.broadcastState();
 
 		try {
-			const answer = options.isConnectionTest
-				? await this.openAiClient.createResponse(apiKey, prompt, searchMode, request.abortController.signal)
-				: await withSelectedReviewedImageInputs({
+			let answer: OpenAiAnswer;
+			if (options.isConnectionTest) {
+				answer = await this.openAiClient.createResponse(apiKey, prompt, searchMode, request.abortController.signal);
+			} else if (options.videoArtifact) {
+				answer = await withSelectedReviewedImageInputs({
+					items: reviewedImages,
+					run: async images => {
+						const result = await new VideoUnderstandingService(
+							new OpenAiVideoUnderstandingProvider(this.openAiClient),
+							{
+								extract: async (intervals, signal) => {
+									const {sourceMessageId} = options.videoArtifact!.artifact.frameTimeline[0];
+									return this.mediaResolver.inspectFile(
+										options.videoArtifact!.handleId,
+										sourceMessageId,
+										request.snapshot,
+										async filePath => this.videoFramePreprocessor.extractFocusedFrames(
+											filePath,
+											sourceMessageId,
+											options.videoArtifact!.artifact.metadata.durationSeconds,
+											intervals,
+											{
+												isCurrent: () => this.activeRequest?.id === request.id && this.isRequestSnapshotCurrent(request.snapshot),
+												signal,
+											},
+										),
+									);
+								},
+							},
+						).analyze({
+							apiKey,
+							artifact: options.videoArtifact!.artifact,
+							question: prompt,
+							reviewedImages: images,
+							webSearchMode: searchMode,
+						}, {
+							isCurrent: () => this.activeRequest?.id === request.id && this.isRequestSnapshotCurrent(request.snapshot),
+							onProgress: progress => {
+								this.updateVideoAnalysisProgress(progress);
+								this.broadcastState();
+							},
+							signal: request.abortController.signal,
+						});
+						return result.answer;
+					},
+					snapshot: options.reviewSnapshot ?? request.snapshot,
+					store: this.processedImages,
+				});
+			} else {
+				answer = await withSelectedReviewedImageInputs({
 					items: reviewedImages,
 					run: async images => this.openAiClient.createResponse(
 						apiKey,
@@ -2238,8 +2433,14 @@ class AiAssistController {
 					snapshot: options.reviewSnapshot ?? request.snapshot,
 					store: this.processedImages,
 				});
+			}
+
 			if (this.activeRequest?.id !== request.id) {
 				return;
+			}
+
+			if (options.videoArtifact && this.videoAnalysis) {
+				this.videoAnalysis = {...this.videoAnalysis, status: 'ready'};
 			}
 
 			if (!this.isRequestSnapshotCurrent(request.snapshot)) {
@@ -2277,6 +2478,18 @@ class AiAssistController {
 					snapshot: request.snapshot,
 					text: answer.text,
 				});
+				if (options.videoArtifact
+					&& this.review
+					&& this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)) {
+					this.review = {
+						...this.review,
+						editable: false,
+						locked: false,
+						snapshot: updateContextReview(this.review.snapshot, {
+							images: [...retireReviewedImagesAfterUse(this.review.snapshot.images)],
+						}),
+					};
+				}
 
 				this.error = undefined;
 				this.notice = undefined;
@@ -2292,6 +2505,13 @@ class AiAssistController {
 				return;
 			}
 
+			if (options.videoArtifact && this.videoAnalysis) {
+				this.videoAnalysis = {
+					...this.videoAnalysis,
+					status: error instanceof OpenAiRequestError && error.code === 'cancelled' ? 'canceled' : 'failed',
+				};
+			}
+
 			this.setRequestError(error);
 		} finally {
 			apiKey = '';
@@ -2301,6 +2521,20 @@ class AiAssistController {
 				this.broadcastState();
 			}
 		}
+	}
+
+	private updateVideoAnalysisProgress(progress: Readonly<VideoUnderstandingProgress>): void {
+		const broadFrameCount = progress.phase === 'pass-1'
+			? progress.frameCount
+			: (this.videoAnalysis?.frameCount ?? progress.frameCount);
+		this.videoAnalysis = {
+			coverage: progress.coverage,
+			...(progress.phase === 'pass-2' ? {focusedFrameCount: progress.frameCount} : {}),
+			frameCount: broadFrameCount,
+			phase: progress.phase,
+			status: 'analyzing',
+			transcriptAvailable: progress.transcriptAvailable,
+		};
 	}
 
 	private canStartRequestForSnapshot(
@@ -2644,6 +2878,8 @@ class AiAssistController {
 		this.pendingTranscription?.abortController.abort();
 		this.pendingTranscription = undefined;
 		this.transcriptHandles.clear();
+		this.videoArtifacts.clear();
+		this.videoAnalysis = undefined;
 		this.cancelMediaResolution();
 		this.reviewedImageCapture?.abortController.abort();
 		this.reviewedImageCapture = undefined;
@@ -2666,6 +2902,8 @@ class AiAssistController {
 		this.pendingTranscription?.abortController.abort();
 		this.pendingTranscription = undefined;
 		this.transcriptHandles.clear();
+		this.videoArtifacts.clear();
+		this.videoAnalysis = undefined;
 		this.cancelMediaResolution();
 		this.mediaCandidates = [];
 	}

@@ -27,6 +27,7 @@ const mediaMessageId = document.querySelector('#media-message-id');
 const mediaKind = document.querySelector('#media-kind');
 const resolveMediaButton = document.querySelector('#resolve-media-button');
 const mediaStatus = document.querySelector('#media-status');
+const videoAnalysisStatus = document.querySelector('#video-analysis-status');
 const promptForm = document.querySelector('#prompt-form');
 const promptInput = document.querySelector('#prompt');
 const askButton = document.querySelector('#ask-button');
@@ -156,6 +157,36 @@ function renderAnswer(state) {
 		item.append(button);
 		answerSourceList.append(item);
 	}
+}
+
+function renderVideoAnalysis(state) {
+	const analysis = state.videoAnalysis;
+	videoAnalysisStatus.hidden = !analysis;
+	if (!analysis) {
+		videoAnalysisStatus.textContent = '';
+		return;
+	}
+
+	const phase = {
+		'extracting-focus': 'extracting denser frames for important or uncertain intervals',
+		'pass-1': 'Pass 1 — scanning the full sampled timeline',
+		'pass-2': 'Pass 2 — focused detail analysis',
+		preprocessing: 'preparing timestamped video frames locally',
+	}[analysis.phase];
+	const coverage = analysis.coverage
+		? `${analysis.coverage} sampled coverage; ${analysis.frameCount} broad frames`
+		: `${analysis.frameCount} broad frames prepared`;
+	const focused = analysis.focusedFrameCount === undefined ? '' : `; ${analysis.focusedFrameCount} newly extracted focused frames`;
+	const transcript = analysis.transcriptAvailable ? 'timestamped transcript available' : 'visual-only; no transcript available';
+	const outcome = analysis.status === 'canceled'
+		? 'Canceled'
+		: (analysis.status === 'failed' ? 'Failed' : undefined);
+	const transmission = analysis.status === 'ready' && analysis.phase === 'preprocessing'
+		? ' Prepared frames and the reviewed transcript will be sent to OpenAI only when you choose Ask.'
+		: (analysis.status === 'analyzing' && analysis.phase !== 'preprocessing'
+			? ' Selected sampled frames and the reviewed transcript are being analyzed by OpenAI.'
+			: '');
+	videoAnalysisStatus.textContent = `${outcome ? `${outcome} while ` : ''}${phase}. ${coverage}${focused}; ${transcript}. This is sampled-video understanding, not inspection of every original frame.${transmission}`;
 }
 
 function mediaStatusForState(state) {
@@ -1010,14 +1041,20 @@ function render(state) {
 	resolveMediaButton.disabled = isRequesting || isMediaResolving || !isConversationReady;
 	mediaStatus.textContent = mediaStatusForState(state);
 	const isOriginalHistoryReplay = state.review?.contextSource === 'historical-original';
+	const isPreparedVideoReview = state.review?.editable === false && state.videoAnalysis?.status === 'ready';
 	promptInput.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || !isConversationReady;
-	contextWindow.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || !isConversationReady;
-	webSearchMode.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || !isConversationReady;
+	contextWindow.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || isPreparedVideoReview || !isConversationReady;
+	webSearchMode.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || isPreparedVideoReview || !isConversationReady;
 	refreshContextButton.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || !isConversationReady;
 	refreshContextButton.textContent = state.review?.newMessagesAvailable ? 'Refresh context — new messages available' : 'Refresh context';
-	askButton.textContent = isReviewLocked
-		? 'Asked — Refresh context to ask again'
-		: (state.review ? 'Ask with reviewed context' : 'Review context');
+	if (isReviewLocked) {
+		askButton.textContent = 'Asked — Refresh context to ask again';
+	} else if (state.review?.editable === false && state.videoAnalysis?.status === 'ready') {
+		askButton.textContent = 'Ask another question with prepared video';
+	} else {
+		askButton.textContent = state.review ? 'Ask with reviewed context' : 'Review context';
+	}
+
 	askButton.disabled = isRequesting
 		|| isReviewLocked
 		|| isContextCapturing
@@ -1040,6 +1077,7 @@ function render(state) {
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));
 	renderAnswer(state);
+	renderVideoAnalysis(state);
 	renderedInsertion = state.request.insertion;
 	insertAnswerButton.disabled = !renderedInsertion || !state.request.answer || !isConversationReady;
 }
