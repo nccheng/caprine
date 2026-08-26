@@ -38,13 +38,46 @@ function request(metadataOverrides = {}, transcript, sourceMessageId = 'message-
 	};
 }
 
-function showInfo(timestamps) {
-	return timestamps.map((timestamp, index) => `[Parsed_showinfo_1] n: ${index} pts: ${Math.round(timestamp * 1000)} pts_time:${timestamp} duration:1`).join('\n');
+function timestampFrame(timestamp) {
+	return {pts: Math.round(timestamp * 1000), timestampSeconds: timestamp};
 }
 
-function selectFrameIndexes(arguments_) {
+function showInfoFrames(frames) {
+	return frames.map((frame, index) => `[Parsed_showinfo_1] n: ${index} pts: ${frame.pts} pts_time:${frame.timestampSeconds} duration:1`).join('\n');
+}
+
+function showInfo(timestamps) {
+	return showInfoFrames(timestamps.map(timestamp => timestampFrame(timestamp)));
+}
+
+function samplingInterval(timestamp) {
+	if (timestamp < 15) {
+		return 0.25;
+	}
+
+	if (timestamp < 60) {
+		return 0.5;
+	}
+
+	return timestamp < 300 ? 1 : 2;
+}
+
+function sampledTimestamps(durationSeconds, intervalMultiplier) {
+	const planned = adaptiveVideoSampleTimestamps(durationSeconds);
+	const selected = [];
+	for (const timestamp of planned) {
+		const interval = samplingInterval(timestamp);
+		if (selected.length === 0 || timestamp - selected.at(-1) >= intervalMultiplier * interval) {
+			selected.push(timestamp);
+		}
+	}
+
+	return selected;
+}
+
+function selectFramePts(arguments_) {
 	const filter = arguments_[arguments_.indexOf('-vf') + 1];
-	return [...filter.matchAll(/eq\(n\\,(\d+)\)/gu)].map(match => Number(match[1]));
+	return [...filter.matchAll(/eq\(pts\\,(\d+)\)/gu)].map(match => Number(match[1]));
 }
 
 function distinctSignature(index) {
@@ -57,6 +90,15 @@ function distinctSignature(index) {
 
 async function fixtureRunner(options = {}) {
 	const invocations = [];
+	const timestampsByPts = new Map();
+	const remember = frames => {
+		for (const frame of frames) {
+			timestampsByPts.set(frame.pts, frame.timestampSeconds);
+		}
+
+		return frames;
+	};
+
 	return {
 		invocations,
 		async run(executable, arguments_, signal) {
@@ -66,7 +108,27 @@ async function fixtureRunner(options = {}) {
 			}
 
 			if (arguments_.at(-1) === '-') {
-				return {stderr: showInfo(options.sceneTimestamps ?? []), stdout: ''};
+				const filter = arguments_[arguments_.indexOf('-vf') + 1];
+				let frames;
+				if (filter.includes('gt(scene')) {
+					frames = options.sceneFrames ?? (options.sceneTimestamps ?? []).map(timestamp => timestampFrame(timestamp));
+				} else if (filter.includes('eq(n\\,0)')) {
+					const durationSeconds = options.durationSeconds ?? 12;
+					const frameRate = options.frameRate ?? 10;
+					frames = options.boundaryFrames ?? [
+						timestampFrame(0),
+						timestampFrame(Math.max(0, durationSeconds - (1 / frameRate))),
+					];
+				} else {
+					const match = /gte\(t-prev_selected_t\\,([\d.]+)\*/u.exec(filter);
+					const intervalMultiplier = Number(match?.[1] ?? 1);
+					frames = options.sampleFrames ?? sampledTimestamps(
+						options.durationSeconds ?? 12,
+						intervalMultiplier,
+					).map(timestamp => timestampFrame(timestamp));
+				}
+
+				return {stderr: showInfoFrames(remember(frames)), stdout: ''};
 			}
 
 			if (arguments_.at(-1).endsWith('signatures.gray')) {
@@ -81,9 +143,9 @@ async function fixtureRunner(options = {}) {
 				return {stderr: '', stdout: ''};
 			}
 
-			const frameIndexes = selectFrameIndexes(arguments_);
+			const framePts = selectFramePts(arguments_);
 			const outputPattern = arguments_.at(-1);
-			await Promise.all(frameIndexes.map(async (_frameIndex, index) => {
+			await Promise.all(framePts.map(async (_framePts, index) => {
 				const output = outputPattern.replace('%03d', String(index + 1).padStart(3, '0'));
 				await writeFile(output, Uint8Array.from([255, 216, index % 256, 255, 217]));
 			}));
@@ -92,7 +154,13 @@ async function fixtureRunner(options = {}) {
 				options.afterExtraction();
 			}
 
-			return {stderr: showInfo(frameIndexes.map(index => index / (options.frameRate ?? 10))), stdout: ''};
+			return {
+				stderr: showInfoFrames(framePts.map(pts => ({
+					pts,
+					timestampSeconds: timestampsByPts.get(pts) ?? (pts / 1000),
+				}))),
+				stdout: '',
+			};
 		},
 	};
 }
@@ -134,7 +202,7 @@ test('adaptive sampling follows the fixed duration bands and includes the closin
 test('showinfo parsing accepts bounded finite timestamps and rejects malformed values', () => {
 	assert.deepEqual(parseShowInfoTimestamps(showInfo([0, 1.25, 9.5])), [0, 1.25, 9.5]);
 	assert.throws(
-		() => parseShowInfoTimestamps('[showinfo] pts_time:-1'),
+		() => parseShowInfoTimestamps('[showinfo] pts: -1 pts_time:-1'),
 		error => error instanceof VideoToolError && error.code === 'process-failed',
 	);
 });
@@ -179,7 +247,7 @@ test('preprocessor assembles a bounded timestamped transcript artifact and clean
 		assert.equal(JSON.stringify(progress).includes('source.mp4'), false);
 		assert.equal(JSON.stringify(progress).includes('Hello'), false);
 
-		const [sceneInvocation, extractionInvocation, signatureInvocation] = runner.invocations;
+		const [sceneInvocation, boundaryInvocation, samplingInvocation, extractionInvocation, signatureInvocation] = runner.invocations;
 		assert.ok(runner.invocations.every(invocation => invocation.executable === '/opt/homebrew/bin/ffmpeg'));
 		assert.deepEqual(sceneInvocation.arguments_.slice(0, 12), [
 			'-nostdin',
@@ -196,6 +264,8 @@ test('preprocessor assembles a bounded timestamped transcript artifact and clean
 			'-vf',
 		]);
 		assert.ok(sceneInvocation.arguments_.includes('select=\'gt(scene\\,0.35)\',showinfo'));
+		assert.ok(boundaryInvocation.arguments_[boundaryInvocation.arguments_.indexOf('-vf') + 1].includes('eq(n\\,0)'));
+		assert.ok(samplingInvocation.arguments_[samplingInvocation.arguments_.indexOf('-vf') + 1].includes('prev_selected_t'));
 		assert.equal(extractionInvocation.arguments_.includes('-fps_mode'), true);
 		assert.equal(extractionInvocation.arguments_.includes('-q:v'), true);
 		assert.equal(path.dirname(path.dirname(extractionInvocation.arguments_.at(-1))), directory);
@@ -205,7 +275,11 @@ test('preprocessor assembles a bounded timestamped transcript artifact and clean
 
 test('silent long video is sparse, capped at 180 frames, and retains boundaries', async () => {
 	await withInput(async ({directory, filePath}) => {
-		const runner = await fixtureRunner({frameRate: 2});
+		const runner = await fixtureRunner({
+			durationSeconds: 601,
+			frameRate: 2,
+			sampleFrames: Array.from({length: 179}, (_, index) => timestampFrame((index + 1) * 600 / 180)),
+		});
 		const artifact = await new VideoFramePreprocessor(runner, tools).preprocess(
 			filePath,
 			request({audioTrackAvailable: false, durationSeconds: 601, frameRate: 2}, {status: 'no-audio'}, 'message-video-long'),
@@ -216,6 +290,31 @@ test('silent long video is sparse, capped at 180 frames, and retains boundaries'
 		assert.ok(artifact.frameTimeline[0].reasons.includes('opening'));
 		assert.ok(artifact.frameTimeline.at(-1).reasons.includes('closing'));
 		assert.deepEqual(await readdir(directory), ['source.mp4']);
+	});
+});
+
+test('variable-frame-rate scene changes retain their exact presentation timestamp identity', async () => {
+	await withInput(async ({filePath}) => {
+		const runner = await fixtureRunner({
+			boundaryFrames: [
+				{pts: 1, timestampSeconds: 0},
+				{pts: 900, timestampSeconds: 11.9},
+			],
+			sampleFrames: [],
+			sceneFrames: [{pts: 123, timestampSeconds: 3}],
+		});
+		const artifact = await new VideoFramePreprocessor(runner, tools).preprocess(
+			filePath,
+			request({}, {status: 'no-audio'}, 'message-vfr'),
+		);
+		assert.deepEqual(
+			artifact.frameTimeline.filter(frame => frame.reasons.includes('scene-change')).map(frame => frame.timestampSeconds),
+			[3],
+		);
+		const extraction = runner.invocations.find(invocation => invocation.arguments_.at(-1).endsWith('%03d.jpg'));
+		const filter = extraction.arguments_[extraction.arguments_.indexOf('-vf') + 1];
+		assert.ok(filter.includes('eq(pts\\,123)'));
+		assert.equal(filter.includes('eq(n\\,30)'), false);
 	});
 });
 
@@ -286,6 +385,44 @@ test('corrupt, timed-out, canceled, stale, and interrupted preprocessing are typ
 	}, tools).preprocess('/private/tmp/source.mp4', request({}, {status: 'no-audio'}, 'message-cancel'), {
 		signal: cancellation.signal,
 	}), 'cancelled');
+});
+
+test('final progress callbacks cannot return canceled or stale artifacts', async () => {
+	await withInput(async ({directory, filePath}) => {
+		const cancellation = new AbortController();
+		const runner = await fixtureRunner();
+		await expectCode(new VideoFramePreprocessor(runner, tools).preprocess(
+			filePath,
+			request({}, {status: 'no-audio'}, 'message-final-cancel'),
+			{
+				onProgress(progress) {
+					if (progress.phase === 'assembling-artifact') {
+						cancellation.abort();
+					}
+				},
+				signal: cancellation.signal,
+			},
+		), 'cancelled');
+		assert.deepEqual(await readdir(directory), ['source.mp4']);
+	});
+
+	await withInput(async ({directory, filePath}) => {
+		let current = true;
+		const runner = await fixtureRunner();
+		await expectCode(new VideoFramePreprocessor(runner, tools).preprocess(
+			filePath,
+			request({}, {status: 'no-audio'}, 'message-final-stale'),
+			{
+				isCurrent: () => current,
+				onProgress(progress) {
+					if (progress.phase === 'assembling-artifact') {
+						current = false;
+					}
+				},
+			},
+		), 'stale-media');
+		assert.deepEqual(await readdir(directory), ['source.mp4']);
+	});
 });
 
 test('invalid metadata, transcript, source message, and extracted timestamp order fail closed', async () => {

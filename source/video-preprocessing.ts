@@ -93,8 +93,14 @@ export type VideoPreprocessingRequest = {
 };
 
 type CandidateFrame = {
-	frameIndex: number;
+	pts: number;
 	reasons: Set<VideoFrameReason>;
+	timestampSeconds: number;
+};
+
+type ShowInfoFrame = {
+	pts: number;
+	timestampSeconds: number;
 };
 
 const maximumTranscriptSegments = 1000;
@@ -207,44 +213,44 @@ export function adaptiveVideoSampleTimestamps(durationSeconds: number): number[]
 }
 
 export function parseShowInfoTimestamps(stderr: string): number[] {
-	const timestamps: number[] = [];
-	for (const match of stderr.matchAll(/\bpts_time:([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\b/giu)) {
-		const timestamp = Number(match[1]);
-		if (!Number.isFinite(timestamp) || timestamp < 0) {
+	return parseShowInfoFrames(stderr).map(frame => frame.timestampSeconds);
+}
+
+export function parseShowInfoFrames(stderr: string): ShowInfoFrame[] {
+	const frames: ShowInfoFrame[] = [];
+	for (const match of stderr.matchAll(/\bpts:\s*(-?\d+)\s+pts_time:([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\b/giu)) {
+		const pts = Number(match[1]);
+		const timestampSeconds = Number(match[2]);
+		if (!Number.isSafeInteger(pts) || pts < 0 || !Number.isFinite(timestampSeconds) || timestampSeconds < 0) {
 			throw new VideoToolError('process-failed', 'Video frame timestamps could not be read.');
 		}
 
-		timestamps.push(timestamp);
+		frames.push({pts, timestampSeconds});
 	}
 
-	return timestamps;
-}
-
-function frameIndex(timestamp: number, metadata: Readonly<VideoMetadata>): number {
-	const finalIndex = Math.max(0, Math.ceil(metadata.durationSeconds * metadata.frameRate) - 1);
-	return Math.min(finalIndex, Math.max(0, Math.round(timestamp * metadata.frameRate)));
+	return frames;
 }
 
 function mergeCandidate(
 	candidates: Map<number, CandidateFrame>,
 	metadata: Readonly<VideoMetadata>,
-	timestamp: number,
+	frame: Readonly<ShowInfoFrame>,
 	reason: VideoFrameReason,
 ): void {
-	if (!Number.isFinite(timestamp) || timestamp < 0 || timestamp > metadata.durationSeconds) {
+	if (frame.timestampSeconds > metadata.durationSeconds) {
 		throw new VideoToolError('process-failed', 'Video frame timestamps could not be read.');
 	}
 
-	const index = frameIndex(timestamp, metadata);
-	const existing = candidates.get(index);
+	const existing = candidates.get(frame.pts);
 	if (existing) {
 		existing.reasons.add(reason);
 		return;
 	}
 
-	candidates.set(index, {
-		frameIndex: index,
+	candidates.set(frame.pts, {
+		pts: frame.pts,
 		reasons: new Set([reason]),
+		timestampSeconds: frame.timestampSeconds,
 	});
 }
 
@@ -264,32 +270,46 @@ function evenlySelect<T>(values: readonly T[], count: number): T[] {
 	return Array.from({length: count}, (_, index) => values[Math.round(index * (values.length - 1) / (count - 1))]);
 }
 
-function candidateFrames(metadata: Readonly<VideoMetadata>, sceneTimestamps: readonly number[]): CandidateFrame[] {
+function candidateFrames(
+	metadata: Readonly<VideoMetadata>,
+	boundaryFrames: readonly ShowInfoFrame[],
+	sceneFrames: readonly ShowInfoFrame[],
+	sampleFrames: readonly ShowInfoFrame[],
+): CandidateFrame[] {
 	const candidates = new Map<number, CandidateFrame>();
-	mergeCandidate(candidates, metadata, 0, 'opening');
-	mergeCandidate(candidates, metadata, Math.max(0, metadata.durationSeconds - (1 / metadata.frameRate)), 'closing');
+	if (boundaryFrames.length === 0 || boundaryFrames.length > 2) {
+		throw new VideoToolError('process-failed', 'Video boundary frames could not be read.');
+	}
 
-	const uniqueSceneIndexes = new Set(sceneTimestamps.map(timestamp => frameIndex(timestamp, metadata)));
-	if (uniqueSceneIndexes.size > sceneChangeReserve) {
+	mergeCandidate(candidates, metadata, boundaryFrames[0], 'opening');
+	mergeCandidate(candidates, metadata, boundaryFrames.at(-1)!, 'closing');
+
+	const uniqueScenePts = new Set(sceneFrames.map(frame => frame.pts));
+	if (uniqueScenePts.size > sceneChangeReserve) {
 		throw new VideoToolError('output-too-large', 'This video has too many scene changes for bounded analysis.');
 	}
 
-	for (const timestamp of sceneTimestamps) {
-		mergeCandidate(candidates, metadata, timestamp, 'scene-change');
+	for (const frame of sceneFrames) {
+		mergeCandidate(candidates, metadata, frame, 'scene-change');
 	}
 
 	const remaining = maximumVideoAnalysisFrames - candidates.size;
-	const samples = adaptiveVideoSampleTimestamps(metadata.durationSeconds)
-		.filter(timestamp => !candidates.has(frameIndex(timestamp, metadata)));
-	for (const timestamp of evenlySelect(samples, remaining)) {
-		mergeCandidate(candidates, metadata, timestamp, 'sample');
+	const samples = sampleFrames.filter(frame => !candidates.has(frame.pts));
+	for (const frame of evenlySelect(samples, remaining)) {
+		mergeCandidate(candidates, metadata, frame, 'sample');
 	}
 
-	return [...candidates.values()].sort((left, right) => left.frameIndex - right.frameIndex);
+	return [...candidates.values()].sort((left, right) => left.timestampSeconds - right.timestampSeconds);
+}
+
+function samplingSelectionExpression(durationSeconds: number, maximumSamples: number): string {
+	const plannedSamples = adaptiveVideoSampleTimestamps(durationSeconds).length;
+	const intervalMultiplier = Math.max(1, plannedSamples / Math.max(1, maximumSamples));
+	return `isnan(prev_selected_t)+gte(t-prev_selected_t\\,${intervalMultiplier}*if(lt(t\\,15)\\,0.25\\,if(lt(t\\,60)\\,0.5\\,if(lt(t\\,300)\\,1\\,2))))`;
 }
 
 function selectExpression(candidates: readonly CandidateFrame[]): string {
-	return candidates.map(candidate => `eq(n\\,${candidate.frameIndex})`).join('+');
+	return candidates.map(candidate => `eq(pts\\,${candidate.pts})`).join('+');
 }
 
 function hammingDistance(left: Uint8Array, right: Uint8Array): number {
@@ -412,13 +432,71 @@ export class VideoFramePreprocessor {
 				'null',
 				'-',
 			], options);
-			const sceneTimestamps = parseShowInfoTimestamps(sceneResult.stderr);
-			if (sceneTimestamps.length > sceneChangeReserve) {
+			const sceneFrames = parseShowInfoFrames(sceneResult.stderr);
+			if (new Set(sceneFrames.map(frame => frame.pts)).size > sceneChangeReserve) {
 				throw new VideoToolError('output-too-large', 'This video has too many scene changes for bounded analysis.');
 			}
 
-			report(options, 'detecting-scenes', sceneTimestamps.length, sceneChangeReserve);
-			const candidates = candidateFrames(metadata, sceneTimestamps);
+			report(options, 'detecting-scenes', sceneFrames.length, sceneChangeReserve);
+			const closingTarget = Math.max(0, metadata.durationSeconds - Math.max(1 / metadata.frameRate, 0.001));
+			const boundaryResult = await this.runFfmpeg(tools.ffmpeg, [
+				'-nostdin',
+				'-v',
+				'info',
+				'-protocol_whitelist',
+				'file',
+				'-format_whitelist',
+				allowedVideoInputFormats,
+				'-i',
+				filePath,
+				'-map',
+				'0:v:0',
+				'-vf',
+				`select='eq(n\\,0)+gte(t\\,${closingTarget})',showinfo`,
+				'-an',
+				'-frames:v',
+				'2',
+				'-f',
+				'null',
+				'-',
+			], options);
+			const boundaryFrames = parseShowInfoFrames(boundaryResult.stderr);
+			if (boundaryFrames.length === 0 || boundaryFrames.length > 2) {
+				throw new VideoToolError('process-failed', 'Video boundary frames could not be read.');
+			}
+
+			const protectedPts = new Set([...sceneFrames, ...boundaryFrames].map(frame => frame.pts));
+			const maximumSamples = maximumVideoAnalysisFrames - protectedPts.size;
+			let sampleFrames: ShowInfoFrame[] = [];
+			if (maximumSamples > 0) {
+				const samplingResult = await this.runFfmpeg(tools.ffmpeg, [
+					'-nostdin',
+					'-v',
+					'info',
+					'-protocol_whitelist',
+					'file',
+					'-format_whitelist',
+					allowedVideoInputFormats,
+					'-i',
+					filePath,
+					'-map',
+					'0:v:0',
+					'-vf',
+					`select='${samplingSelectionExpression(metadata.durationSeconds, maximumSamples)}',showinfo`,
+					'-an',
+					'-frames:v',
+					String(maximumVideoAnalysisFrames + 1),
+					'-f',
+					'null',
+					'-',
+				], options);
+				sampleFrames = parseShowInfoFrames(samplingResult.stderr);
+				if (sampleFrames.length > maximumVideoAnalysisFrames) {
+					throw new VideoToolError('output-too-large', 'This video has too many sample frames for bounded analysis.');
+				}
+			}
+
+			const candidates = candidateFrames(metadata, boundaryFrames, sceneFrames, sampleFrames);
 			const outputPattern = path.join(outputDirectory, '%03d.jpg');
 			report(options, 'extracting-frames', 0, candidates.length);
 			const extractionResult = await this.runFfmpeg(tools.ffmpeg, [
@@ -498,6 +576,7 @@ export class VideoFramePreprocessor {
 			report(options, 'deduplicating-frames', candidates.length, candidates.length);
 			failIfUnavailable(options);
 			report(options, 'assembling-artifact', retained.length, retained.length);
+			failIfUnavailable(options);
 			return {
 				coverage: metadata.durationSeconds > 300 ? 'sparse' : 'balanced',
 				frameCount: retained.length,
