@@ -1,9 +1,15 @@
-import {AiHistoryChat, AiHistoryChatSummary, AiHistoryInteraction} from './ai-history-store';
+import {
+	AiHistoryChat,
+	AiHistoryChatSummary,
+	AiHistoryInteraction,
+} from './ai-history-store';
 import {originalHistoryReplayAvailability} from './ai-history-replay';
 import {openAiResponseModel} from './openai-client';
+import {maximumHistoryReviewedTranscriptCharacters} from './reviewed-transcripts';
 
 export const maximumHistoryChats = 100;
 export const maximumHistoryInteractionsPerChat = 25;
+export const maximumHistoryTranscriptDtoCharacters = maximumHistoryReviewedTranscriptCharacters;
 
 export type AiHistoryBadge = 'Audio' | 'Image' | 'Video' | 'Web';
 
@@ -105,6 +111,13 @@ function contextExcerpt(interaction: AiHistoryInteraction): AiHistoryContextItem
 }
 
 function interactionView(interaction: AiHistoryInteraction): AiHistoryInteractionView {
+	const reviewedTranscriptCharacters = (interaction.reviewedTranscripts ?? [])
+		.flatMap(transcript => [...transcript.originalSegments, ...(transcript.editedSegments ?? [])])
+		.reduce((total, segment) => total + segment.text.length, 0);
+	if (reviewedTranscriptCharacters > maximumHistoryTranscriptDtoCharacters) {
+		throw new TypeError('reviewed transcript history exceeds the renderer text limit');
+	}
+
 	const citations = new Map<string, {title: string; url: string}>();
 	for (const citation of interaction.webSearch.citations) {
 		citations.set(citation.url, {

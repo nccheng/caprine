@@ -4,6 +4,7 @@ import type {TranscriptSegment, TranscriptionErrorCode} from './media-transcript
 
 export const transcriptDisclosure = 'This media will be sent to OpenAI for transcription';
 export const maximumReviewedTranscriptCharacters = 100_000;
+export const maximumHistoryReviewedTranscriptCharacters = maximumReviewedTranscriptCharacters * 2;
 
 export type ReviewedTranscriptStatus =
 	| 'available'

@@ -9,6 +9,7 @@ import {
 	transcriptCacheSchemaVersion,
 } from './media-transcription';
 import {OpenAiUrlCitation, OpenAiWebSource, WebSearchMode} from './openai-client';
+import {maximumHistoryReviewedTranscriptCharacters} from './reviewed-transcripts';
 
 export const aiHistorySchemaVersion = 6;
 export const maximumHistoryReviewedTranscripts = 50;
@@ -906,8 +907,15 @@ export class AiHistoryStore {
 		}
 
 		const transcriptIds = new Set<string>();
+		let transcriptCharacters = 0;
 		for (const transcript of input.reviewedTranscripts ?? []) {
 			this.validateReviewedTranscript(transcript);
+			transcriptCharacters += [...transcript.originalSegments, ...(transcript.editedSegments ?? [])]
+				.reduce((total, segment) => total + segment.text.length, 0);
+			if (transcriptCharacters > maximumHistoryReviewedTranscriptCharacters) {
+				throw new TypeError('reviewed transcript history exceeds the durable text limit');
+			}
+
 			if (transcriptIds.has(transcript.id)) {
 				throw new TypeError('reviewed transcript history IDs must be unique per interaction');
 			}

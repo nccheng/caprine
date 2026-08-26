@@ -10,6 +10,7 @@ const {
 	ConversationLifecycle,
 	ConversationReportGate,
 } = require('../dist-js/ai-assist-state.js');
+const {maximumHistoryTranscriptDtoCharacters} = require('../dist-js/ai-history-workspace.js');
 const {
 	conversationIdFromMessengerUrl,
 	deriveConversationIdentity,
@@ -609,6 +610,15 @@ test('history state validator accepts bounded saved video evidence and rejects n
 	assert.equal(isAiAssistPanelState(withReviewedTranscript), true);
 	withReviewedTranscript.history.chats[0].interactions[0].reviewedTranscripts[0].mediaSha256 = 'ab'.repeat(32);
 	assert.equal(isAiAssistPanelState(withReviewedTranscript), false);
+	const oversizedTranscript = structuredClone(state);
+	oversizedTranscript.history.chats[0].interactions[0].reviewedTranscripts = [{
+		...reviewedTranscript,
+		editedSegments: undefined,
+		originalSegments: [{
+			endSeconds: 2, startSeconds: 0, text: 'x'.repeat(maximumHistoryTranscriptDtoCharacters + 1),
+		}],
+	}];
+	assert.equal(isAiAssistPanelState(oversizedTranscript), false);
 	assert.equal(isAiAssistPanelState({
 		...state,
 		history: {

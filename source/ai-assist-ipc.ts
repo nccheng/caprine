@@ -40,7 +40,12 @@ import {
 	mediaSourceTypes,
 	MediaSourceType,
 } from './media-contract';
-import {AiHistoryChatView, maximumHistoryChats, maximumHistoryInteractionsPerChat} from './ai-history-workspace';
+import {
+	AiHistoryChatView,
+	maximumHistoryChats,
+	maximumHistoryInteractionsPerChat,
+	maximumHistoryTranscriptDtoCharacters,
+} from './ai-history-workspace';
 import {AiHistoryDeletionConfirmation, AiHistoryDeletionScope} from './ai-history-deletion';
 import {ReviewedImageItem, ReviewedImageSelectionSummary} from './reviewed-images';
 import {
@@ -1164,6 +1169,7 @@ function isHistoryInteraction(value: unknown): boolean {
 }
 
 function isHistoryReviewedTranscripts(value: unknown): boolean {
+	let totalCharacters = 0;
 	return Array.isArray(value)
 		&& value.length <= 50
 		&& value.every(transcript => {
@@ -1199,15 +1205,23 @@ function isHistoryReviewedTranscripts(value: unknown): boolean {
 			}
 
 			if (transcript.editedSegments === undefined) {
-				return true;
+				totalCharacters += transcript.originalSegments.reduce((total, segment) => total + segment.text.length, 0);
+				return totalCharacters <= maximumHistoryTranscriptDtoCharacters;
 			}
 
 			const {originalSegments, editedSegments} = transcript;
-			return editedSegments.length === originalSegments.length
+			const timingMatches = editedSegments.length === originalSegments.length
 				&& editedSegments.every((segment, index) => (
 					segment.startSeconds === originalSegments[index].startSeconds
 					&& segment.endSeconds === originalSegments[index].endSeconds
 				));
+			if (!timingMatches) {
+				return false;
+			}
+
+			totalCharacters += [...originalSegments, ...editedSegments]
+				.reduce((total, segment) => total + segment.text.length, 0);
+			return totalCharacters <= maximumHistoryTranscriptDtoCharacters;
 		});
 }
 

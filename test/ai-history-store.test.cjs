@@ -4,8 +4,12 @@ const {tmpdir} = require('node:os');
 const path = require('node:path');
 const {afterEach, test} = require('node:test');
 const {DatabaseSync} = require('node:sqlite');
-const {AiHistoryStore, aiHistorySchemaVersion} = require('../dist-js/ai-history-store.js');
+const {
+	AiHistoryStore,
+	aiHistorySchemaVersion,
+} = require('../dist-js/ai-history-store.js');
 const {openAiTranscriptionModel, transcriptCacheSchemaVersion} = require('../dist-js/media-transcription.js');
+const {maximumHistoryReviewedTranscriptCharacters} = require('../dist-js/reviewed-transcripts.js');
 
 const temporaryDirectories = [];
 
@@ -192,6 +196,40 @@ test('reviewed transcript persistence is atomic with its interaction', () => {
 	const inspected = new DatabaseSync(databasePath, {readOnly: true});
 	assert.equal(inspected.prepare('SELECT count(*) AS count FROM ai_history_reviewed_transcripts').get().count, 0);
 	inspected.close();
+});
+
+test('reviewed transcript persistence enforces one aggregate original-plus-edited text limit', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
+	const chatId = store.createChat('thread:transcript-limit');
+	const maximumSegments = Array.from({length: 5}, (_, index) => ({
+		endSeconds: index + 1,
+		startSeconds: index,
+		text: 'a'.repeat(maximumHistoryReviewedTranscriptCharacters / 10),
+	}));
+	assert.doesNotThrow(() => store.appendCompletedInteraction(chatId, interaction({
+		artifactReferences: [],
+		reviewedTranscripts: [reviewedTranscript({
+			durationSeconds: 5,
+			editedSegments: maximumSegments,
+			originalSegments: maximumSegments,
+		})],
+	})));
+	assert.throws(() => store.appendCompletedInteraction(chatId, interaction({
+		artifactReferences: [],
+		reviewedTranscripts: [reviewedTranscript({
+			durationSeconds: 5,
+			editedSegments: maximumSegments,
+			id: 'transcript:over-limit',
+			originalSegments: maximumSegments,
+		}), reviewedTranscript({
+			editedSegments: undefined,
+			id: 'transcript:one-more',
+			mediaSha256: 'cd'.repeat(32),
+			originalSegments: [{endSeconds: 1, startSeconds: 0, text: 'x'}],
+		})],
+	})), /durable text limit/);
+	store.close();
 });
 
 test('completed interactions round-trip exactly after close and reopen', () => {
