@@ -18,6 +18,7 @@ export const videoToolErrorCodes = [
 	'malformed-metadata',
 	'output-too-large',
 	'process-failed',
+	'stale-media',
 	'timeout',
 	'tools-unavailable',
 	'unsupported-video',
