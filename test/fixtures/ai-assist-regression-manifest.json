@@ -1,0 +1,32 @@
+{
+	"groups": [
+		{
+			"name": "renderer trust, IPC validation, and lifecycle invalidation",
+			"files": ["ai-renderer-trust.test.cjs", "ai-assist-state.test.cjs", "draft-insertion.test.cjs"]
+		},
+		{
+			"name": "composer interception and IME recovery",
+			"files": ["ai-composer-command.test.cjs"]
+		},
+		{
+			"name": "context capture, backfill, anchors, and frozen review",
+			"files": ["messenger-context.test.cjs", "context-review.test.cjs", "message-anchor-interaction.test.cjs"]
+		},
+		{
+			"name": "provider failures, web search, citations, and safe navigation",
+			"files": ["openai-client.test.cjs", "citation-panel.test.cjs"]
+		},
+		{
+			"name": "share protocol and idempotent Messenger decoration",
+			"files": ["share-text-protocol.test.cjs", "share-message-decoration.test.cjs"]
+		},
+		{
+			"name": "conversation-scoped history, migration, replay, search, and deletion",
+			"files": ["ai-history-store.test.cjs", "ai-history-workspace.test.cjs", "ai-history-replay.test.cjs", "ai-history-deletion.test.cjs"]
+		},
+		{
+			"name": "bounded image, transcript, audio, video, and cleanup paths",
+			"files": ["reviewed-images.test.cjs", "reviewed-transcripts.test.cjs", "media-resolver.test.cjs", "media-transcription.test.cjs", "video-preprocessing.test.cjs", "video-understanding.test.cjs"]
+		}
+	]
+}
