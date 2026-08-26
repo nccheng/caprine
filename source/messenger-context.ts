@@ -657,6 +657,19 @@ export function resolveLoadedMessengerConversationRoot(root: ParentNode = docume
 		?? undefined;
 }
 
+export function resolveLoadedMessengerMessageRow(
+	target: Element,
+	root: ParentNode = document,
+): HTMLElement | undefined {
+	try {
+		const conversation = resolveLoadedMessengerConversationRoot(root);
+		const row = target.closest<HTMLElement>(messengerContextSelectors.message);
+		return conversation && row && conversation.contains(row) ? row : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function loadedMessengerMessageRows(conversation: Element): Element[] {
 	return [...conversation.querySelectorAll(messengerContextSelectors.message)]
 		.filter(row => visibleElement(row) && !row.querySelector(messengerContextSelectors.message))
@@ -787,7 +800,7 @@ export function captureLoadedMessengerMessageAnchor(
 	let anchor: MessengerMessageAnchor | undefined;
 	try {
 		const conversation = resolveLoadedMessengerConversationRoot(root);
-		const targetRow = target.closest(messengerContextSelectors.message);
+		const targetRow = resolveLoadedMessengerMessageRow(target, root);
 		if (!conversation || !targetRow || !conversation.contains(targetRow)) {
 			return;
 		}

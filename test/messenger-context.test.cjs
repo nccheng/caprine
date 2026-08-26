@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
 	captureMessengerMessageAnchor,
+	captureLoadedMessengerMessageAnchor,
 	extractConversationContextCandidates,
 	extractLoadedMessengerConversationContext,
 	extractLoadedMessengerConversationTail,
@@ -9,6 +10,7 @@ const {
 	maximumMessengerDomExtractionItems,
 	maximumMessengerTailTraversalElements,
 	messengerContextSelectors,
+	resolveLoadedMessengerMessageRow,
 } = require('../dist-js/messenger-context.js');
 const {contextVersion} = require('../dist-js/context-review.js');
 const {
@@ -91,6 +93,16 @@ for (const filename of ['supported-messages.json', 'current-loaded-conversation.
 		assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
 	});
 }
+
+test('current loaded Messenger semantics resolve fallback message rows for anchoring', () => {
+	const fixture = loadMessengerContextFixture('current-loaded-conversation.json');
+	global.window = {location: {href: fixture.baseUrl}};
+	const target = fixture.root.querySelector('[data-message-id]').querySelector('[dir="auto"]');
+	const row = resolveLoadedMessengerMessageRow(target, fixture.root);
+
+	assert.equal(row?.getAttribute('data-message-id'), 'current-outgoing-1');
+	assert.equal(captureLoadedMessengerMessageAnchor(target, fixture.root)?.item.messageId, 'current-outgoing-1');
+});
 
 test('prepend-style fixture evolution preserves chronological logical identity', () => {
 	const fixture = loadMessengerContextFixture('prepend-history.json');

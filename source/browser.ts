@@ -42,6 +42,7 @@ import {
 	inspectLoadedMessengerConversationContext,
 	MessengerMessageAnchor,
 	resolveLoadedMessengerConversationRoot,
+	resolveLoadedMessengerMessageRow,
 } from './messenger-context';
 import {
 	captureBoundedContext,
@@ -151,7 +152,7 @@ function messageAnchorForTarget(target: EventTarget | undefined): typeof message
 	}
 
 	const conversationId = currentConversationId();
-	const row = target.closest<HTMLElement>('[role="main"] [role="grid"] [role="row"]');
+	const row = resolveLoadedMessengerMessageRow(target);
 	const anchor = row ? captureLoadedMessengerMessageAnchor(row) : undefined;
 	if (!conversationId || !row || !anchor) {
 		return;

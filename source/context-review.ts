@@ -24,6 +24,10 @@ export function contextCaptureFailureNotice(reason: ContextCaptureUnavailableRea
 	return contextCaptureFailureNotices[reason];
 }
 
+export function contextCaptureRetryNotice(reason: ContextCaptureUnavailableReason): string {
+	return `Select Refresh context to retry. ${contextCaptureFailureNotice(reason)}`;
+}
+
 export type ReviewedContextItem = {
 	editedExcerpt?: string;
 	id: string;

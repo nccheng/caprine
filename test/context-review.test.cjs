@@ -6,6 +6,7 @@ const {
 	captureContextReviewSnapshot,
 	ContextCaptureCoordinator,
 	contextCaptureFailureNotice,
+	contextCaptureRetryNotice,
 	contextReviewSubmissionDecision,
 	contextVersion,
 	createUnlockedContextReview,
@@ -33,6 +34,16 @@ test('context capture diagnostics are bounded and contain no remote content', ()
 	assert.equal(notices.every(notice => notice.endsWith('Nothing was sent.')), true);
 	assert.equal(notices.every(notice => notice.length < 160), true);
 	assert.doesNotMatch(notices.join('\n'), /message text|participant|conversation id|https?:|token|prompt|answer/i);
+	const retryNotices = [
+		'conversation-root-missing',
+		'message-rows-missing',
+		'supported-content-missing',
+		'ambiguous-messages',
+		'adapter-error',
+	].map(reason => contextCaptureRetryNotice(reason));
+	assert.equal(retryNotices.every(notice => notice.startsWith('Select Refresh context to retry.')), true);
+	assert.equal(retryNotices.every(notice => notice.endsWith('Nothing was sent.')), true);
+	assert.doesNotMatch(retryNotices.join('\n'), /message text|participant|conversation id|https?:|token|prompt|answer/i);
 });
 
 function messages(count) {
