@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 		type: 'insert-answer',
 	}),
 	newHistoryChat: async () => sendCommand({type: 'new-history-chat'}),
+	openCitation: async (url: string) => sendCommand({type: 'open-citation', url}),
 	refreshContext: async () => sendCommand({type: 'refresh-context'}),
 	refreshConversation: async () => sendCommand({type: 'refresh-conversation'}),
 	removeContextItem: async (reviewSequence: number, itemId: string) => sendCommand({itemId, reviewSequence, type: 'remove-context-item'}),

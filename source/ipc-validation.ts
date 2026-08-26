@@ -76,6 +76,23 @@ export function externalUrl(value: unknown): string | undefined {
 	}
 }
 
+export function citationExternalUrl(value: unknown): string | undefined {
+	if (!isBoundedString(value, MAX_EXTERNAL_URL_LENGTH)) {
+		return;
+	}
+
+	try {
+		const parsedUrl = new URL(value);
+		if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password) {
+			return;
+		}
+
+		return parsedUrl.toString();
+	} catch {
+		return undefined;
+	}
+}
+
 export function isDownloadRequest(value: unknown): value is DownloadRequest {
 	return isRecord(value)
 		&& value.data instanceof ArrayBuffer

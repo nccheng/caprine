@@ -134,6 +134,8 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
 	assert.equal(isAiAssistPanelCommand({mode: 'always', type: 'set-web-search-mode'}), true);
 	assert.equal(isAiAssistPanelCommand({mode: 'sometimes', type: 'set-web-search-mode'}), false);
+	assert.equal(isAiAssistPanelCommand({type: 'open-citation', url: 'https://example.com/source'}), true);
+	assert.equal(isAiAssistPanelCommand({type: 'open-citation', url: 'https://example.com/source', target: '_self'}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'new-history-chat'}), true);
 	assert.equal(isAiAssistPanelCommand({chatId: 'chat-1', type: 'select-history-chat'}), true);
 	assert.equal(isAiAssistPanelCommand({chatId: '', type: 'select-history-chat'}), false);
@@ -550,6 +552,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	let activeElement;
 	const reviewCommands = [];
 	const insertCommands = [];
+	const citationCommands = [];
 	const webSearchModeCommands = [];
 	const commandState = {current: undefined};
 	const element = id => {
@@ -557,6 +560,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 			const listeners = new Map();
 			const children = [];
 			elements.set(id, {
+				attributes: new Map(),
 				addEventListener(type, listener) {
 					listeners.set(type, listener);
 				},
@@ -575,7 +579,9 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				},
 				remove() {},
 				textContent: '',
-				setAttribute() {},
+				setAttribute(name, value) {
+					this.attributes.set(name, value);
+				},
 				value: '',
 			});
 		}
@@ -594,6 +600,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 			querySelector: selector => element(selector.slice(1)),
 		},
 		window: {
+			caprineCitationViewModel: undefined,
 			caprineAiAssist: {
 				async cancel() {},
 				async close() {},
@@ -608,6 +615,9 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				async insertAnswer(...arguments_) {
 					insertCommands.push(arguments_);
 					return commandState.current;
+				},
+				async openCitation(url) {
+					citationCommands.push(url);
 				},
 				onStateChanged(callback) {
 					renderState = callback;
@@ -630,6 +640,11 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 			},
 		},
 	};
+	context.URL = URL;
+	vm.runInNewContext(
+		readFileSync('static/ai-assist/citation-view-model.js', 'utf8'),
+		context,
+	);
 	vm.runInNewContext(
 		readFileSync('static/ai-assist/panel.js', 'utf8'),
 		context,
@@ -762,9 +777,21 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		review: {...unrelatedReviewState.review, locked: true},
 		request: {
 			answer: {
-				text: 'Completed answer',
+				text: 'Cited answer',
 				webSearch: {
-					citations: [], mode: 'always', ran: true, sources: [],
+					citations: [{
+						contentIndex: 0,
+						endIndex: 5,
+						outputIndex: 1,
+						providerEndIndex: 5,
+						providerStartIndex: 0,
+						startIndex: 0,
+						title: 'Cited source',
+						url: 'https://example.com/cited',
+					}],
+					mode: 'always',
+					ran: true,
+					sources: [{title: 'Uncited source', url: 'https://example.com/uncited'}],
 				},
 			},
 			insertion: {
@@ -775,6 +802,21 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		},
 	};
 	renderState(completedState);
+	assert.equal(element('answer-search-status').textContent, 'Web search was used for this answer.');
+	assert.equal(element('answer-sources').hidden, false);
+	const citationMarker = [...elements.values()].find(node => node.className === 'citation-marker');
+	const citationSource = [...elements.values()].find(node => node.className === 'citation-source');
+	assert.equal(citationMarker.attributes.get('aria-label'), 'Open source 1 for cited text: Cited');
+	assert.equal(citationSource.textContent, 'Cited source');
+	assert.equal(citationSource.attributes.get('aria-label'), 'Open cited source 1: Cited source');
+	assert.equal([...elements.values()].some(node => node.textContent === 'Uncited source'), false);
+	await citationMarker.listeners.get('click')();
+	assert.deepEqual(citationCommands, ['https://example.com/cited']);
+	citationMarker.focus();
+	const elementCountAfterAnswer = createdElements;
+	renderState({...completedState, request: {...completedState.request, notice: 'Unrelated update'}});
+	assert.equal(createdElements, elementCountAfterAnswer);
+	assert.equal(context.document.activeElement, citationMarker);
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('ask-button').disabled, true);
 	assert.equal(element('insert-answer-button').disabled, false);

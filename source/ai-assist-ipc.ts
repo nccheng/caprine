@@ -125,6 +125,7 @@ export type AiAssistPanelCommand =
 	| {editedExcerpt: string; itemId: string; reviewSequence: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
 	| {type: 'new-history-chat'}
+	| {type: 'open-citation'; url: string}
 	| {answerGeneration: number; authorizationToken: string; conversationId: string; type: 'insert-answer'}
 	| {itemId: string; reviewSequence: number; type: 'remove-context-item'}
 	| {type: 'refresh-context'}
@@ -488,6 +489,12 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 
 	if (value.type === 'select-history-chat') {
 		return hasExactKeys(value, ['chatId', 'type']) && isBoundedString(value.chatId, 512);
+	}
+
+	if (value.type === 'open-citation') {
+		return hasExactKeys(value, ['type', 'url'])
+			&& typeof value.url === 'string'
+			&& value.url.length <= 8192;
 	}
 
 	if (value.type === 'search-history') {

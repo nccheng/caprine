@@ -288,6 +288,45 @@ summary {
 	color: #ffadb5;
 }
 
+.answer-search-status {
+	margin-top: 10px;
+	font-weight: 650;
+}
+
+.citation-marker,
+.citation-source {
+	margin: 0;
+	padding: 2px 4px;
+	border-radius: 4px;
+	background: transparent;
+	color: #aeb7ff;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+
+.citation-marker {
+	font-size: 11px;
+}
+
+.answer-sources {
+	margin-top: 12px;
+}
+
+.answer-sources ol {
+	margin: 8px 0 0;
+	padding-left: 24px;
+}
+
+.answer-sources li {
+	margin-top: 4px;
+}
+
+.citation-source {
+	max-width: 100%;
+	overflow-wrap: anywhere;
+	text-align: start;
+}
+
 pre {
 	min-height: 72px;
 	margin: 12px 0 0;

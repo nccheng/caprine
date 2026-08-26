@@ -9,6 +9,7 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 		<title>Caprine AI Assist</title>
 		<link rel="stylesheet" href="panel.css">
+		<script src="citation-view-model.js" defer></script>
 		<script src="panel.js" defer></script>
 	</head>
 	<body>
@@ -91,7 +92,13 @@
 			<section aria-labelledby="answer-heading">
 				<h2 id="answer-heading">Answer preview</h2>
 				<p>Answers stay private in this Caprine-owned panel until you insert one into the current Messenger draft. Caprine never presses Send.</p>
+				<p id="answer-search-status" class="answer-search-status" role="status">No answer yet.</p>
 				<pre id="answer-output" tabindex="0">No answer yet.</pre>
+				<div id="answer-sources" class="answer-sources" hidden>
+					<h3 id="answer-sources-heading">Cited sources</h3>
+					<p id="answer-sources-summary"></p>
+					<ol id="answer-source-list" aria-labelledby="answer-sources-heading"></ol>
+				</div>
 				<button id="insert-answer-button" type="button" disabled>Insert into Messenger draft</button>
 			</section>
 			<section aria-labelledby="history-heading">
