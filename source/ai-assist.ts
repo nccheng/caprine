@@ -42,6 +42,7 @@ import {
 import {isTrustedMessengerOrigin} from './ipc-validation';
 import {openCitationExternal} from './citation-navigation';
 import {MediaKind} from './media-contract';
+import {ConversationContextItem} from './messenger-context';
 import {
 	MediaDiagnostic,
 	MessengerMediaResolver,
@@ -70,6 +71,18 @@ import {
 	removeContextReviewItem,
 	updateContextReview,
 } from './context-review';
+import {
+	createReviewedImageItems,
+	finalizeReviewedImageSelection,
+	releaseReviewedImageHandles,
+	reviewedImageSelectionSummary,
+	updateReviewedImageSelection,
+} from './reviewed-images';
+import {
+	MessengerImageCaptureStore,
+	MessengerImageCaptureTargetResolution,
+} from './messenger-image-capture';
+import {ProcessedMessengerImageStore} from './messenger-image-normalization';
 import {
 	draftInsertionTimeoutResult,
 	DraftInsertionAuthorizationState,
@@ -103,6 +116,7 @@ class AiAssistController {
 	private conversationReportCounter = 0;
 	private readonly conversationReportGate = new ConversationReportGate();
 	private contextCaptureCounter = 0;
+	private imageTargetRequestCounter = 0;
 	private error?: {code: OpenAiErrorCode; message: string};
 	private invocation?: AiAssistPanelState['invocation'];
 	private invocationSequence = 0;
@@ -111,6 +125,8 @@ class AiAssistController {
 	private mediaResolution?: MessengerMediaResolution;
 	private readonly mediaCleanupReady: Promise<void>;
 	private readonly mediaResolver: MessengerMediaResolver;
+	private readonly imageCaptures: MessengerImageCaptureStore;
+	private readonly processedImages: ProcessedMessengerImageStore;
 	private readonly historyStore?: AiHistoryStore;
 	private historyChat?: {chatId: string; conversationId: string; sessionId: string};
 	private historyConversationId?: string;
@@ -119,6 +135,12 @@ class AiAssistController {
 	private notice?: string;
 	private readonly openAiClient = new OpenAiClient();
 	private readonly pendingConversationReports = new Map<string, (generation?: number) => void>();
+	private readonly pendingImageTargetRequests = new Map<string, {
+		conversationId: string;
+		messageId: string;
+		resolve: (result: MessengerImageCaptureTargetResolution) => void;
+	}>();
+
 	private pendingDraftInsertion?: {
 		answerGeneration: number;
 		authorizationToken: string;
@@ -154,6 +176,12 @@ class AiAssistController {
 	};
 
 	private reviewSequence = 0;
+	private reviewedImageCapture?: {
+		abortController: AbortController;
+		reviewSequence: number;
+		snapshot: Readonly<ConversationSnapshot>;
+	};
+
 	private readonly sessionState = new AiAssistSessionStateMachine();
 	private panelUrl?: string;
 	private panelReady?: Promise<boolean>;
@@ -174,6 +202,18 @@ class AiAssistController {
 			diagnostic => {
 				this.reportMediaDiagnostic(diagnostic);
 			},
+		);
+		this.imageCaptures = new MessengerImageCaptureStore(
+			async (messageId, signal) => this.resolveImageTarget(messageId, signal),
+			{
+				capturePage: async rectangle => messengerWindow.webContents.capturePage(rectangle),
+				id: messengerWindow.webContents.id,
+			},
+			snapshot => this.isRequestSnapshotCurrent(snapshot),
+		);
+		this.processedImages = new ProcessedMessengerImageStore(
+			this.imageCaptures,
+			snapshot => this.isRequestSnapshotCurrent(snapshot),
 		);
 		this.mediaCleanupReady = this.mediaResolver.cleanupRestartArtifacts().catch(() => undefined);
 		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
@@ -215,7 +255,7 @@ class AiAssistController {
 				},
 			} : {}),
 			conversation: this.conversationBinding.panelState,
-			contextCapturePending: this.pendingContextCapture !== undefined,
+			contextCapturePending: this.pendingContextCapture !== undefined || this.reviewedImageCapture !== undefined,
 			contextWindowSize: config.get('aiAssistContextWindowSize'),
 			webSearchMode: config.get('aiAssistWebSearchMode'),
 			credentials: {
@@ -232,6 +272,8 @@ class AiAssistController {
 			...(this.review && this.isRequestSnapshotCurrent(this.review.snapshot.snapshot) ? {
 				review: {
 					actualCount: this.review.snapshot.actualCount,
+					imageSelection: reviewedImageSelectionSummary(this.review.snapshot.images),
+					images: this.review.snapshot.images,
 					items: this.review.snapshot.items,
 					locked: this.review.locked,
 					newMessagesAvailable: this.review.snapshot.newMessagesAvailable,
@@ -347,7 +389,7 @@ class AiAssistController {
 				this.cancelPendingDraftInsertion('stale-authorization');
 				this.cancelMediaResolution();
 				this.sessionState.cancel();
-				this.review = undefined;
+				this.clearContextReview();
 				this.draftInsertionAuthorization.invalidate();
 				this.notice = 'Request cancelled.';
 				this.broadcastState();
@@ -383,6 +425,11 @@ class AiAssistController {
 				break;
 			}
 
+			case 'include-reviewed-image': {
+				this.updateReviewedImage(value.reviewSequence, value.itemId, value.processedHandleId, 'include');
+				break;
+			}
+
 			case 'new-history-chat': {
 				this.createHistoryChat();
 				break;
@@ -408,6 +455,11 @@ class AiAssistController {
 
 			case 'remove-context-item': {
 				this.removeContextItem(value.reviewSequence, value.itemId);
+				break;
+			}
+
+			case 'remove-reviewed-image': {
+				this.updateReviewedImage(value.reviewSequence, value.itemId, value.processedHandleId, 'remove');
 				break;
 			}
 
@@ -479,12 +531,17 @@ class AiAssistController {
 			return;
 		}
 
+		if (value.type === 'image-target-resolution') {
+			this.handleImageTargetResolution(value);
+			return;
+		}
+
 		if (!this.conversationReportGate.acceptsReports) {
 			return;
 		}
 
 		if (value.type === 'context-capture') {
-			this.handleContextCapture(value);
+			void this.handleContextCapture(value);
 			return;
 		}
 
@@ -726,14 +783,14 @@ class AiAssistController {
 		this.cancelPendingContextCapture();
 		const snapshot = this.conversationBinding.currentSnapshot;
 		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot)) {
-			this.review = undefined;
+			this.clearContextReview();
 			this.error = undefined;
 			this.notice = 'Messenger context is unavailable. Refresh context and try again.';
 			this.broadcastState();
 			return;
 		}
 
-		this.review = undefined;
+		this.clearContextReview();
 		this.error = undefined;
 		const requestedCount = config.get('aiAssistContextWindowSize');
 		const requestId = `context-capture-${++this.contextCaptureCounter}`;
@@ -773,7 +830,7 @@ class AiAssistController {
 		});
 	}
 
-	private handleContextCapture(value: Extract<AiAssistMessengerEvent, {type: 'context-capture'}>): void {
+	private async handleContextCapture(value: Extract<AiAssistMessengerEvent, {type: 'context-capture'}>): Promise<void> {
 		const pending = this.pendingContextCapture;
 		if (!pending || pending.requestId !== value.requestId) {
 			return;
@@ -792,7 +849,7 @@ class AiAssistController {
 			|| (value.stopReason === 'complete' && value.items.length !== pending.requestedCount)
 			|| (pending.anchorMessageId && !value.items.some(item => item.messageId === pending.anchorMessageId))
 		) {
-			this.review = undefined;
+			this.clearContextReview();
 			this.error = undefined;
 			this.notice = 'Messenger context was unavailable or ambiguous. Nothing was sent. Select Refresh context to retry.';
 			this.broadcastState();
@@ -811,9 +868,165 @@ class AiAssistController {
 			sequence: ++this.reviewSequence,
 		};
 		this.error = undefined;
-		this.notice = `${value.items.length} of ${pending.requestedCount} messages available for review. Nothing has left Messenger.`;
+		const hasImages = value.items.some(item => item.attachments?.some(attachment => attachment.kind === 'image'));
+		this.notice = hasImages
+			? `${value.items.length} of ${pending.requestedCount} messages available for review. Preparing processed image previews locally…`
+			: `${value.items.length} of ${pending.requestedCount} messages available for review. Nothing has left Messenger.`;
 		this.broadcastState();
 		pending.resolve();
+		if (hasImages) {
+			await this.populateReviewedImages({
+				...(pending.anchorMessageId ? {anchorMessageId: pending.anchorMessageId} : {}),
+				idPrefix: value.requestId,
+				items: value.items,
+				reviewSequence: this.review.sequence,
+				snapshot: pending.snapshot,
+			});
+		}
+	}
+
+	private async populateReviewedImages(input: Readonly<{
+		anchorMessageId?: string;
+		idPrefix: string;
+		items: ReadonlyArray<Readonly<ConversationContextItem>>;
+		reviewSequence: number;
+		snapshot: Readonly<ConversationSnapshot>;
+	}>): Promise<void> {
+		const {anchorMessageId, idPrefix, items, reviewSequence, snapshot} = input;
+		this.reviewedImageCapture?.abortController.abort();
+		const capture = {
+			abortController: new AbortController(),
+			reviewSequence,
+			snapshot,
+		};
+		this.reviewedImageCapture = capture;
+		this.broadcastState();
+		const reviewedImages = await createReviewedImageItems({
+			...(anchorMessageId ? {anchorMessageId} : {}),
+			contextItems: items,
+			idPrefix,
+			pipeline: {
+				capture: async (messageId, candidateSnapshot, signal) => this.imageCaptures.capture(
+					messageId,
+					candidateSnapshot,
+					signal,
+				),
+				normalize: async (captureHandleId, messageId, candidateSnapshot, signal) => this.processedImages.normalize(
+					captureHandleId,
+					messageId,
+					candidateSnapshot,
+					signal,
+				),
+				releaseProcessed: handleId => {
+					this.processedImages.releaseHandle(handleId);
+				},
+				withPreview: async (handleId, messageId, candidateSnapshot, callback) => this.processedImages.withProcessedImagePreview(
+					handleId,
+					messageId,
+					candidateSnapshot,
+					callback,
+				),
+			},
+			signal: capture.abortController.signal,
+			snapshot,
+		});
+		if (
+			this.reviewedImageCapture !== capture
+			|| capture.abortController.signal.aborted
+			|| !this.review
+			|| this.review.locked
+			|| this.review.sequence !== reviewSequence
+			|| !this.isRequestSnapshotCurrent(snapshot)
+		) {
+			releaseReviewedImageHandles(reviewedImages, handleId => {
+				this.processedImages.releaseHandle(handleId);
+			}, 'all');
+			if (this.reviewedImageCapture === capture) {
+				this.reviewedImageCapture = undefined;
+				this.broadcastState();
+			}
+
+			return;
+		}
+
+		this.review = {
+			...this.review,
+			snapshot: updateContextReview(this.review.snapshot, {images: [...reviewedImages]}),
+		};
+		this.reviewedImageCapture = undefined;
+		this.notice = `${this.review.snapshot.actualCount} messages and ${reviewedImages.length} image result${reviewedImages.length === 1 ? '' : 's'} are available for review. Nothing has left Messenger.`;
+		this.broadcastState();
+	}
+
+	private async resolveImageTarget(
+		messageId: string,
+		signal: AbortSignal,
+	): Promise<MessengerImageCaptureTargetResolution> {
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot)) {
+			return {reason: 'conversation-changed', status: 'unavailable'};
+		}
+
+		const requestId = `image-target-request-${++this.imageTargetRequestCounter}`;
+		return new Promise(resolvePromise => {
+			let settled = false;
+			const finish = (result: MessengerImageCaptureTargetResolution): void => {
+				if (settled) {
+					return;
+				}
+
+				settled = true;
+				clearTimeout(timeout);
+				signal.removeEventListener('abort', abort);
+				this.pendingImageTargetRequests.delete(requestId);
+				resolvePromise(result);
+			};
+
+			const abort = (): void => {
+				finish({reason: 'aborted', status: 'unavailable'});
+			};
+
+			const timeout = setTimeout(() => {
+				finish({reason: 'missing-target', status: 'unavailable'});
+			}, 1500);
+
+			this.pendingImageTargetRequests.set(requestId, {
+				conversationId: snapshot.conversationId,
+				messageId,
+				resolve: finish,
+			});
+			signal.addEventListener('abort', abort, {once: true});
+			if (signal.aborted) {
+				abort();
+				return;
+			}
+
+			this.notifyMessenger({
+				conversationId: snapshot.conversationId,
+				messageId,
+				requestId,
+				type: 'resolve-image-target',
+			});
+		});
+	}
+
+	private handleImageTargetResolution(
+		value: Extract<AiAssistMessengerEvent, {type: 'image-target-resolution'}>,
+	): void {
+		const pending = this.pendingImageTargetRequests.get(value.requestId);
+		if (!pending) {
+			return;
+		}
+
+		if (
+			value.status === 'available'
+			&& (value.conversationId !== pending.conversationId || value.messageId !== pending.messageId)
+		) {
+			pending.resolve({reason: 'replaced-target', status: 'unavailable'});
+			return;
+		}
+
+		pending.resolve(value);
 	}
 
 	private removeContextItem(reviewSequence: number, itemId: string): void {
@@ -863,6 +1076,48 @@ class AiAssistController {
 			snapshot,
 		};
 		this.notice = 'Edited excerpt saved for this request.';
+		this.broadcastState();
+	}
+
+	private updateReviewedImage(
+		reviewSequence: number,
+		itemId: string,
+		processedHandleId: string,
+		type: 'include' | 'remove',
+	): void {
+		if (
+			!this.review
+			|| this.review.locked
+			|| this.review.sequence !== reviewSequence
+			|| this.sessionState.snapshot.status === 'requesting'
+			|| !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)
+		) {
+			return;
+		}
+
+		const update = updateReviewedImageSelection(this.review.snapshot.images, {
+			itemId,
+			processedHandleId,
+			type,
+		});
+		if (!update.accepted) {
+			this.notice = update.notice;
+			this.broadcastState();
+			return;
+		}
+
+		this.review = {
+			locked: false,
+			sequence: this.review.sequence,
+			snapshot: updateContextReview(this.review.snapshot, {images: [...update.items]}),
+		};
+		if (update.releasedHandleId) {
+			this.processedImages.releaseHandle(update.releasedHandleId);
+		}
+
+		this.notice = type === 'include'
+			? 'Image included in this reviewed request.'
+			: 'Image removed from this reviewed request; its temporary bytes were released.';
 		this.broadcastState();
 	}
 
@@ -1398,6 +1653,12 @@ class AiAssistController {
 	}
 
 	private async submitReviewedPrompt(question: string): Promise<void> {
+		if (this.reviewedImageCapture) {
+			this.notice = 'Wait for processed image previews to finish before Ask.';
+			this.broadcastState();
+			return;
+		}
+
 		if (!this.review) {
 			await this.requestContextReview(question, this.anchor?.snapshot.item.messageId);
 			return;
@@ -1419,6 +1680,16 @@ class AiAssistController {
 			return;
 		}
 
+		const imageSelection = reviewedImageSelectionSummary(this.review.snapshot.images);
+		if (imageSelection.blockingNotice) {
+			this.error = {
+				code: 'input-too-large',
+				message: imageSelection.blockingNotice,
+			};
+			this.broadcastState();
+			return;
+		}
+
 		this.review = {
 			locked: false,
 			sequence: ++this.reviewSequence,
@@ -1434,7 +1705,16 @@ class AiAssistController {
 			return;
 		}
 
-		this.review = {...this.review, locked: true};
+		const finalizedImages = finalizeReviewedImageSelection(this.review.snapshot.images);
+		for (const handleId of finalizedImages.releasedHandleIds) {
+			this.processedImages.releaseHandle(handleId);
+		}
+
+		this.review = {
+			...this.review,
+			locked: true,
+			snapshot: updateContextReview(this.review.snapshot, {images: [...finalizedImages.items]}),
+		};
 		this.broadcastState();
 
 		await this.runOpenAiRequest(prompt, false);
@@ -1692,8 +1972,26 @@ class AiAssistController {
 		this.anchor = undefined;
 		this.error = undefined;
 		this.invocation = undefined;
-		this.review = undefined;
+		this.clearContextReview();
 		this.notice = undefined;
+	}
+
+	private clearContextReview(): void {
+		this.reviewedImageCapture?.abortController.abort();
+		this.reviewedImageCapture = undefined;
+		if (this.review) {
+			releaseReviewedImageHandles(
+				this.review.snapshot.images,
+				handleId => {
+					this.processedImages.releaseHandle(handleId);
+				},
+				'all',
+			);
+		}
+
+		this.processedImages.releaseAll();
+		this.imageCaptures.releaseAll();
+		this.review = undefined;
 	}
 
 	private clearMediaState(): void {

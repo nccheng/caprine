@@ -129,6 +129,18 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		type: 'capture-context',
 	}), true);
 	assert.equal(isAiAssistMessengerCommand({requestId: 'context-capture-1', type: 'cancel-context-capture'}), true);
+	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
+		messageId: 'message-1',
+		requestId: 'image-target-request-1',
+		type: 'resolve-image-target',
+	}), true);
+	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
+		messageId: 'message-1',
+		requestId: 'wrong-1',
+		type: 'resolve-image-target',
+	}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'refresh-context'}), true);
 	assert.equal(isAiAssistPanelCommand({requestedCount: 50, type: 'set-context-window'}), true);
 	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
@@ -162,6 +174,24 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		type: 'edit-context-item',
 	}), true);
 	assert.equal(isAiAssistPanelCommand({itemId: 'context-capture-1:0', reviewSequence: 3, type: 'remove-context-item'}), true);
+	assert.equal(isAiAssistPanelCommand({
+		itemId: 'review-image-1',
+		processedHandleId: 'processed-image-1',
+		reviewSequence: 3,
+		type: 'include-reviewed-image',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({
+		itemId: 'review-image-1',
+		processedHandleId: 'processed-image-1',
+		reviewSequence: 3,
+		type: 'remove-reviewed-image',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({
+		itemId: 'review-image-1',
+		processedHandleId: 'processed-image-2',
+		reviewSequence: 0,
+		type: 'include-reviewed-image',
+	}), false);
 	assert.equal(isAiAssistPanelCommand({index: 0, type: 'remove-context-item'}), false);
 	assert.equal(isAiAssistPanelCommand({itemId: 'context-capture-1:0', reviewSequence: 0, type: 'remove-context-item'}), false);
 	assert.equal(isAiAssistMessengerCommand({
@@ -205,6 +235,42 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		status: 'inserted',
 		type: 'draft-insertion',
 	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		conversationId: 'messenger-thread:123',
+		messageId: 'message-1',
+		rectangle: {
+			height: 40, width: 50, x: 10, y: 20,
+		},
+		requestId: 'image-target-request-1',
+		status: 'available',
+		targetToken: 'messenger-image-target-1',
+		type: 'image-target-resolution',
+		viewport: {height: 800, width: 1200},
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		conversationId: 'messenger-thread:123',
+		messageId: 'message-1',
+		rectangle: {
+			height: 5000, width: 5000, x: 0, y: 0,
+		},
+		requestId: 'image-target-request-1',
+		status: 'available',
+		targetToken: 'messenger-image-target-1',
+		type: 'image-target-resolution',
+		viewport: {height: 5000, width: 5000},
+	}), false);
+	assert.equal(isAiAssistMessengerEvent({
+		reason: 'ambiguous-target',
+		requestId: 'image-target-request-1',
+		status: 'unavailable',
+		type: 'image-target-resolution',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		reason: 'made-up',
+		requestId: 'image-target-request-1',
+		status: 'unavailable',
+		type: 'image-target-resolution',
+	}), false);
 	assert.equal(isAiAssistMessengerEvent({
 		answerGeneration: 3,
 		authorizationToken: insertionToken,
@@ -551,6 +617,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	const elements = new Map();
 	let activeElement;
 	const reviewCommands = [];
+	const imageCommands = [];
 	const insertCommands = [];
 	const citationCommands = [];
 	const webSearchModeCommands = [];
@@ -569,6 +636,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				},
 				classList: {toggle() {}},
 				children,
+				dataset: {},
 				disabled: false,
 				focus() {
 					activeElement = elements.get(id);
@@ -612,6 +680,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				async getState() {
 					return new Promise(() => {});
 				},
+				async includeReviewedImage(...arguments_) {
+					imageCommands.push(['include', ...arguments_]);
+					return commandState.current;
+				},
 				async insertAnswer(...arguments_) {
 					insertCommands.push(arguments_);
 					return commandState.current;
@@ -626,6 +698,10 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				async refreshConversation() {},
 				async removeContextItem(...arguments_) {
 					reviewCommands.push(['remove', ...arguments_]);
+					return commandState.current;
+				},
+				async removeReviewedImage(...arguments_) {
+					imageCommands.push(['remove-image', ...arguments_]);
 					return commandState.current;
 				},
 				async resolveMedia() {},
@@ -697,6 +773,20 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		...state('ready', 3),
 		review: {
 			actualCount: 1,
+			imageSelection: {aggregateBytes: 0, selectedCount: 0},
+			images: [{
+				byteLength: 4,
+				height: 1,
+				id: 'review-image-1',
+				messageContext: 'Message with image',
+				messageId: 'message-1',
+				mimeType: 'image/png',
+				processedHandleId: 'processed-image-1',
+				senderLabel: 'Received from Alex',
+				status: 'available',
+				thumbnailDataUrl: 'data:image/png;base64,AQIDBA==',
+				width: 1,
+			}],
 			items: [{
 				id: 'context-capture-1:0',
 				item: {
@@ -724,6 +814,20 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		...state('ready', 3, {notice: 'Unrelated state update'}),
 		review: {
 			actualCount: 1,
+			imageSelection: {aggregateBytes: 4, selectedCount: 1},
+			images: [{
+				byteLength: 4,
+				height: 1,
+				id: 'review-image-1',
+				messageContext: 'Message with image',
+				messageId: 'message-1',
+				mimeType: 'image/png',
+				processedHandleId: 'processed-image-1',
+				senderLabel: 'Received from Alex',
+				status: 'selected',
+				thumbnailDataUrl: 'data:image/png;base64,AQIDBA==',
+				width: 1,
+			}],
 			items: [{
 				id: 'context-capture-1:0',
 				item: {
@@ -747,19 +851,31 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(editor.selectionEnd, 13);
 	assert.equal(context.document.activeElement, editor);
 	assert.equal(element('context-items').children.length > 0, true);
+	assert.equal(element('reviewed-images').children.length, 1);
+	const thumbnail = [...elements.values()].find(node => node.alt === 'Processed image from Received from Alex');
+	assert.equal(thumbnail.src, 'data:image/png;base64,AQIDBA==');
+	assert.match(element('image-selection-summary').textContent, /1 selected · 4 bytes/);
 	commandState.current = unrelatedReviewState;
 	const removeButton = [...elements.values()].find(node => node.textContent === 'Remove');
 	const saveButton = [...elements.values()].find(node => node.textContent === 'Save redaction');
+	const imageRemoveButton = [...elements.values()].find(node => node.textContent === 'Remove' && node !== removeButton);
 	await Promise.all([
 		removeButton.listeners.get('click')(),
 		removeButton.listeners.get('click')(),
 		saveButton.listeners.get('click')(),
+		imageRemoveButton.listeners.get('click')(),
 	]);
 	assert.deepEqual(reviewCommands, [
 		['remove', 1, 'context-capture-1:0'],
 		['remove', 1, 'context-capture-1:0'],
 		['edit', 1, 'context-capture-1:0', 'Unsaved local redaction'],
 	]);
+	assert.deepEqual(imageCommands, [[
+		'remove-image',
+		1,
+		'review-image-1',
+		'processed-image-1',
+	]]);
 	renderState({
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},
@@ -767,6 +883,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(removeButton.disabled, true);
 	assert.equal(saveButton.disabled, true);
 	assert.equal(editor.disabled, true);
+	assert.equal(imageRemoveButton.disabled, true);
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('ask-button').disabled, true);
 	assert.equal(element('ask-button').textContent, 'Asked — Refresh context to ask again');
@@ -863,6 +980,55 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	});
 	assert.equal([...elements.keys()].filter(id => id.startsWith('textarea-')).length, 1);
 	assert.equal([...elements.values()].some(node => node.textContent.includes('Not sent to OpenAI')), true);
+	renderState({
+		...state('ready', 3),
+		review: {
+			actualCount: 0,
+			imageSelection: {
+				aggregateBytes: 25 * 1024 * 1024,
+				blockingNotice: 'Selected images exceed the 20 MB limit.',
+				selectedCount: 2,
+			},
+			images: [{
+				byteLength: 4,
+				height: 1,
+				id: 'review-image-1',
+				messageContext: 'Removed image message',
+				messageId: 'message-1',
+				mimeType: 'image/png',
+				processedHandleId: 'processed-image-1',
+				senderLabel: 'Received from Alex',
+				status: 'removed',
+				thumbnailDataUrl: 'data:image/png;base64,AQIDBA==',
+				width: 1,
+			}, {
+				failureReason: 'target hidden',
+				id: 'review-image-2',
+				messageContext: 'Capture failure message',
+				messageId: 'message-2',
+				senderLabel: 'Received from Alex',
+				status: 'capture-failed',
+			}, {
+				failureReason: 'invalid output',
+				id: 'review-image-3',
+				messageContext: 'Normalization failure message',
+				messageId: 'message-3',
+				senderLabel: 'Sent by you',
+				status: 'normalization-failed',
+			}],
+			items: [],
+			locked: false,
+			newMessagesAvailable: false,
+			question: '',
+			requestedCount: 10,
+			sequence: 2,
+		},
+	});
+	assert.equal([...elements.values()].some(node => node.textContent === 'Removed — temporary bytes released'), true);
+	assert.equal([...elements.values()].some(node => node.textContent === 'Capture failed: target hidden'), true);
+	assert.equal([...elements.values()].some(node => node.textContent === 'Normalization failed: invalid output'), true);
+	assert.equal(element('image-selection-notice').textContent, 'Selected images exceed the 20 MB limit.');
+	assert.equal(element('ask-button').disabled, true);
 	renderState({
 		...state('ready', 3),
 		invocation: {prompt: 'Exact inline question', sequence: 1},

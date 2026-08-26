@@ -10,6 +10,9 @@ const contextWindow = document.querySelector('#context-window');
 const webSearchMode = document.querySelector('#web-search-mode');
 const contextAvailability = document.querySelector('#context-availability');
 const contextItems = document.querySelector('#context-items');
+const imageSelectionSummary = document.querySelector('#image-selection-summary');
+const imageSelectionNotice = document.querySelector('#image-selection-notice');
+const reviewedImages = document.querySelector('#reviewed-images');
 const newMessages = document.querySelector('#new-messages');
 const refreshContextButton = document.querySelector('#refresh-context-button');
 const messageAnchor = document.querySelector('#message-anchor');
@@ -47,6 +50,7 @@ let promptCaptureGeneration;
 let renderedInsertion;
 let renderedAnswerSignature;
 const contextReviewRows = new Map();
+const reviewedImageRows = new Map();
 
 function shouldClearPrompt(state) {
 	return state.conversation.status !== 'ready'
@@ -329,6 +333,7 @@ function renderContextReview(review, isRequesting) {
 		}
 
 		contextReviewRows.clear();
+		renderReviewedImages(undefined, isRequesting);
 		return;
 	}
 
@@ -356,6 +361,127 @@ function renderContextReview(review, isRequesting) {
 		if (!presentIds.has(id)) {
 			row.article.remove();
 			contextReviewRows.delete(id);
+		}
+	}
+
+	renderReviewedImages(review, isRequesting);
+}
+
+function imageStatusLabel(image) {
+	switch (image.status) {
+		case 'selected': {
+			return 'Included in this reviewed request';
+		}
+
+		case 'available': {
+			return 'Available — not included';
+		}
+
+		case 'removed': {
+			return 'Removed — temporary bytes released';
+		}
+
+		case 'capture-failed': {
+			return `Capture failed: ${image.failureReason}`;
+		}
+
+		default: {
+			return `Normalization failed: ${image.failureReason}`;
+		}
+	}
+}
+
+function updateReviewedImageRow(row, image, reviewSequence, locked) {
+	row.itemId = image.id;
+	row.processedHandleId = image.processedHandleId;
+	row.reviewSequence = reviewSequence;
+	row.article.dataset.status = image.status;
+	row.heading.textContent = image.senderLabel;
+	row.context.textContent = image.messageContext;
+	row.status.textContent = imageStatusLabel(image);
+	if (row.thumbnail) {
+		row.thumbnail.hidden = image.status === 'capture-failed' || image.status === 'normalization-failed';
+		if (!row.thumbnail.hidden) {
+			row.thumbnail.src = image.thumbnailDataUrl;
+			row.thumbnail.alt = `Processed image from ${image.senderLabel}`;
+		}
+	}
+
+	if (row.metadata) {
+		row.metadata.textContent = `${image.width} × ${image.height} · ${image.mimeType} · ${image.byteLength.toLocaleString()} bytes`;
+	}
+
+	if (row.action) {
+		row.action.textContent = image.status === 'available' ? 'Include' : 'Remove';
+		row.action.className = image.status === 'available' ? 'secondary' : 'danger';
+		row.action.disabled = locked || image.status === 'removed';
+	}
+}
+
+function createReviewedImageRow(image, reviewSequence, locked) {
+	const article = document.createElement('article');
+	article.className = 'reviewed-image';
+	const heading = document.createElement('h4');
+	const context = document.createElement('p');
+	const status = document.createElement('p');
+	status.className = 'reviewed-image-status';
+	const row = {
+		article,
+		context,
+		heading,
+		itemId: image.id,
+		reviewSequence,
+		status,
+	};
+	if (image.status === 'capture-failed' || image.status === 'normalization-failed') {
+		article.append(heading, context, status);
+	} else {
+		const thumbnail = document.createElement('img');
+		const metadata = document.createElement('p');
+		const action = document.createElement('button');
+		action.type = 'button';
+		row.action = action;
+		row.metadata = metadata;
+		row.processedHandleId = image.processedHandleId;
+		row.thumbnail = thumbnail;
+		action.addEventListener('click', async () => {
+			const state = action.textContent === 'Include'
+				? await window.caprineAiAssist.includeReviewedImage(row.reviewSequence, row.itemId, row.processedHandleId)
+				: await window.caprineAiAssist.removeReviewedImage(row.reviewSequence, row.itemId, row.processedHandleId);
+			render(state);
+		});
+		article.append(heading, context, thumbnail, metadata, status, action);
+	}
+
+	updateReviewedImageRow(row, image, reviewSequence, locked);
+	return row;
+}
+
+function renderReviewedImages(review, isRequesting) {
+	const images = review?.images ?? [];
+	const summary = review?.imageSelection;
+	imageSelectionSummary.textContent = summary
+		? `${summary.selectedCount} selected · ${summary.aggregateBytes.toLocaleString()} bytes`
+		: 'No processed images in this review.';
+	imageSelectionNotice.textContent = summary?.blockingNotice ?? '';
+	const presentIds = new Set();
+	const locked = Boolean(review?.locked || isRequesting);
+	for (const image of images) {
+		presentIds.add(image.id);
+		let row = reviewedImageRows.get(image.id);
+		if (!row) {
+			row = createReviewedImageRow(image, review.sequence, locked);
+			reviewedImageRows.set(image.id, row);
+			reviewedImages.append(row.article);
+		}
+
+		updateReviewedImageRow(row, image, review.sequence, locked);
+	}
+
+	for (const [id, row] of reviewedImageRows) {
+		if (!presentIds.has(id)) {
+			row.article.remove();
+			reviewedImageRows.delete(id);
 		}
 	}
 }
@@ -503,6 +629,7 @@ function render(state) {
 	const isConversationReady = state.conversation.status === 'ready';
 	const isMediaResolving = state.media.resolution?.status === 'resolving';
 	const isContextCapturing = state.contextCapturePending;
+	const isImageSelectionBlocked = Boolean(state.review?.imageSelection?.blockingNotice);
 	renderHistory(state.history, isConversationReady);
 	if (shouldClearPrompt(state)) {
 		promptInput.value = '';
@@ -559,7 +686,12 @@ function render(state) {
 	askButton.textContent = isReviewLocked
 		? 'Asked — Refresh context to ask again'
 		: (state.review ? 'Ask with reviewed context' : 'Review context');
-	askButton.disabled = isRequesting || isReviewLocked || isContextCapturing || !isConversationReady || Boolean(state.review && !state.credentials.configured);
+	askButton.disabled = isRequesting
+		|| isReviewLocked
+		|| isContextCapturing
+		|| isImageSelectionBlocked
+		|| !isConversationReady
+		|| Boolean(state.review && !state.credentials.configured);
 	cancelButton.disabled = !isRequesting && !isMediaResolving && !isContextCapturing;
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));

@@ -330,6 +330,40 @@ export class ProcessedMessengerImageStore {
 			: undefined;
 	}
 
+	async withProcessedImagePreview<T>(
+		handleId: string,
+		messageId: string,
+		snapshot: Readonly<ConversationSnapshot>,
+		callback: (
+			bytes: Uint8Array,
+			description: ProcessedMessengerImageDescription,
+		) => Promise<T> | T,
+	): Promise<T> {
+		const stored = this.stored.get(handleId);
+		if (
+			stored
+			&& (stored.signal.aborted || !this.isSnapshotCurrent(stored.description.snapshot))
+		) {
+			this.releaseStored(handleId, stored);
+			throw new TypeError('Rejected stale processed Messenger image');
+		}
+
+		if (
+			!stored
+			|| stored.description.messageId !== messageId
+			|| !sameSnapshot(stored.description.snapshot, snapshot)
+		) {
+			throw new TypeError('Rejected stale processed Messenger image');
+		}
+
+		const previewBytes = Uint8Array.from(stored.bytes);
+		try {
+			return await callback(previewBytes, stored.description);
+		} finally {
+			this.releaseBytes(previewBytes);
+		}
+	}
+
 	async withProcessedImage<T>(
 		handleId: string,
 		messageId: string,

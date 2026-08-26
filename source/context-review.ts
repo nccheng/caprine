@@ -1,5 +1,6 @@
 import {ConversationContextItem} from './messenger-context';
 import {ConversationSnapshot} from './ai-assist-state';
+import {ReviewedImageItem} from './reviewed-images';
 
 export const contextWindowSizes = [10, 20, 50] as const;
 export type ContextWindowSize = typeof contextWindowSizes[number];
@@ -13,6 +14,7 @@ export type ReviewedContextItem = {
 export type ContextReviewSnapshot = {
 	actualCount: number;
 	contextVersion: string;
+	images: ReviewedImageItem[];
 	items: ReviewedContextItem[];
 	newMessagesAvailable: boolean;
 	question: string;
@@ -336,11 +338,14 @@ export function contextItemExcerpt(item: Readonly<ConversationContextItem>): str
 }
 
 export function captureContextReviewSnapshot(
-	data: Omit<ContextReviewSnapshot, 'actualCount' | 'newMessagesAvailable'>,
+	data: Omit<ContextReviewSnapshot, 'actualCount' | 'images' | 'newMessagesAvailable'> & {
+		images?: ReviewedImageItem[];
+	},
 ): Readonly<ContextReviewSnapshot> {
 	const captured = structuredClone({
 		...data,
 		actualCount: data.items.length,
+		images: data.images ?? [],
 		newMessagesAvailable: false,
 	});
 	freezePlainValue(captured);
@@ -348,14 +353,16 @@ export function captureContextReviewSnapshot(
 }
 
 export function createUnlockedContextReview(
-	data: Omit<ContextReviewSnapshot, 'actualCount' | 'newMessagesAvailable'>,
+	data: Omit<ContextReviewSnapshot, 'actualCount' | 'images' | 'newMessagesAvailable'> & {
+		images?: ReviewedImageItem[];
+	},
 ): {locked: false; snapshot: Readonly<ContextReviewSnapshot>} {
 	return {locked: false, snapshot: captureContextReviewSnapshot(data)};
 }
 
 export function updateContextReview(
 	review: Readonly<ContextReviewSnapshot>,
-	updates: Partial<Pick<ContextReviewSnapshot, 'items' | 'newMessagesAvailable' | 'question'>>,
+	updates: Partial<Pick<ContextReviewSnapshot, 'images' | 'items' | 'newMessagesAvailable' | 'question'>>,
 ): Readonly<ContextReviewSnapshot> {
 	const captured = structuredClone({
 		...review,
