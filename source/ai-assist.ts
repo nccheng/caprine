@@ -61,7 +61,11 @@ import {
 	WebSearchMode,
 } from './openai-client';
 import {AiHistoryInteractionInput, AiHistoryStore} from './ai-history-store';
-import {originalHistoryReplayAvailability, restoreOriginalHistoryReview} from './ai-history-replay';
+import {
+	captureHistoryDestinationChatId,
+	originalHistoryReplayAvailability,
+	restoreOriginalHistoryReview,
+} from './ai-history-replay';
 import {buildAiHistoryChatViews} from './ai-history-workspace';
 import {
 	buildReviewedPrompt,
@@ -113,6 +117,7 @@ class AiAssistController {
 	private anchorSequence = 0;
 	private activeRequest?: {
 		abortController: AbortController;
+		historyChatId?: string;
 		id: number;
 		snapshot: Readonly<ConversationSnapshot>;
 	};
@@ -1843,6 +1848,7 @@ class AiAssistController {
 
 		const request = {
 			abortController: new AbortController(),
+			historyChatId: captureHistoryDestinationChatId(this.historyChat, conversationSnapshot),
 			id: ++this.requestCounter,
 			requestedAt: Date.now(),
 			snapshot: conversationSnapshot,
@@ -1882,6 +1888,7 @@ class AiAssistController {
 			} else {
 				const historyInteractionId = this.persistCompletedInteraction(
 					answer,
+					request.historyChatId,
 					request.requestedAt,
 					request.snapshot,
 				);
@@ -1941,6 +1948,7 @@ class AiAssistController {
 
 	private persistCompletedInteraction(
 		answer: OpenAiAnswer,
+		historyChatId: string | undefined,
 		requestedAt: number,
 		snapshot: Readonly<ConversationSnapshot>,
 	): string {
@@ -1972,26 +1980,24 @@ class AiAssistController {
 					sources: answer.webSearch.sources,
 				},
 			};
-			if (
-				!this.historyChat
-				|| this.historyChat.conversationId !== snapshot.conversationId
-				|| this.historyChat.sessionId !== snapshot.sessionId
-			) {
+			if (!historyChatId) {
 				const result = this.historyStore.createChatWithCompletedInteraction(
 					snapshot.conversationId,
 					input,
 				);
-				this.historyChat = {
-					chatId: result.chatId,
-					conversationId: snapshot.conversationId,
-					sessionId: snapshot.sessionId,
-				};
-				this.selectedHistoryChatId = result.chatId;
+				if (!captureHistoryDestinationChatId(this.historyChat, snapshot)) {
+					this.historyChat = {
+						chatId: result.chatId,
+						conversationId: snapshot.conversationId,
+						sessionId: snapshot.sessionId,
+					};
+					this.selectedHistoryChatId = result.chatId;
+				}
+
 				return result.interactionId;
 			}
 
-			this.selectedHistoryChatId = this.historyChat.chatId;
-			return this.historyStore.appendCompletedInteraction(this.historyChat.chatId, input);
+			return this.historyStore.appendCompletedInteraction(historyChatId, input);
 		} catch {
 			throw new OpenAiRequestError(
 				'provider-unavailable',

@@ -47,6 +47,7 @@ const historyDetail = document.querySelector('#history-detail');
 const closeButton = document.querySelector('#close-button');
 let renderedCaptureGeneration;
 let renderedInvocationSequence;
+let renderedOriginalReplaySequence;
 let promptCaptureGeneration;
 let renderedInsertion;
 let renderedAnswerSignature;
@@ -549,7 +550,6 @@ function appendHistoryDetail(chat) {
 
 		originalReplay.addEventListener('click', async () => {
 			render(await window.caprineAiAssist.prepareHistoryReplay(chat.id, interaction.id, 'original'));
-			promptInput.focus?.();
 		});
 		const currentReplay = document.createElement('button');
 		currentReplay.type = 'button';
@@ -725,6 +725,15 @@ function render(state) {
 		|| isImageSelectionBlocked
 		|| !isConversationReady
 		|| Boolean(state.review && !state.credentials.configured);
+	if (isOriginalHistoryReplay) {
+		if (renderedOriginalReplaySequence !== state.review.sequence) {
+			renderedOriginalReplaySequence = state.review.sequence;
+			askButton.focus?.();
+		}
+	} else {
+		renderedOriginalReplaySequence = undefined;
+	}
+
 	cancelButton.disabled = !isRequesting && !isMediaResolving && !isContextCapturing;
 	requestMessage.textContent = state.request.error?.message ?? state.request.notice ?? '';
 	requestMessage.classList.toggle('error', Boolean(state.request.error));

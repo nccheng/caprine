@@ -1,9 +1,30 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+	captureHistoryDestinationChatId,
 	originalHistoryReplayAvailability,
 	restoreOriginalHistoryReview,
 } = require('../dist-js/ai-history-replay.js');
+
+test('history destination capture is immutable across later history selection changes', () => {
+	const snapshot = {
+		captureGeneration: 7,
+		conversationId: 'messenger-thread:one',
+		messengerWebContentsId: 3,
+		sessionId: 'ai-session-2',
+	};
+	const selectedChat = {
+		chatId: 'chat-original',
+		conversationId: snapshot.conversationId,
+		sessionId: snapshot.sessionId,
+	};
+	const destinationChatId = captureHistoryDestinationChatId(selectedChat, snapshot);
+
+	selectedChat.chatId = 'chat-selected-while-requesting';
+	assert.equal(destinationChatId, 'chat-original');
+	assert.equal(captureHistoryDestinationChatId(selectedChat, snapshot), 'chat-selected-while-requesting');
+	assert.equal(captureHistoryDestinationChatId({...selectedChat, sessionId: 'another-session'}, snapshot), undefined);
+});
 
 function interaction(overrides = {}) {
 	return {

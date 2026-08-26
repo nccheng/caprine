@@ -6,6 +6,22 @@ export type AiHistoryOriginalReplayAvailability =
 	| {available: true}
 	| {available: false; reason: 'missing-artifacts' | 'unsupported-metadata'};
 
+type HistoryChatBinding = {
+	chatId: string;
+	conversationId: string;
+	sessionId: string;
+};
+
+export function captureHistoryDestinationChatId(
+	historyChat: Readonly<HistoryChatBinding> | undefined,
+	snapshot: Readonly<ConversationSnapshot>,
+): string | undefined {
+	return historyChat?.conversationId === snapshot.conversationId
+		&& historyChat.sessionId === snapshot.sessionId
+		? historyChat.chatId
+		: undefined;
+}
+
 export function originalHistoryReplayAvailability(
 	interaction: Readonly<AiHistoryInteraction>,
 	currentModel: string,
