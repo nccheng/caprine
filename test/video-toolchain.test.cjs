@@ -1,6 +1,9 @@
 /* eslint-disable camelcase, unicorn/prefer-event-target */
 const assert = require('node:assert/strict');
 const {EventEmitter} = require('node:events');
+const {mkdtemp, readdir, writeFile} = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const {PassThrough} = require('node:stream');
 const test = require('node:test');
 const {
@@ -9,6 +12,7 @@ const {
 	findMacVideoTools,
 	maximumVideoDurationSeconds,
 	parseFfprobeMetadata,
+	VideoAudioExtractor,
 	VideoMetadataInspector,
 	VideoToolError,
 } = require('../dist-js/video-toolchain.js');
@@ -310,4 +314,101 @@ test('metadata inspector distinguishes corrupt input from tool start failure', a
 		},
 	}, tools);
 	await expectCode(unavailableTool.inspect('/private/tmp/video.mp4'), 'process-failed');
+});
+
+test('video audio extractor uses fixed bounded ffmpeg arguments and removes its owned output', async () => {
+	const directory = await mkdtemp(path.join(os.tmpdir(), 'caprine-video-audio-test-'));
+	const inputPath = path.join(directory, 'source.mp4');
+	await writeFile(inputPath, new Uint8Array([1, 2, 3]));
+	const phases = [];
+	let invocation;
+	const extractor = new VideoAudioExtractor({
+		async inspect(_filePath, options) {
+			options.onPhase('checking-tools');
+			options.onPhase('inspecting-metadata');
+			return {
+				audioTrackAvailable: true,
+				container: 'mov',
+				durationSeconds: 12.5,
+				frameRate: 30,
+				height: 720,
+				videoCodec: 'h264',
+				width: 1280,
+			};
+		},
+	}, {
+		async run(executable, arguments_, signal) {
+			invocation = {arguments_, executable, signal};
+			await writeFile(arguments_.at(-1), new Uint8Array([9, 8, 7]));
+			return {stderr: '', stdout: ''};
+		},
+	}, async () => ({ffmpeg: '/opt/homebrew/bin/ffmpeg', ffprobe: '/opt/homebrew/bin/ffprobe'}));
+	const cancellation = new AbortController();
+	const result = await extractor.extract(inputPath, {
+		onPhase: phase => phases.push(phase),
+		signal: cancellation.signal,
+	});
+
+	assert.deepEqual(phases, ['checking-tools', 'inspecting-metadata', 'extracting-audio']);
+	assert.deepEqual(result, {
+		audioTrackAvailable: true,
+		bytes: new Uint8Array([9, 8, 7]),
+		durationSeconds: 12.5,
+		mimeType: 'audio/mpeg',
+	});
+	assert.equal(invocation.executable, '/opt/homebrew/bin/ffmpeg');
+	assert.equal(invocation.signal, cancellation.signal);
+	assert.deepEqual(invocation.arguments_.slice(0, -1), [
+		'-nostdin',
+		'-v',
+		'error',
+		'-protocol_whitelist',
+		'file',
+		'-format_whitelist',
+		allowedVideoInputFormats,
+		'-i',
+		inputPath,
+		'-map',
+		'0:a:0',
+		'-vn',
+		'-ac',
+		'1',
+		'-ar',
+		'16000',
+		'-b:a',
+		'64k',
+		'-t',
+		'300',
+		'-f',
+		'mp3',
+	]);
+	assert.equal(path.dirname(invocation.arguments_.at(-1)), directory);
+	assert.deepEqual(await readdir(directory), ['source.mp4']);
+});
+
+test('video audio extractor reports silent video without starting ffmpeg', async () => {
+	let processCalls = 0;
+	const extractor = new VideoAudioExtractor({
+		async inspect() {
+			return {
+				audioTrackAvailable: false,
+				container: 'webm',
+				durationSeconds: 3,
+				frameRate: 24,
+				height: 720,
+				videoCodec: 'vp9',
+				width: 1280,
+			};
+		},
+	}, {
+		async run() {
+			processCalls += 1;
+			throw new Error('unexpected process');
+		},
+	});
+	assert.deepEqual(await extractor.extract('/private/tmp/caprine-video.webm'), {
+		audioTrackAvailable: false,
+		durationSeconds: 3,
+	});
+	assert.equal(processCalls, 0);
 });

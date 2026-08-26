@@ -350,7 +350,7 @@ function transcriptStatus(item) {
 		}
 
 		case 'preparing': {
-			return 'Preparing voice-message metadata locally. Nothing has been sent to OpenAI.';
+			return `Preparing ${item.kind === 'video' ? 'video-audio' : 'voice-message'} metadata locally. Nothing has been sent to OpenAI.`;
 		}
 
 		case 'ready': {
@@ -361,8 +361,16 @@ function transcriptStatus(item) {
 			return 'Sending this selected media to OpenAI for transcription…';
 		}
 
+		case 'extracting': {
+			return 'Extracting bounded video audio locally. Nothing has been sent to OpenAI yet.';
+		}
+
 		case 'completed': {
 			return item.editedSegments ? 'Edited transcript is selected for the AI request.' : 'Original transcript is selected for the AI request.';
+		}
+
+		case 'no-audio': {
+			return item.notice ?? 'No audio track. The video remains available for visual processing.';
 		}
 
 		case 'canceled': {
@@ -422,7 +430,7 @@ function updateReviewedTranscriptRow(row, item, reviewSequence, locked, credenti
 		item.byteLength === undefined ? undefined : `${item.byteLength.toLocaleString()} bytes`,
 		item.mimeType,
 	].filter(Boolean).join(' · ');
-	row.disclosure.textContent = item.status === 'ready' || item.status === 'transcribing'
+	row.disclosure.textContent = ['ready', 'extracting', 'transcribing'].includes(item.status)
 		? 'This media will be sent to OpenAI for transcription'
 		: '';
 	row.status.textContent = transcriptStatus(item);
@@ -446,8 +454,8 @@ function updateReviewedTranscriptRow(row, item, reviewSequence, locked, credenti
 
 	row.save.disabled = locked;
 	row.remove.disabled = locked;
-	row.action.hidden = completed;
-	row.action.disabled = locked || ['preparing', 'transcribing', 'oversized', 'unsupported'].includes(item.status)
+	row.action.hidden = completed || item.status === 'no-audio';
+	row.action.disabled = locked || ['preparing', 'extracting', 'transcribing', 'no-audio', 'oversized', 'unsupported'].includes(item.status)
 		|| (item.status === 'ready' && !credentialsConfigured);
 	switch (item.status) {
 		case 'ready': {
@@ -460,17 +468,22 @@ function updateReviewedTranscriptRow(row, item, reviewSequence, locked, credenti
 			break;
 		}
 
+		case 'extracting': {
+			row.action.textContent = 'Cancel extraction';
+			break;
+		}
+
 		case 'preparing': {
 			row.action.textContent = 'Preparing…';
 			break;
 		}
 
 		default: {
-			row.action.textContent = 'Prepare voice message';
+			row.action.textContent = item.kind === 'video' ? 'Prepare video audio' : 'Prepare voice message';
 		}
 	}
 
-	if (item.status === 'transcribing') {
+	if (item.status === 'extracting' || item.status === 'transcribing') {
 		row.action.disabled = locked;
 	}
 }
@@ -519,7 +532,7 @@ function createReviewedTranscriptRow(item, reviewSequence, locked, credentialsCo
 		let nextState;
 		if (row.item.status === 'ready') {
 			nextState = await window.caprineAiAssist.transcribeReviewedMedia(row.reviewSequence, row.item.id);
-		} else if (row.item.status === 'transcribing') {
+		} else if (row.item.status === 'extracting' || row.item.status === 'transcribing') {
 			nextState = await window.caprineAiAssist.cancelTranscription(row.reviewSequence, row.item.id);
 		} else {
 			nextState = await window.caprineAiAssist.prepareTranscript(row.reviewSequence, row.item.id);

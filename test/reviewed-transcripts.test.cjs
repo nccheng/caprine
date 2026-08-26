@@ -40,11 +40,32 @@ test('voice context creates exact review items without granting provider consent
 		contextItemId: 'context-1',
 		durationSeconds: 3.25,
 		id: 'transcript:context-1',
+		kind: 'audio',
 		messageId: 'message-1',
 		senderLabel: 'Voice message received from Alex',
 		status: 'available',
 	}]);
 	assert.equal(transcriptDisclosure, 'This media will be sent to OpenAI for transcription');
+});
+
+test('video context creates one video-audio review item and silent video can remain text and visual context', () => {
+	const [item] = createReviewedTranscriptItems([{
+		id: 'context-video',
+		item: {
+			attachments: [{kind: 'video'}],
+			confidence: 'high',
+			messageId: 'message-video',
+			sender: {role: 'outgoing'},
+		},
+	}]);
+	assert.deepEqual(item, {
+		contextItemId: 'context-video',
+		id: 'transcript:context-video',
+		kind: 'video',
+		messageId: 'message-video',
+		senderLabel: 'Video sent by you',
+		status: 'available',
+	});
 });
 
 test('completed transcripts preserve the original while exact edits become a distinct snapshot', () => {

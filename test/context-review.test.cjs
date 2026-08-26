@@ -526,12 +526,14 @@ test('review mutations target immutable item IDs across removals and reject stal
 		transcripts: [{
 			contextItemId: 'item-1',
 			id: 'transcript:item-1',
+			kind: 'audio',
 			messageId: 'message-1',
 			senderLabel: 'Voice message received from Alex',
 			status: 'ready',
 		}, {
 			contextItemId: 'item-2',
 			id: 'transcript:item-2',
+			kind: 'audio',
 			messageId: 'message-2',
 			senderLabel: 'Voice message received from Alex',
 			status: 'ready',
@@ -599,6 +601,7 @@ test('reviewed prompts include only completed selected transcript snapshots', ()
 			contextItemId: 'item-1',
 			durationSeconds: 1,
 			id: 'transcript:item-1',
+			kind: 'audio',
 			messageId: 'message-1',
 			mimeType: 'audio/ogg',
 			originalSegments: [{endSeconds: 1, startSeconds: 0, text: 'Private reviewed words'}],

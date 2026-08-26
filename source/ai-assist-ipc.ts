@@ -869,7 +869,7 @@ function isReviewedTranscriptItem(value: unknown): value is ReviewedTranscriptIt
 		return false;
 	}
 
-	const keys = ['contextItemId', 'id', 'messageId', 'senderLabel', 'status'];
+	const keys = ['contextItemId', 'id', 'kind', 'messageId', 'senderLabel', 'status'];
 	for (const key of ['byteLength', 'durationSeconds', 'editedSegments', 'mimeType', 'notice', 'originalSegments']) {
 		if (value[key] !== undefined) {
 			keys.push(key);
@@ -880,8 +880,10 @@ function isReviewedTranscriptItem(value: unknown): value is ReviewedTranscriptIt
 		'available',
 		'preparing',
 		'ready',
+		'extracting',
 		'transcribing',
 		'completed',
+		'no-audio',
 		'canceled',
 		'oversized',
 		'unsupported',
@@ -892,6 +894,7 @@ function isReviewedTranscriptItem(value: unknown): value is ReviewedTranscriptIt
 	if (!hasExactKeys(value, keys)
 		|| !isBoundedString(value.contextItemId, 200)
 		|| !isBoundedString(value.id, 200)
+		|| !['audio', 'video'].includes(value.kind as string)
 		|| !isMessageId(value.messageId)
 		|| !isBoundedString(value.senderLabel, 200)
 		|| !validStatuses.includes(value.status as ReviewedTranscriptStatus)

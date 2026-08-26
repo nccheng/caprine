@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
+import {randomUUID} from 'node:crypto';
 import {constants as fileSystemConstants} from 'node:fs';
-import {access} from 'node:fs/promises';
+import {access, readFile, rm} from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -8,9 +9,12 @@ export const maximumVideoToolOutputBytes = 1024 * 1024;
 export const maximumVideoDurationSeconds = 24 * 60 * 60;
 export const defaultVideoToolTimeoutMilliseconds = 30_000;
 export const allowedVideoInputFormats = 'avi,flv,matroska,mov,mpeg,mpegts,ogg,webm';
+export const maximumExtractedAudioBytes = 20 * 1024 * 1024;
+export const maximumExtractedAudioDurationSeconds = 5 * 60;
 
 export const videoToolErrorCodes = [
 	'cancelled',
+	'duration-exceeded',
 	'malformed-metadata',
 	'output-too-large',
 	'process-failed',
@@ -48,6 +52,17 @@ export type VideoMetadata = {
 };
 
 export type VideoMetadataPhase = 'checking-tools' | 'inspecting-metadata';
+export type VideoAudioExtractionPhase = VideoMetadataPhase | 'extracting-audio';
+
+export type VideoAudioExtraction = {
+	audioTrackAvailable: false;
+	durationSeconds: number;
+} | {
+	audioTrackAvailable: true;
+	bytes: Uint8Array;
+	durationSeconds: number;
+	mimeType: 'audio/mpeg';
+};
 
 type AccessImplementation = (filePath: string, mode?: number) => Promise<void>;
 type LocateVideoTools = (options?: FindMacVideoToolsOptions) => Promise<VideoToolPaths>;
@@ -69,6 +84,11 @@ type BoundedProcessRunnerOptions = {
 
 type InspectVideoOptions = {
 	onPhase?: (phase: VideoMetadataPhase) => void;
+	signal?: AbortSignal;
+};
+
+type ExtractVideoAudioOptions = {
+	onPhase?: (phase: VideoAudioExtractionPhase) => void;
 	signal?: AbortSignal;
 };
 
@@ -376,5 +396,87 @@ export class VideoMetadataInspector {
 		}
 
 		return parseFfprobeMetadata(result.stdout);
+	}
+}
+
+export class VideoAudioExtractor {
+	constructor(
+		private readonly inspector: VideoMetadataInspector = new VideoMetadataInspector(),
+		private readonly runner: ProcessRunner = new BoundedProcessRunner(),
+		private readonly locateVideoTools: LocateVideoTools = findMacVideoTools,
+	) {}
+
+	async extract(filePath: string, options: ExtractVideoAudioOptions = {}): Promise<VideoAudioExtraction> {
+		if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || filePath.includes('\u0000')) {
+			throw new VideoToolError('unsupported-video', 'This video file cannot be processed.');
+		}
+
+		const metadata = await this.inspector.inspect(filePath, {
+			onPhase: options.onPhase,
+			signal: options.signal,
+		});
+		if (!metadata.audioTrackAvailable) {
+			return {audioTrackAvailable: false, durationSeconds: metadata.durationSeconds};
+		}
+
+		if (metadata.durationSeconds > maximumExtractedAudioDurationSeconds) {
+			throw new VideoToolError('duration-exceeded', 'Video audio exceeds the 5 minute transcription limit.');
+		}
+
+		if (options.signal?.aborted) {
+			throw new VideoToolError('cancelled', 'Video audio extraction was canceled.');
+		}
+
+		const tools = await this.locateVideoTools();
+		const outputPath = path.join(path.dirname(filePath), `${randomUUID()}.mp3`);
+		options.onPhase?.('extracting-audio');
+		try {
+			await this.runner.run(tools.ffmpeg, [
+				'-nostdin',
+				'-v',
+				'error',
+				'-protocol_whitelist',
+				'file',
+				'-format_whitelist',
+				allowedVideoInputFormats,
+				'-i',
+				filePath,
+				'-map',
+				'0:a:0',
+				'-vn',
+				'-ac',
+				'1',
+				'-ar',
+				'16000',
+				'-b:a',
+				'64k',
+				'-t',
+				String(maximumExtractedAudioDurationSeconds),
+				'-f',
+				'mp3',
+				outputPath,
+			], options.signal);
+			const bytes = new Uint8Array(await readFile(outputPath));
+			if (bytes.byteLength === 0 || bytes.byteLength > maximumExtractedAudioBytes) {
+				throw new VideoToolError('output-too-large', 'Extracted video audio exceeds the transcription limit.');
+			}
+
+			return {
+				audioTrackAvailable: true,
+				bytes,
+				durationSeconds: metadata.durationSeconds,
+				mimeType: 'audio/mpeg',
+			};
+		} catch (error) {
+			if (error instanceof VideoToolError
+				&& error.code === 'process-failed'
+				&& error.exitCode !== undefined) {
+				throw new VideoToolError('unsupported-video', 'This video audio track is corrupt or unsupported.');
+			}
+
+			throw error;
+		} finally {
+			await rm(outputPath, {force: true});
+		}
 	}
 }

@@ -1,4 +1,5 @@
 import {ConversationContextItem} from './messenger-context';
+import {MediaKind} from './media-contract';
 import type {TranscriptSegment, TranscriptionErrorCode} from './media-transcription';
 
 export const transcriptDisclosure = 'This media will be sent to OpenAI for transcription';
@@ -8,8 +9,10 @@ export type ReviewedTranscriptStatus =
 	| 'available'
 	| 'preparing'
 	| 'ready'
+	| 'extracting'
 	| 'transcribing'
 	| 'completed'
+	| 'no-audio'
 	| 'canceled'
 	| 'oversized'
 	| 'unsupported'
@@ -23,6 +26,7 @@ export type ReviewedTranscriptItem = {
 	durationSeconds?: number;
 	editedSegments?: TranscriptSegment[];
 	id: string;
+	kind: MediaKind;
 	messageId: string;
 	mimeType?: string;
 	notice?: string;
@@ -31,14 +35,15 @@ export type ReviewedTranscriptItem = {
 	status: ReviewedTranscriptStatus;
 };
 
-function senderLabel(item: Readonly<ConversationContextItem>): string {
+function senderLabel(item: Readonly<ConversationContextItem>, kind: MediaKind): string {
+	const mediaLabel = kind === 'video' ? 'Video' : 'Voice message';
 	if (item.sender.role === 'outgoing') {
-		return 'Voice message sent by you';
+		return `${mediaLabel} sent by you`;
 	}
 
 	return item.sender.displayName
-		? `Voice message received from ${item.sender.displayName}`
-		: 'Voice message received from Messenger participant';
+		? `${mediaLabel} received from ${item.sender.displayName}`
+		: `${mediaLabel} received from Messenger participant`;
 }
 
 export function createReviewedTranscriptItems(
@@ -47,7 +52,14 @@ export function createReviewedTranscriptItems(
 ): ReviewedTranscriptItem[] {
 	return items.flatMap(reviewed => {
 		const {item} = reviewed;
-		if (!item.messageId || !item.attachments?.some(attachment => attachment.kind === 'audio')) {
+		let kind: MediaKind | undefined;
+		if (item.attachments?.some(attachment => attachment.kind === 'audio')) {
+			kind = 'audio';
+		} else if (item.attachments?.some(attachment => attachment.kind === 'video')) {
+			kind = 'video';
+		}
+
+		if (!item.messageId || !kind) {
 			return [];
 		}
 
@@ -56,8 +68,9 @@ export function createReviewedTranscriptItems(
 			contextItemId: reviewed.id,
 			...(durationSeconds === undefined ? {} : {durationSeconds}),
 			id: `transcript:${reviewed.id}`,
+			kind,
 			messageId: item.messageId,
-			senderLabel: senderLabel(item),
+			senderLabel: senderLabel(item, kind),
 			status: 'available' as const,
 		}];
 	});

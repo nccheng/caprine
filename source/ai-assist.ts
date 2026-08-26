@@ -115,6 +115,7 @@ import {
 	transcriptFailure,
 	updateReviewedTranscript,
 } from './reviewed-transcripts';
+import {VideoMetadataInspector} from './video-toolchain';
 
 const panelPartition = 'ai-assist';
 type ReviewContextSource = 'current' | 'historical-current' | 'historical-original';
@@ -161,6 +162,7 @@ class AiAssistController {
 	private readonly mediaCleanupReady: Promise<void>;
 	private readonly mediaResolver: MessengerMediaResolver;
 	private readonly mediaTranscriptionService: MediaTranscriptionService;
+	private readonly videoMetadataInspector = new VideoMetadataInspector();
 	private readonly imageCaptures: MessengerImageCaptureStore;
 	private readonly processedImages: ProcessedMessengerImageStore;
 	private readonly historyStore?: AiHistoryStore;
@@ -1007,7 +1009,7 @@ class AiAssistController {
 				snapshot: pending.snapshot,
 				transcripts: createReviewedTranscriptItems(
 					reviewedItems,
-					messageId => this.mediaCandidates.find(candidate => candidate.kind === 'audio' && candidate.messageId === messageId)?.durationSeconds,
+					messageId => this.mediaCandidates.find(candidate => candidate.messageId === messageId)?.durationSeconds,
 				),
 			}),
 			sequence: ++this.reviewSequence,
@@ -1565,9 +1567,9 @@ class AiAssistController {
 		}
 
 		this.broadcastState();
-		await this.resolveMedia(transcript.messageId, 'audio', {
+		await this.resolveMedia(transcript.messageId, transcript.kind, {
 			...(transcript.durationSeconds === undefined ? {} : {durationSeconds: transcript.durationSeconds}),
-			kind: 'audio',
+			kind: transcript.kind,
 			messageId: transcript.messageId,
 		});
 		if (this.review?.sequence !== reviewSequence || !this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)) {
@@ -1577,13 +1579,13 @@ class AiAssistController {
 		}
 
 		const resolution = this.mediaResolution;
-		if (!resolution || resolution.messageId !== transcript.messageId || resolution.kind !== 'audio' || resolution.status !== 'ready') {
+		if (!resolution || resolution.messageId !== transcript.messageId || resolution.kind !== transcript.kind || resolution.status !== 'ready') {
 			const status = resolution?.status === 'unsupported' ? 'unsupported' : 'failed';
 			this.updateTranscriptState(reviewSequence, transcriptId, item => ({
 				...item,
 				notice: status === 'unsupported'
-					? 'This voice message cannot be resolved as supported audio.'
-					: 'Voice-message bytes were unavailable. Text-only context remains available.',
+					? `This ${transcript.kind === 'video' ? 'video' : 'voice message'} cannot be resolved as supported media.`
+					: 'Media bytes were unavailable. Text-only context remains available.',
 				status,
 			}));
 			this.broadcastState();
@@ -1591,12 +1593,30 @@ class AiAssistController {
 		}
 
 		try {
-			const durationSeconds = await this.mediaResolver.inspectFile(
+			const localMetadata = await this.mediaResolver.inspectFile(
 				resolution.handleId!,
 				resolution.messageId,
 				this.review.snapshot.snapshot,
-				async filePath => inspectAudioDuration(filePath),
+				async filePath => transcript.kind === 'audio'
+					? {audioTrackAvailable: true, durationSeconds: await inspectAudioDuration(filePath)}
+					: this.videoMetadataInspector.inspect(filePath),
 			);
+			if (!localMetadata.audioTrackAvailable) {
+				this.updateTranscriptState(reviewSequence, transcriptId, item => ({
+					...item,
+					byteLength: resolution.byteLength,
+					durationSeconds: localMetadata.durationSeconds,
+					mimeType: resolution.mimeType,
+					notice: 'No audio track. The video remains available for visual processing.',
+					status: 'no-audio',
+				}));
+				await this.mediaResolver.releaseHandle(resolution.handleId!);
+				this.mediaResolution = undefined;
+				this.broadcastState();
+				return;
+			}
+
+			const {durationSeconds} = localMetadata;
 			if (!this.updateTranscriptState(reviewSequence, transcriptId, item => ({
 				...item,
 				byteLength: resolution.byteLength,
@@ -1642,7 +1662,11 @@ class AiAssistController {
 			transcriptId,
 		};
 		this.pendingTranscription = pending;
-		this.updateTranscriptState(reviewSequence, transcriptId, item => ({...item, notice: undefined, status: 'transcribing'}));
+		this.updateTranscriptState(reviewSequence, transcriptId, item => ({
+			...item,
+			notice: undefined,
+			status: item.kind === 'video' ? 'extracting' : 'transcribing',
+		}));
 		this.broadcastState();
 
 		try {
@@ -1650,17 +1674,38 @@ class AiAssistController {
 				consent: 'transcribe-and-review',
 				items: [{handleId: handle.handleId, messageId: handle.messageId}],
 				snapshot: handle.snapshot,
-			}, pending.abortController.signal);
+			}, pending.abortController.signal, phase => {
+				if (this.pendingTranscription !== pending) {
+					return;
+				}
+
+				this.updateTranscriptState(reviewSequence, transcriptId, item => ({
+					...item,
+					status: phase === 'extracting-audio' ? 'extracting' : 'transcribing',
+				}));
+				this.broadcastState();
+			});
 			if (this.pendingTranscription !== pending) {
 				return;
 			}
 
-			this.updateTranscriptState(reviewSequence, transcriptId, item => completeReviewedTranscript(item, {
-				byteLength: result.source.byteLength,
-				durationSeconds: result.source.durationSeconds,
-				mimeType: result.source.mimeType,
-				segments: result.segments,
-			}));
+			if ('status' in result) {
+				this.updateTranscriptState(reviewSequence, transcriptId, item => ({
+					...item,
+					byteLength: result.source.byteLength,
+					durationSeconds: result.source.durationSeconds,
+					mimeType: result.source.mimeType,
+					notice: 'No audio track. The video remains available for visual processing.',
+					status: 'no-audio',
+				}));
+			} else {
+				this.updateTranscriptState(reviewSequence, transcriptId, item => completeReviewedTranscript(item, {
+					byteLength: result.source.byteLength,
+					durationSeconds: result.source.durationSeconds,
+					mimeType: result.source.mimeType,
+					segments: result.segments,
+				}));
+			}
 		} catch (error) {
 			if (this.pendingTranscription === pending) {
 				this.updateTranscriptState(reviewSequence, transcriptId, item => transcriptFailure(item, error));
@@ -2021,8 +2066,8 @@ class AiAssistController {
 	}
 
 	private async submitReviewedPrompt(question: string): Promise<void> {
-		if (this.review?.snapshot.transcripts.some(item => item.status === 'preparing' || item.status === 'transcribing')) {
-			this.notice = 'Wait for voice-message preparation or transcription to finish before Ask.';
+		if (this.review?.snapshot.transcripts.some(item => ['preparing', 'extracting', 'transcribing'].includes(item.status))) {
+			this.notice = 'Wait for media preparation or transcription to finish before Ask.';
 			this.broadcastState();
 			return;
 		}
