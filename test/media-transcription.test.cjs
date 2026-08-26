@@ -10,6 +10,7 @@ const {
 	normalizeTranscriptSegments,
 	OpenAiTranscriptionClient,
 	openAiTranscriptionModel,
+	transcriptCacheSchemaVersion,
 	TranscriptionError,
 } = require('../dist-js/media-transcription.js');
 const {MessengerMediaResolver} = require('../dist-js/media-resolver.js');
@@ -44,6 +45,32 @@ async function expectCode(promise, code) {
 		assert.equal(error.code, code);
 		return true;
 	});
+}
+
+function memoryTranscriptCache() {
+	const records = new Map();
+	let generation = 0;
+	return {
+		clearAll() {
+			records.clear();
+			generation += 1;
+		},
+		deleteTranscriptCache(mediaSha256) {
+			records.delete(mediaSha256);
+		},
+		getTranscriptCacheGeneration() {
+			return generation;
+		},
+		loadTranscriptCache(mediaSha256) {
+			return records.get(mediaSha256);
+		},
+		records,
+		saveTranscriptCache(mediaSha256, record, expectedGeneration) {
+			if (expectedGeneration === generation && !records.has(mediaSha256)) {
+				records.set(mediaSha256, structuredClone(record));
+			}
+		},
+	};
 }
 
 test('OpenAI transcription uses the official bounded timestamp request and exposes only normalized segments', async () => {
@@ -316,6 +343,144 @@ test('media transcription binds provider work to the current handle and releases
 	assert.equal(serialized.includes('bytes'), false);
 });
 
+test('identical media bytes reuse a bounded cache record and rebind current request metadata', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const bytes = new Uint8Array([21, 22, 23]);
+	let providerCalls = 0;
+	let keyReads = 0;
+	const cache = memoryTranscriptCache();
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe(apiKey) {
+			providerCalls += 1;
+			assert.equal(apiKey, 'sk-private');
+			return {
+				model: openAiTranscriptionModel,
+				segments: [{endSeconds: 2, startSeconds: 0, text: 'Reusable transcript'}],
+			};
+		},
+	}, () => snapshot, {inspectDuration: async () => 2, transcriptCache: cache});
+	const firstMedia = await resolver.resolveBlob(bytes.buffer, 'audio/ogg', 'audio', 'message-first', snapshot, 2);
+	const [first] = await service.transcribeBatch(() => {
+		keyReads += 1;
+		return 'sk-private';
+	}, request({items: [{handleId: firstMedia.handleId, messageId: firstMedia.messageId}]}));
+	const secondMedia = await resolver.resolveBlob(bytes.buffer, 'audio/ogg', 'audio', 'message-second', snapshot, 2);
+	const [second] = await service.transcribeBatch(() => {
+		keyReads += 1;
+		throw new Error('cache hit must not read the API key');
+	}, request({items: [{handleId: secondMedia.handleId, messageId: secondMedia.messageId}]}));
+
+	assert.equal(providerCalls, 1);
+	assert.equal(keyReads, 1);
+	assert.equal(first.mediaSha256, createHash('sha256').update(bytes).digest('hex'));
+	assert.equal(second.mediaSha256, first.mediaSha256);
+	assert.equal(first.source.messageId, 'message-first');
+	assert.equal(second.source.messageId, 'message-second');
+	assert.deepEqual(second.segments, first.segments);
+	assert.deepEqual(cache.records.get(first.mediaSha256), {
+		model: openAiTranscriptionModel,
+		schemaVersion: transcriptCacheSchemaVersion,
+		segments: first.segments,
+	});
+	const serialized = JSON.stringify(cache.records.get(first.mediaSha256));
+	assert.equal(serialized.includes('message-first'), false);
+	assert.equal(serialized.includes('message-second'), false);
+	assert.equal(serialized.includes('audio/ogg'), false);
+	assert.deepEqual(await readdir(directory), []);
+});
+
+test('clear-all generation prevents an active provider completion from repopulating the cache', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const cache = memoryTranscriptCache();
+	let releaseProvider;
+	let providerStarted;
+	const started = new Promise(resolve => {
+		providerStarted = resolve;
+	});
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe() {
+			providerStarted();
+			await new Promise(resolve => {
+				releaseProvider = resolve;
+			});
+			return {
+				model: openAiTranscriptionModel,
+				segments: [{endSeconds: 1, startSeconds: 0, text: 'Late transcript'}],
+			};
+		},
+	}, () => snapshot, {inspectDuration: async () => 1, transcriptCache: cache});
+	const media = await resolver.resolveBlob(
+		new Uint8Array([41, 42, 43]).buffer,
+		'audio/wav',
+		'audio',
+		'message-clear-race',
+		snapshot,
+		1,
+	);
+	const result = service.transcribeBatch(
+		'sk-private',
+		request({items: [{handleId: media.handleId, messageId: media.messageId}]}),
+	);
+	await started;
+	cache.clearAll();
+	releaseProvider();
+	await result;
+
+	assert.equal(cache.records.size, 0);
+	assert.deepEqual(await readdir(directory), []);
+});
+
+test('malformed cache entries fail closed, are evicted, and require a new explicit action before provider retry', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const bytes = new Uint8Array([31, 32, 33]);
+	const mediaSha256 = createHash('sha256').update(bytes).digest('hex');
+	const cache = memoryTranscriptCache();
+	cache.records.set(mediaSha256, {
+		model: openAiTranscriptionModel,
+		schemaVersion: transcriptCacheSchemaVersion,
+		segments: [{endSeconds: 1, startSeconds: 0, text: ''}],
+	});
+	let providerCalls = 0;
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe() {
+			providerCalls += 1;
+			return {
+				model: openAiTranscriptionModel,
+				segments: [{endSeconds: 1, startSeconds: 0, text: 'Fresh transcript'}],
+			};
+		},
+	}, () => snapshot, {inspectDuration: async () => 1, transcriptCache: cache});
+	const malformedMedia = await resolver.resolveBlob(bytes.buffer, 'audio/wav', 'audio', 'message-malformed', snapshot, 1);
+	await expectCode(
+		service.transcribeBatch('sk-private', request({items: [{handleId: malformedMedia.handleId, messageId: malformedMedia.messageId}]})),
+		'malformed-cache',
+	);
+	assert.equal(providerCalls, 0);
+	assert.equal(cache.records.has(mediaSha256), false);
+
+	const retryMedia = await resolver.resolveBlob(bytes.buffer, 'audio/wav', 'audio', 'message-retry', snapshot, 1);
+	const [retried] = await service.transcribeBatch(
+		'sk-private',
+		request({items: [{handleId: retryMedia.handleId, messageId: retryMedia.messageId}]}),
+	);
+	assert.equal(providerCalls, 1);
+	assert.equal(retried.source.messageId, 'message-retry');
+	assert.deepEqual(cache.records.get(mediaSha256).segments, retried.segments);
+	assert.deepEqual(await readdir(directory), []);
+});
+
 test('media transcription discards stale completions and releases bytes after provider failure, cancellation, or handle release', async () => {
 	await Promise.all(['stale', 'failure', 'cancelled', 'released'].map(async scenario => {
 		const directory = await fixtureDirectory();
@@ -333,6 +498,7 @@ test('media transcription discards stale completions and releases bytes after pr
 		);
 		let current = snapshot;
 		const cancellation = new AbortController();
+		const cache = memoryTranscriptCache();
 		const service = new MediaTranscriptionService(resolver, {
 			async transcribe() {
 				if (scenario === 'stale') {
@@ -352,7 +518,7 @@ test('media transcription discards stale completions and releases bytes after pr
 
 				throw new TranscriptionError('provider-unavailable', 'Provider failed.');
 			},
-		}, () => current, async () => 2);
+		}, () => current, {inspectDuration: async () => 2, transcriptCache: cache});
 		const expectedCodes = {
 			cancelled: 'cancelled',
 			failure: 'provider-unavailable',
@@ -367,8 +533,58 @@ test('media transcription discards stale completions and releases bytes after pr
 			),
 			expectedCodes[scenario],
 		);
+		assert.equal(cache.records.size, 0);
 		assert.deepEqual(await readdir(directory), []);
 	}));
+});
+
+test('a failed two-item batch does not cache an earlier successful item', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const first = await resolver.resolveBlob(
+		new Uint8Array([51, 52]).buffer,
+		'audio/wav',
+		'audio',
+		'message-first',
+		snapshot,
+		1,
+	);
+	const second = await resolver.resolveBlob(
+		new Uint8Array([53, 54]).buffer,
+		'audio/wav',
+		'audio',
+		'message-second',
+		snapshot,
+		1,
+	);
+	const cache = memoryTranscriptCache();
+	let providerCalls = 0;
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe() {
+			providerCalls += 1;
+			if (providerCalls === 2) {
+				throw new TranscriptionError('provider-unavailable', 'Provider failed.');
+			}
+
+			return {
+				model: openAiTranscriptionModel,
+				segments: [{endSeconds: 1, startSeconds: 0, text: 'First transcript'}],
+			};
+		},
+	}, () => snapshot, {inspectDuration: async () => 1, transcriptCache: cache});
+
+	await expectCode(service.transcribeBatch('sk-private', request({
+		items: [
+			{handleId: first.handleId, messageId: first.messageId},
+			{handleId: second.handleId, messageId: second.messageId},
+		],
+	})), 'provider-unavailable');
+	assert.equal(providerCalls, 2);
+	assert.equal(cache.records.size, 0);
+	assert.deepEqual(await readdir(directory), []);
 });
 
 test('media transcription processes one authoritative two-item batch and releases both handles', async () => {

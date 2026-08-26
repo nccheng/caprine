@@ -40,12 +40,28 @@ export type MediaTranscription = OpenAiTranscription & {
 	};
 };
 
+export const transcriptCacheSchemaVersion = 1;
+
+export type TranscriptCacheRecord = {
+	model: typeof openAiTranscriptionModel;
+	schemaVersion: typeof transcriptCacheSchemaVersion;
+	segments: TranscriptSegment[];
+};
+
+export type TranscriptCacheStore = {
+	deleteTranscriptCache(mediaSha256: string): void;
+	getTranscriptCacheGeneration(): number;
+	loadTranscriptCache(mediaSha256: string): unknown;
+	saveTranscriptCache(mediaSha256: string, record: TranscriptCacheRecord, expectedGeneration: number): void;
+};
+
 export const transcriptionErrorCodes = [
 	'authentication',
 	'cancelled',
 	'duration-exceeded',
 	'invalid-consent',
 	'item-limit',
+	'malformed-cache',
 	'malformed-response',
 	'missing-key',
 	'oversized',
@@ -104,6 +120,42 @@ const execFileAsync = promisify(execFile);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null;
+}
+
+function normalizeCachedTranscript(value: unknown): OpenAiTranscription {
+	if (!isRecord(value)
+		|| value.schemaVersion !== transcriptCacheSchemaVersion
+		|| value.model !== openAiTranscriptionModel
+		|| !Array.isArray(value.segments)) {
+		throw new TranscriptionError('malformed-cache', 'The saved transcript is invalid. Choose Transcribe and review again to retry.');
+	}
+
+	try {
+		return {
+			model: openAiTranscriptionModel,
+			segments: normalizeTranscriptSegments({
+				segments: value.segments.map(segment => {
+					if (!isRecord(segment)) {
+						throw new TranscriptionError('malformed-cache', 'The saved transcript is invalid. Choose Transcribe and review again to retry.');
+					}
+
+					return {
+						end: segment.endSeconds,
+						start: segment.startSeconds,
+						text: segment.text,
+					};
+				}),
+			}),
+		};
+	} catch {
+		throw new TranscriptionError('malformed-cache', 'The saved transcript is invalid. Choose Transcribe and review again to retry.');
+	}
+}
+
+function evictCachedTranscript(cache: TranscriptCacheStore, mediaSha256: string): void {
+	try {
+		cache.deleteTranscriptCache(mediaSha256);
+	} catch {}
 }
 
 function sameSnapshot(left: Readonly<ConversationSnapshot>, right: Readonly<ConversationSnapshot> | undefined): boolean {
@@ -454,15 +506,29 @@ function mapResolverError(error: unknown): never {
 }
 
 export class MediaTranscriptionService {
+	private readonly inspectDuration: MediaDurationInspector;
+	private readonly transcriptCache?: TranscriptCacheStore;
+
 	constructor(
 		private readonly mediaHandles: MediaHandleStore,
 		private readonly client: OpenAiTranscriptionClient,
 		private readonly currentSnapshot: () => Readonly<ConversationSnapshot> | undefined,
-		private readonly inspectDuration: MediaDurationInspector = inspectAudioDuration,
-	) {}
+		options: MediaDurationInspector | {
+			inspectDuration?: MediaDurationInspector;
+			transcriptCache?: TranscriptCacheStore;
+		} = {},
+	) {
+		if (typeof options === 'function') {
+			this.inspectDuration = options;
+			return;
+		}
+
+		this.inspectDuration = options.inspectDuration ?? inspectAudioDuration;
+		this.transcriptCache = options.transcriptCache;
+	}
 
 	async transcribeBatch(
-		apiKey: string,
+		apiKey: string | (() => string),
 		request: Readonly<MediaTranscriptionRequest>,
 		signal?: AbortSignal,
 	): Promise<MediaTranscription[]> {
@@ -504,19 +570,64 @@ export class MediaTranscriptionService {
 					}
 
 					const transcriptions: MediaTranscription[] = [];
+					const pendingCacheWrites: Array<{mediaSha256: string; record: TranscriptCacheRecord}> = [];
+					const transcriptCacheGeneration = this.transcriptCache?.getTranscriptCacheGeneration();
+					let providerApiKey: string | undefined;
 					for (const [index, file] of files.entries()) {
 						const item = request.items[index];
 						this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
-						// eslint-disable-next-line no-await-in-loop
-						const transcript = await this.client.transcribe(apiKey, file.bytes, file.media.mimeType, signal);
+						const mediaSha256 = createHash('sha256').update(file.bytes).digest('hex');
+						let cacheHit = false;
+						let transcript: OpenAiTranscription | undefined;
+						if (this.transcriptCache) {
+							let cached: unknown;
+							try {
+								cached = this.transcriptCache.loadTranscriptCache(mediaSha256);
+							} catch {
+								evictCachedTranscript(this.transcriptCache, mediaSha256);
+								throw new TranscriptionError('malformed-cache', 'The saved transcript is invalid. Choose Transcribe and review again to retry.');
+							}
+
+							if (cached !== undefined) {
+								try {
+									transcript = normalizeCachedTranscript(cached);
+									cacheHit = true;
+								} catch (error) {
+									evictCachedTranscript(this.transcriptCache, mediaSha256);
+									throw error;
+								}
+							}
+						}
+
+						if (!transcript) {
+							providerApiKey ??= typeof apiKey === 'function' ? apiKey() : apiKey;
+							// eslint-disable-next-line no-await-in-loop
+							transcript = await this.client.transcribe(providerApiKey, file.bytes, file.media.mimeType, signal);
+						}
+
+						if (signal?.aborted) {
+							throw new TranscriptionError('cancelled', 'Transcription cancelled.');
+						}
+
 						if (!sameSnapshot(request.snapshot, this.currentSnapshot())) {
 							throw new TranscriptionError('stale-media', 'The conversation changed before transcription completed.');
 						}
 
 						this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
+						if (!cacheHit) {
+							pendingCacheWrites.push({
+								mediaSha256,
+								record: {
+									model: transcript.model,
+									schemaVersion: transcriptCacheSchemaVersion,
+									segments: transcript.segments.map(segment => ({...segment})),
+								},
+							});
+						}
+
 						transcriptions.push({
 							...transcript,
-							mediaSha256: createHash('sha256').update(file.bytes).digest('hex'),
+							mediaSha256,
 							source: {
 								byteLength: file.media.byteLength,
 								durationSeconds: file.durationSeconds,
@@ -525,6 +636,18 @@ export class MediaTranscriptionService {
 								mimeType: file.media.mimeType,
 							},
 						});
+					}
+
+					if (this.transcriptCache && transcriptCacheGeneration !== undefined) {
+						for (const pendingWrite of pendingCacheWrites) {
+							try {
+								this.transcriptCache.saveTranscriptCache(
+									pendingWrite.mediaSha256,
+									pendingWrite.record,
+									transcriptCacheGeneration,
+								);
+							} catch {}
+						}
 					}
 
 					return transcriptions;

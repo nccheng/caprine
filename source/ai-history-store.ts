@@ -1,9 +1,13 @@
 import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {ContextWindowSize, ReviewedContextItem} from './context-review';
+import {
+	TranscriptCacheRecord,
+	transcriptCacheSchemaVersion,
+} from './media-transcription';
 import {OpenAiUrlCitation, OpenAiWebSource, WebSearchMode} from './openai-client';
 
-export const aiHistorySchemaVersion = 2;
+export const aiHistorySchemaVersion = 3;
 
 export type AiHistoryArtifactReference = {
 	id: string;
@@ -107,6 +111,12 @@ type SummaryRow = {
 	title: string;
 };
 
+type TranscriptCacheRow = {
+	model: string;
+	schema_version: number;
+	segments_json: string;
+};
+
 function parseJson<T>(value: string): T {
 	return JSON.parse(value) as T;
 }
@@ -121,6 +131,14 @@ function requireText(value: string, name: string, maximumLength = 20_000): strin
 
 function requireIdentifier(value: string, name: string): string {
 	return requireText(value, name, 512);
+}
+
+function requireMediaSha256(value: string): string {
+	if (!/^[\da-f]{64}$/.test(value)) {
+		throw new TypeError('mediaSha256 must be a lowercase SHA-256 digest');
+	}
+
+	return value;
 }
 
 function interactionFromRow(row: InteractionRow): AiHistoryInteraction {
@@ -151,6 +169,7 @@ export class AiHistoryStore {
 	private readonly failAt?: AiHistoryStoreOptions['failAt'];
 	private readonly generateId: () => string;
 	private readonly now: () => number;
+	private transcriptCacheGeneration = 0;
 
 	constructor(options: AiHistoryStoreOptions) {
 		this.database = new DatabaseSync(options.databasePath);
@@ -411,7 +430,58 @@ export class AiHistoryStore {
 	}
 
 	clearAll(): number {
-		return Number(this.database.prepare('DELETE FROM ai_history_chats').run().changes);
+		const deletedCount = this.transaction(() => {
+			const chatCount = Number(this.database.prepare('DELETE FROM ai_history_chats').run().changes);
+			const transcriptCount = Number(this.database.prepare('DELETE FROM ai_transcript_cache').run().changes);
+			return chatCount + transcriptCount;
+		});
+		this.transcriptCacheGeneration += 1;
+		return deletedCount;
+	}
+
+	getTranscriptCacheGeneration(): number {
+		return this.transcriptCacheGeneration;
+	}
+
+	loadTranscriptCache(mediaSha256: string): unknown {
+		requireMediaSha256(mediaSha256);
+		const row = this.database.prepare(`
+			SELECT schema_version, model, segments_json
+			FROM ai_transcript_cache
+			WHERE media_sha256 = ?
+		`).get(mediaSha256) as TranscriptCacheRow | undefined;
+		if (!row) {
+			return;
+		}
+
+		return {
+			model: row.model,
+			schemaVersion: row.schema_version,
+			segments: parseJson<unknown>(row.segments_json),
+		};
+	}
+
+	saveTranscriptCache(mediaSha256: string, record: TranscriptCacheRecord, expectedGeneration: number): void {
+		requireMediaSha256(mediaSha256);
+		if (expectedGeneration !== this.transcriptCacheGeneration) {
+			return;
+		}
+
+		this.database.prepare(`
+			INSERT OR IGNORE INTO ai_transcript_cache (
+				media_sha256, schema_version, model, segments_json
+			) VALUES (?, ?, ?, ?)
+		`).run(
+			mediaSha256,
+			record.schemaVersion,
+			record.model,
+			JSON.stringify(record.segments),
+		);
+	}
+
+	deleteTranscriptCache(mediaSha256: string): void {
+		requireMediaSha256(mediaSha256);
+		this.database.prepare('DELETE FROM ai_transcript_cache WHERE media_sha256 = ?').run(mediaSha256);
 	}
 
 	private insertChat(conversationId: string): string {
@@ -508,8 +578,9 @@ export class AiHistoryStore {
 		for (let nextVersion = version + 1; nextVersion <= aiHistorySchemaVersion; nextVersion += 1) {
 			this.database.exec('BEGIN IMMEDIATE');
 			try {
-				if (nextVersion === 1) {
-					this.database.exec(`
+				switch (nextVersion) {
+					case 1: {
+						this.database.exec(`
 						CREATE TABLE ai_history_chats (
 							id TEXT PRIMARY KEY,
 							conversation_id TEXT NOT NULL,
@@ -540,10 +611,32 @@ export class AiHistoryStore {
 							created_at INTEGER NOT NULL,
 							UNIQUE (interaction_id, role)
 						) STRICT;
+						`);
+						break;
+					}
+
+					case 2: {
+						this.database.exec('ALTER TABLE ai_history_interactions ADD COLUMN artifact_references_json TEXT NOT NULL DEFAULT \'[]\'');
+						this.database.exec('ALTER TABLE ai_history_interactions ADD COLUMN outcome TEXT NOT NULL DEFAULT \'completed\' CHECK (outcome = \'completed\')');
+						break;
+					}
+
+					case 3: {
+						this.database.exec(`
+						CREATE TABLE ai_transcript_cache (
+							media_sha256 TEXT PRIMARY KEY
+								CHECK (length(media_sha256) = 64 AND media_sha256 NOT GLOB '*[^0-9a-f]*'),
+							schema_version INTEGER NOT NULL CHECK (schema_version = ${transcriptCacheSchemaVersion}),
+							model TEXT NOT NULL CHECK (model = 'whisper-1'),
+							segments_json TEXT NOT NULL
+						) STRICT;
 					`);
-				} else if (nextVersion === 2) {
-					this.database.exec('ALTER TABLE ai_history_interactions ADD COLUMN artifact_references_json TEXT NOT NULL DEFAULT \'[]\'');
-					this.database.exec('ALTER TABLE ai_history_interactions ADD COLUMN outcome TEXT NOT NULL DEFAULT \'completed\' CHECK (outcome = \'completed\')');
+						break;
+					}
+
+					default: {
+						throw new Error(`Unsupported AI history migration ${nextVersion}`);
+					}
 				}
 
 				this.database.exec(`PRAGMA user_version = ${nextVersion}`);
