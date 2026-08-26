@@ -129,6 +129,18 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		type: 'capture-context',
 	}), true);
 	assert.equal(isAiAssistMessengerCommand({requestId: 'context-capture-1', type: 'cancel-context-capture'}), true);
+	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
+		messageId: 'message-1',
+		requestId: 'image-target-request-1',
+		type: 'resolve-image-target',
+	}), true);
+	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
+		messageId: 'message-1',
+		requestId: 'wrong-1',
+		type: 'resolve-image-target',
+	}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'refresh-context'}), true);
 	assert.equal(isAiAssistPanelCommand({requestedCount: 50, type: 'set-context-window'}), true);
 	assert.equal(isAiAssistPanelCommand({requestedCount: 12, type: 'set-context-window'}), false);
@@ -223,6 +235,42 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		status: 'inserted',
 		type: 'draft-insertion',
 	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		conversationId: 'messenger-thread:123',
+		messageId: 'message-1',
+		rectangle: {
+			height: 40, width: 50, x: 10, y: 20,
+		},
+		requestId: 'image-target-request-1',
+		status: 'available',
+		targetToken: 'messenger-image-target-1',
+		type: 'image-target-resolution',
+		viewport: {height: 800, width: 1200},
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		conversationId: 'messenger-thread:123',
+		messageId: 'message-1',
+		rectangle: {
+			height: 5000, width: 5000, x: 0, y: 0,
+		},
+		requestId: 'image-target-request-1',
+		status: 'available',
+		targetToken: 'messenger-image-target-1',
+		type: 'image-target-resolution',
+		viewport: {height: 5000, width: 5000},
+	}), false);
+	assert.equal(isAiAssistMessengerEvent({
+		reason: 'ambiguous-target',
+		requestId: 'image-target-request-1',
+		status: 'unavailable',
+		type: 'image-target-resolution',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		reason: 'made-up',
+		requestId: 'image-target-request-1',
+		status: 'unavailable',
+		type: 'image-target-resolution',
+	}), false);
 	assert.equal(isAiAssistMessengerEvent({
 		answerGeneration: 3,
 		authorizationToken: insertionToken,

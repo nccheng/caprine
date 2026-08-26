@@ -42,6 +42,11 @@ import {
 } from './media-contract';
 import {AiHistoryChatView, maximumHistoryChats, maximumHistoryInteractionsPerChat} from './ai-history-workspace';
 import {ReviewedImageItem, ReviewedImageSelectionSummary} from './reviewed-images';
+import {
+	MessengerImageCaptureFailureReason,
+	MessengerImageCaptureTarget,
+	validateMessengerImageCaptureRectangle,
+} from './messenger-image-capture';
 
 export const aiAssistIpcChannels = {
 	composerCommand: 'ai-assist:composer-command',
@@ -164,6 +169,7 @@ export type AiAssistMessengerCommand =
 		type: 'insert-draft';
 	}
 	| {requestId?: string; type: 'report-conversation'}
+	| {conversationId: string; messageId: string; requestId: string; type: 'resolve-image-target'}
 	| {kind: MediaKind; messageId: string; requestId: string; type: 'resolve-media'};
 
 export type MessengerMediaCandidate = {
@@ -230,6 +236,17 @@ export type AiAssistMessengerEvent =
 		type: 'conversation-state';
 	}
 	| {
+		reason: MessengerImageCaptureFailureReason;
+		requestId: string;
+		status: 'unavailable';
+		type: 'image-target-resolution';
+	}
+	| (MessengerImageCaptureTarget & {
+		requestId: string;
+		status: 'available';
+		type: 'image-target-resolution';
+	})
+	| {
 		byteLength?: number;
 		durationSeconds?: number;
 		handleId?: string;
@@ -253,6 +270,61 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 
 function isBoundedString(value: unknown, maximumLength: number): value is string {
 	return typeof value === 'string' && value.length > 0 && value.length <= maximumLength;
+}
+
+function isImageTargetResolution(value: Record<string, unknown>): boolean {
+	if (!/^image-target-request-\d+$/.test(value.requestId as string)) {
+		return false;
+	}
+
+	if (value.status === 'unavailable') {
+		return hasExactKeys(value, ['reason', 'requestId', 'status', 'type'])
+			&& [
+				'aborted',
+				'ambiguous-target',
+				'capture-failed',
+				'conversation-changed',
+				'detached-target',
+				'hidden-target',
+				'invalid-message',
+				'missing-target',
+				'out-of-bounds',
+				'oversized-target',
+				'replaced-target',
+			].includes(value.reason as string);
+	}
+
+	if (
+		value.status !== 'available'
+		|| !hasExactKeys(value, [
+			'conversationId',
+			'messageId',
+			'rectangle',
+			'requestId',
+			'status',
+			'targetToken',
+			'type',
+			'viewport',
+		])
+		|| !isConversationId(value.conversationId)
+		|| !isMessageId(value.messageId)
+		|| !isRecord(value.rectangle)
+		|| !hasExactKeys(value.rectangle, ['height', 'width', 'x', 'y'])
+		|| !isRecord(value.viewport)
+		|| !hasExactKeys(value.viewport, ['height', 'width'])
+		|| !isBoundedString(value.targetToken, 200)
+	) {
+		return false;
+	}
+
+	const rectangle = value.rectangle as Record<'height' | 'width' | 'x' | 'y', number>;
+	const viewport = value.viewport as Record<'height' | 'width', number>;
+	const validated = validateMessengerImageCaptureRectangle(rectangle, viewport);
+	return validated.status === 'available'
+		&& validated.rectangle.height === rectangle.height
+		&& validated.rectangle.width === rectangle.width
+		&& validated.rectangle.x === rectangle.x
+		&& validated.rectangle.y === rectangle.y;
 }
 
 function isConversationId(value: unknown): value is string {
@@ -1032,6 +1104,13 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 			&& isMediaRequestId(value.requestId);
 	}
 
+	if (value.type === 'resolve-image-target') {
+		return hasExactKeys(value, ['conversationId', 'messageId', 'requestId', 'type'])
+			&& isConversationId(value.conversationId)
+			&& isMessageId(value.messageId)
+			&& /^image-target-request-\d+$/.test(value.requestId as string);
+	}
+
 	if (value.type === 'insert-draft') {
 		return hasExactKeys(value, ['answerGeneration', 'authorizationToken', 'conversationId', 'requestId', 'text', 'type'])
 			&& isAnswerGeneration(value.answerGeneration)
@@ -1076,6 +1155,10 @@ export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMesse
 
 	if (value.type === 'media-resolution') {
 		return isMessengerMediaEvent(value);
+	}
+
+	if (value.type === 'image-target-resolution') {
+		return isImageTargetResolution(value);
 	}
 
 	if (value.type === 'draft-insertion') {

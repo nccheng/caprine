@@ -57,6 +57,7 @@ import {
 	extractLoadedMessengerMediaCandidates,
 	resolveMessengerMediaDomCandidate,
 } from './messenger-media-dom';
+import {resolveMessengerImageCaptureTarget} from './messenger-image-capture';
 import {
 	messengerMediaResolverChannel,
 	MessengerMediaResolverRequest,
@@ -1378,6 +1379,21 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 			scheduleConversationStateReport();
 		}
 
+		return;
+	}
+
+	if (value.type === 'resolve-image-target') {
+		const resolution = currentConversationId() === value.conversationId
+			? resolveMessengerImageCaptureTarget(document, value.messageId, value.conversationId, {
+				height: window.innerHeight,
+				width: window.innerWidth,
+			})
+			: {reason: 'conversation-changed' as const, status: 'unavailable' as const};
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			...resolution,
+			requestId: value.requestId,
+			type: 'image-target-resolution',
+		});
 		return;
 	}
 

@@ -1,8 +1,17 @@
-import {ProcessedMessengerImageDescription} from './messenger-image-normalization';
+import {ConversationSnapshot} from './ai-assist-state';
+import {
+	MessengerImageCaptureResult,
+} from './messenger-image-capture';
+import {
+	MessengerImageNormalizationResult,
+	ProcessedMessengerImageDescription,
+} from './messenger-image-normalization';
+import {ConversationContextItem} from './messenger-context';
 
 export const defaultReviewedImageSelectionCount = 3;
 export const maximumReviewedImageCount = 4;
 export const maximumReviewedImageAggregateBytes = 20 * 1024 * 1024;
+export const maximumReviewedImageCandidates = 10;
 
 export type ReviewedImageFailureStage = 'capture' | 'normalization';
 export type ReviewedImageStatus =
@@ -59,6 +68,136 @@ type ProcessedImageInput = ReviewedImageSource & {
 	bytes: Uint8Array;
 	description: Readonly<ProcessedMessengerImageDescription>;
 };
+
+export type ReviewedImagePipeline = {
+	capture: (
+		messageId: string,
+		snapshot: Readonly<ConversationSnapshot>,
+		signal: AbortSignal,
+	) => Promise<MessengerImageCaptureResult>;
+	normalize: (
+		captureHandleId: string,
+		messageId: string,
+		snapshot: Readonly<ConversationSnapshot>,
+		signal: AbortSignal,
+	) => Promise<MessengerImageNormalizationResult>;
+	releaseProcessed: (handleId: string) => void;
+	withPreview: <T>(
+		handleId: string,
+		messageId: string,
+		snapshot: Readonly<ConversationSnapshot>,
+		callback: (bytes: Uint8Array, description: ProcessedMessengerImageDescription) => Promise<T> | T,
+	) => Promise<T>;
+};
+
+function reviewedImageSource(item: Readonly<ConversationContextItem>, id: string): ReviewedImageSource {
+	const senderLabel = item.sender.role === 'outgoing'
+		? 'Sent by you'
+		: (item.sender.displayName ? `Received from ${item.sender.displayName}` : 'Sender unknown');
+	return {
+		id,
+		messageContext: item.text ?? item.reply?.text ?? 'Image attachment',
+		messageId: item.messageId ?? `unidentified-image-${id}`,
+		senderLabel,
+	};
+}
+
+export async function createReviewedImageItems(input: Readonly<{
+	anchorMessageId?: string;
+	contextItems: ReadonlyArray<Readonly<ConversationContextItem>>;
+	idPrefix: string;
+	pipeline: ReviewedImagePipeline;
+	signal: AbortSignal;
+	snapshot: Readonly<ConversationSnapshot>;
+}>): Promise<ReadonlyArray<Readonly<ReviewedImageItem>>> {
+	const imageIndexes = input.contextItems
+		.map((item, index) => item.attachments?.some(attachment => attachment.kind === 'image') ? index : -1)
+		.filter(index => index >= 0);
+	const candidateIndexes = new Set(imageIndexes.slice(-maximumReviewedImageCandidates));
+	if (input.anchorMessageId) {
+		const anchorIndex = input.contextItems.findIndex(item => item.messageId === input.anchorMessageId
+			&& item.attachments?.some(attachment => attachment.kind === 'image'));
+		if (anchorIndex >= 0) {
+			candidateIndexes.add(anchorIndex);
+			if (candidateIndexes.size > maximumReviewedImageCandidates) {
+				const oldestNonAnchor = [...candidateIndexes].find(index => index !== anchorIndex);
+				if (oldestNonAnchor !== undefined) {
+					candidateIndexes.delete(oldestNonAnchor);
+				}
+			}
+		}
+	}
+
+	const reviewed: Array<Readonly<ReviewedImageItem>> = [];
+	for (const index of [...candidateIndexes].sort((left, right) => left - right)) {
+		if (input.signal.aborted) {
+			break;
+		}
+
+		const contextItem = input.contextItems[index];
+		const source = reviewedImageSource(contextItem, `${input.idPrefix}:image:${index}`);
+		if (!contextItem.messageId) {
+			reviewed.push(createFailedReviewedImage({
+				...source,
+				failureReason: 'Stable Messenger message identity is unavailable.',
+				stage: 'capture',
+			}));
+			continue;
+		}
+
+		// Sequential capture bounds native image memory and preserves deterministic review order.
+		// eslint-disable-next-line no-await-in-loop
+		const captured = await input.pipeline.capture(contextItem.messageId, input.snapshot, input.signal);
+		if (captured.status === 'unavailable') {
+			reviewed.push(createFailedReviewedImage({
+				...source,
+				failureReason: `Image capture unavailable: ${captured.reason}.`,
+				stage: 'capture',
+			}));
+			continue;
+		}
+
+		// eslint-disable-next-line no-await-in-loop
+		const normalized = await input.pipeline.normalize(
+			captured.handleId,
+			contextItem.messageId,
+			input.snapshot,
+			input.signal,
+		);
+		if (normalized.status === 'unavailable') {
+			reviewed.push(createFailedReviewedImage({
+				...source,
+				failureReason: `Image normalization unavailable: ${normalized.reason}.`,
+				stage: 'normalization',
+			}));
+			continue;
+		}
+
+		try {
+			// eslint-disable-next-line no-await-in-loop
+			const item = await input.pipeline.withPreview(
+				normalized.handleId,
+				contextItem.messageId,
+				input.snapshot,
+				async (bytes, description) => createProcessedReviewedImage({
+					...source,
+					bytes,
+					description,
+				}),
+			);
+			reviewed.push(item);
+		} catch {
+			input.pipeline.releaseProcessed(normalized.handleId);
+			reviewed.push(createFailedReviewedImage({
+				...source,
+				failureReason: 'Processed image preview is unavailable.',
+				stage: 'normalization',
+			}));
+		}
+	}
+
+	return selectDefaultReviewedImages(reviewed, input.anchorMessageId);
+}
 
 function freezeItems(items: readonly ReviewedImageItem[]): ReadonlyArray<Readonly<ReviewedImageItem>> {
 	return Object.freeze(items.map(item => Object.freeze({...item})));
@@ -157,21 +296,27 @@ export function selectDefaultReviewedImages(
 
 	let selectedCount = 0;
 	let aggregateBytes = 0;
-	const candidates = new Set(candidateIndexes);
-	return freezeItems(items.map((item, index) => {
-		if (!candidates.has(index) || !isProcessed(item)) {
-			return {...item};
-		}
-
+	const selectedIndexes = new Set<number>();
+	for (const index of candidateIndexes) {
+		const item = items[index];
 		if (
-			selectedCount >= maximumReviewedImageCount
+			!isProcessed(item)
+			|| selectedCount >= maximumReviewedImageCount
 			|| aggregateBytes + item.byteLength > maximumReviewedImageAggregateBytes
 		) {
+			continue;
+		}
+
+		selectedIndexes.add(index);
+		selectedCount += 1;
+		aggregateBytes += item.byteLength;
+	}
+
+	return freezeItems(items.map((item, index) => {
+		if (!selectedIndexes.has(index) || !isProcessed(item)) {
 			return {...item};
 		}
 
-		selectedCount += 1;
-		aggregateBytes += item.byteLength;
 		return {...item, status: 'selected'};
 	}));
 }
