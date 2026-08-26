@@ -62,6 +62,11 @@ import {
 } from './openai-client';
 import {AiHistoryInteractionInput, AiHistoryStore} from './ai-history-store';
 import {
+	AiHistoryDeletionAuthorizationState,
+	AiHistoryDeletionScope,
+	AiHistoryDeletionTarget,
+} from './ai-history-deletion';
+import {
 	captureHistoryDestinationChatId,
 	originalHistoryReplayAvailability,
 	restoreOriginalHistoryReview,
@@ -124,6 +129,7 @@ class AiAssistController {
 
 	private readonly answer = new ConversationBoundAnswer<OpenAiAnswer>();
 	private readonly draftInsertionAuthorization = new DraftInsertionAuthorizationState();
+	private readonly historyDeletion = new AiHistoryDeletionAuthorizationState();
 	private draftInsertionGeneration = 0;
 	private draftInsertionRequestCounter = 0;
 	private readonly conversationBinding = new AiConversationBinding();
@@ -283,7 +289,10 @@ class AiAssistController {
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
 			},
 			enabled: config.get('aiAssistEnabled'),
-			history: this.historyState,
+			history: {
+				...this.historyState,
+				...(this.historyDeletion.confirmation ? {deletionConfirmation: this.historyDeletion.confirmation} : {}),
+			},
 			...(this.invocation ? {invocation: this.invocation} : {}),
 			media: {
 				candidates: this.mediaCandidates,
@@ -419,8 +428,22 @@ class AiAssistController {
 				break;
 			}
 
+			case 'cancel-history-deletion': {
+				if (this.historyDeletion.cancel(value.authorizationToken)) {
+					this.notice = 'History deletion cancelled. Nothing was deleted.';
+				}
+
+				this.broadcastState();
+				break;
+			}
+
 			case 'close': {
 				this.panelWindow?.close();
+				break;
+			}
+
+			case 'confirm-history-deletion': {
+				this.confirmHistoryDeletion(value.authorizationToken);
 				break;
 			}
 
@@ -460,6 +483,11 @@ class AiAssistController {
 
 			case 'prepare-history-replay': {
 				await this.prepareHistoryReplay(value.chatId, value.interactionId, value.contextSource);
+				break;
+			}
+
+			case 'prepare-history-deletion': {
+				this.prepareHistoryDeletion(value.scope, value.chatId);
 				break;
 			}
 
@@ -2075,6 +2103,140 @@ class AiAssistController {
 		this.broadcastState();
 	}
 
+	private prepareHistoryDeletion(scope: AiHistoryDeletionScope, chatId?: string): void {
+		if (!this.historyStore || this.sessionState.snapshot.status === 'requesting') {
+			this.notice = 'History deletion is unavailable while another AI action is active.';
+			this.broadcastState();
+			return;
+		}
+
+		if (scope === 'all') {
+			this.historyDeletion.issue({scope}, {
+				confirmLabel: 'Delete all AI history',
+				message: 'Permanently delete every local Caprine AI Assist chat on this Mac. Messenger threads and messages are not deleted. This cannot be undone.',
+				title: 'Delete all local AI history?',
+			});
+			this.broadcastState();
+			return;
+		}
+
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot)) {
+			this.notice = 'Open a reliable Messenger conversation before deleting its local AI history.';
+			this.broadcastState();
+			return;
+		}
+
+		const displayName = this.conversationBinding.panelState.displayName ?? 'this Messenger conversation';
+		if (scope === 'conversation') {
+			this.historyDeletion.issue({scope, snapshot}, {
+				confirmLabel: 'Clear conversation history',
+				message: `Permanently delete every local Caprine AI Assist chat for ${displayName}. Other conversations and Messenger messages are not deleted. This cannot be undone.`,
+				title: 'Clear this conversation’s AI history?',
+			});
+			this.broadcastState();
+			return;
+		}
+
+		if (!chatId) {
+			return;
+		}
+
+		try {
+			const chat = this.historyStore.loadChat(snapshot.conversationId, chatId, 1);
+			if (!chat) {
+				this.notice = 'That local AI chat is no longer available. Nothing was deleted.';
+				this.broadcastState();
+				return;
+			}
+
+			const chatTitle = this.historyState.chats.find(item => item.id === chatId)?.title
+				?? chat.interactions[0]?.question.slice(0, 120)
+				?? 'New AI chat';
+			this.historyDeletion.issue({chatId, scope, snapshot}, {
+				confirmLabel: 'Delete AI chat',
+				message: `Permanently delete the local AI chat “${chatTitle}”. Other local AI chats and Messenger messages are not deleted. This cannot be undone.`,
+				title: 'Delete this local AI chat?',
+			});
+		} catch {
+			this.notice = 'Caprine could not safely prepare that local AI chat for deletion. Nothing was deleted.';
+		}
+
+		this.broadcastState();
+	}
+
+	private confirmHistoryDeletion(authorizationToken: string): void {
+		const decision = this.historyDeletion.consume(
+			authorizationToken,
+			this.conversationBinding.currentSnapshot,
+		);
+		if (decision.status === 'rejected') {
+			this.notice = 'That deletion confirmation expired or the Messenger conversation changed. Nothing was deleted.';
+			this.broadcastState();
+			return;
+		}
+
+		if (!this.historyStore) {
+			this.notice = 'Local AI history is unavailable. Nothing was deleted.';
+			this.broadcastState();
+			return;
+		}
+
+		try {
+			const {target} = decision;
+			let deletedCount: number;
+			if (target.scope === 'all') {
+				deletedCount = this.historyStore.clearAll();
+			} else if (target.scope === 'conversation') {
+				deletedCount = this.historyStore.clearConversation(target.snapshot.conversationId);
+			} else {
+				deletedCount = Number(this.historyStore.deleteChat(target.snapshot.conversationId, target.chatId));
+			}
+
+			if (deletedCount === 0) {
+				this.notice = 'That local AI history was already absent. Nothing else was deleted.';
+				this.broadcastState();
+				return;
+			}
+
+			this.clearDeletedHistoryReferences(target);
+			if (target.scope === 'all') {
+				this.notice = `Deleted ${deletedCount} local AI ${deletedCount === 1 ? 'chat' : 'chats'} from this Mac. Messenger messages were not changed.`;
+			} else if (target.scope === 'conversation') {
+				this.notice = `Cleared ${deletedCount} local AI ${deletedCount === 1 ? 'chat' : 'chats'} for the confirmed Messenger conversation. Messenger messages were not changed.`;
+			} else {
+				this.notice = 'Deleted the selected local AI chat. Other local AI chats and Messenger messages were not changed.';
+			}
+		} catch {
+			this.notice = 'Caprine could not delete that local AI history. Nothing else was deleted.';
+		}
+
+		this.broadcastState();
+	}
+
+	private clearDeletedHistoryReferences(target: Readonly<AiHistoryDeletionTarget>): void {
+		if (target.scope !== 'all' && target.snapshot.conversationId !== this.historyConversationId) {
+			return;
+		}
+
+		const deletesCurrentChat = target.scope !== 'chat'
+			|| target.chatId === this.selectedHistoryChatId;
+		if (deletesCurrentChat) {
+			this.selectedHistoryChatId = undefined;
+		}
+
+		const deletesRequestDestination = target.scope !== 'chat'
+			|| target.chatId === this.historyChat?.chatId;
+		if (deletesRequestDestination) {
+			this.historyChat = undefined;
+			this.currentHistoryInteractionId = undefined;
+		}
+
+		if (target.scope !== 'chat') {
+			this.historyQuery = '';
+		}
+	}
+
 	private createHistoryChat(): void {
 		const snapshot = this.conversationBinding.currentSnapshot;
 		if (!snapshot || !this.historyStore) {
@@ -2136,6 +2298,7 @@ class AiAssistController {
 		this.error = undefined;
 		this.invocation = undefined;
 		this.clearContextReview();
+		this.historyDeletion.invalidate();
 		this.notice = undefined;
 	}
 

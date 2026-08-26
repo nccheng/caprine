@@ -112,6 +112,7 @@
 				<h2 id="history-heading">History</h2>
 				<p>Completed AI chats are stored only in Caprine's local macOS app data. They rely on your macOS account and FileVault for disk protection; Caprine does not add separate database encryption.</p>
 				<p>API keys, authentication data, raw Messenger page data, provider payloads, and raw media are never stored in history.</p>
+				<p>Deleting a Messenger thread does not delete Caprine AI history. This history remains local to this Mac until you delete it here.</p>
 				<div class="history-actions">
 					<form id="history-search-form" role="search">
 						<label for="history-search">Search this Messenger conversation</label>
@@ -122,6 +123,10 @@
 					</form>
 					<button id="new-history-chat-button" class="secondary" type="button">New AI chat</button>
 				</div>
+				<div class="button-row history-delete-actions">
+					<button id="clear-conversation-history-button" class="danger" type="button">Clear this conversation’s AI history</button>
+					<button id="clear-all-history-button" class="danger" type="button">Clear all AI history</button>
+				</div>
 				<p id="history-status" class="request-message" role="status">Open a Messenger conversation to view its local AI history.</p>
 				<div class="history-workspace">
 					<nav id="history-list" class="history-list" aria-label="AI chat history"></nav>
@@ -129,6 +134,14 @@
 				</div>
 			</section>
 		</main>
+		<dialog id="history-deletion-dialog" aria-labelledby="history-deletion-title" aria-describedby="history-deletion-message">
+			<h2 id="history-deletion-title">Confirm history deletion</h2>
+			<p id="history-deletion-message"></p>
+			<div class="button-row">
+				<button id="cancel-history-deletion-button" class="secondary" type="button">Cancel</button>
+				<button id="confirm-history-deletion-button" class="danger" type="button">Delete</button>
+			</div>
+		</dialog>
 
 		<footer>
 			<button id="close-button" type="button">Close AI Assist</button>

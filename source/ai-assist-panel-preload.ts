@@ -17,7 +17,9 @@ const sendCommand = async (command: AiAssistPanelCommand): Promise<AiAssistPanel
 
 contextBridge.exposeInMainWorld('caprineAiAssist', {
 	cancel: async () => sendCommand({type: 'cancel'}),
+	cancelHistoryDeletion: async (authorizationToken: string) => sendCommand({authorizationToken, type: 'cancel-history-deletion'}),
 	close: async () => sendCommand({type: 'close'}),
+	confirmHistoryDeletion: async (authorizationToken: string) => sendCommand({authorizationToken, type: 'confirm-history-deletion'}),
 	deleteApiKey: async () => sendCommand({type: 'delete-api-key'}),
 	editContextItem: async (reviewSequence: number, itemId: string, editedExcerpt: string) => sendCommand({
 		editedExcerpt,
@@ -45,6 +47,11 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 		contextSource,
 		interactionId,
 		type: 'prepare-history-replay',
+	}),
+	prepareHistoryDeletion: async (scope: 'all' | 'chat' | 'conversation', chatId?: string) => sendCommand({
+		...(chatId ? {chatId} : {}),
+		scope,
+		type: 'prepare-history-deletion',
 	}),
 	refreshContext: async () => sendCommand({type: 'refresh-context'}),
 	refreshConversation: async () => sendCommand({type: 'refresh-conversation'}),
