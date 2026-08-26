@@ -118,6 +118,36 @@ test('stable conversation IDs keep duplicate display names isolated', () => {
 	store.close();
 });
 
+test('replay lookup is scoped to the exact conversation and appending leaves the original immutable', () => {
+	const databasePath = temporaryDatabasePath();
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
+	const chatId = store.createChat('thread:replay');
+	const original = interaction({artifactReferences: []});
+	const originalId = store.appendCompletedInteraction(chatId, original);
+
+	assert.deepEqual(store.loadInteraction('thread:replay', chatId, originalId), {
+		...original,
+		draftStatus: 'not-inserted',
+		id: originalId,
+		shareStatus: 'private',
+	});
+	assert.equal(store.loadInteraction('thread:other', chatId, originalId), undefined);
+	assert.equal(store.loadInteraction('thread:replay', 'wrong-chat', originalId), undefined);
+
+	const replay = interaction({
+		answer: 'New replay answer',
+		artifactReferences: [],
+		completedAt: 4000,
+		requestedAt: 3000,
+	});
+	const replayId = store.appendCompletedInteraction(chatId, replay);
+	const {interactions} = store.loadChat('thread:replay', chatId);
+	assert.deepEqual(interactions.map(value => value.id), [originalId, replayId]);
+	assert.equal(interactions[0].answer, original.answer);
+	assert.equal(interactions[0].shareStatus, 'private');
+	store.close();
+});
+
 test('conversation search matches turns, frozen context, and source titles without crossing conversation IDs', () => {
 	const databasePath = temporaryDatabasePath();
 	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});

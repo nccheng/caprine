@@ -1,0 +1,37 @@
+import {ConversationSnapshot} from './ai-assist-state';
+import {AiHistoryInteraction} from './ai-history-store';
+import {ContextReviewSnapshot, restoreContextReviewSnapshot} from './context-review';
+
+export type AiHistoryOriginalReplayAvailability =
+	| {available: true}
+	| {available: false; reason: 'missing-artifacts' | 'unsupported-metadata'};
+
+export function originalHistoryReplayAvailability(
+	interaction: Readonly<AiHistoryInteraction>,
+	currentModel: string,
+): AiHistoryOriginalReplayAvailability {
+	if (interaction.provider !== 'openai' || interaction.model !== currentModel) {
+		return {available: false, reason: 'unsupported-metadata'};
+	}
+
+	if (
+		(interaction.artifactReferences?.length ?? 0) > 0
+		|| interaction.context.items.some(({item}) => (item.attachments?.length ?? 0) > 0)
+	) {
+		return {available: false, reason: 'missing-artifacts'};
+	}
+
+	return {available: true};
+}
+
+export function restoreOriginalHistoryReview(
+	interaction: Readonly<AiHistoryInteraction>,
+	snapshot: Readonly<ConversationSnapshot>,
+): Readonly<ContextReviewSnapshot> {
+	return restoreContextReviewSnapshot({
+		...interaction.context,
+		images: [],
+		newMessagesAvailable: false,
+		snapshot,
+	});
+}

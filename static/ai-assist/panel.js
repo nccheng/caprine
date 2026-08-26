@@ -8,6 +8,7 @@ const deleteKeyButton = document.querySelector('#delete-key-button');
 const refreshConversationButton = document.querySelector('#refresh-conversation-button');
 const contextWindow = document.querySelector('#context-window');
 const webSearchMode = document.querySelector('#web-search-mode');
+const contextSourceDisclosure = document.querySelector('#context-source-disclosure');
 const contextAvailability = document.querySelector('#context-availability');
 const contextItems = document.querySelector('#context-items');
 const imageSelectionSummary = document.querySelector('#image-selection-summary');
@@ -327,6 +328,7 @@ function createContextReviewRow(reviewed, index, reviewSequence, locked) {
 function renderContextReview(review, isRequesting) {
 	newMessages.hidden = !review?.newMessagesAvailable;
 	if (!review) {
+		contextSourceDisclosure.textContent = 'No context source selected.';
 		contextAvailability.textContent = 'No context captured.';
 		for (const row of contextReviewRows.values()) {
 			row.article.remove();
@@ -338,8 +340,13 @@ function renderContextReview(review, isRequesting) {
 	}
 
 	contextWindow.value = String(review.requestedCount);
+	contextSourceDisclosure.textContent = review.contextSource === 'historical-original'
+		? 'Context source: original frozen history snapshot. Its question, edits, omissions, and web-search mode are immutable for exact replay.'
+		: (review.contextSource === 'historical-current'
+			? 'Context source: newly captured current Messenger conversation for a historical question.'
+			: 'Context source: newly captured current Messenger conversation.');
 	const sendableCount = review.items.filter(({item}) => item.omittedReason === undefined).length;
-	const locked = review.locked || isRequesting;
+	const locked = review.locked || isRequesting || !review.editable;
 	const sendableSummary = review.locked
 		? `${sendableCount} selected in the locked Ask snapshot. Use Refresh context to make changes.`
 		: `${sendableCount} will be sent to OpenAI.`;
@@ -465,7 +472,7 @@ function renderReviewedImages(review, isRequesting) {
 		: 'No processed images in this review.';
 	imageSelectionNotice.textContent = summary?.blockingNotice ?? '';
 	const presentIds = new Set();
-	const locked = Boolean(review?.locked || isRequesting);
+	const locked = Boolean(review?.locked || isRequesting || review?.editable === false);
 	for (const image of images) {
 		presentIds.add(image.id);
 		let row = reviewedImageRows.get(image.id);
@@ -528,7 +535,32 @@ function appendHistoryDetail(chat) {
 		answer.textContent = interaction.answer;
 		const metadata = document.createElement('p');
 		metadata.textContent = `${historyTime(interaction.completedAt)} · ${interaction.model} · Web ${interaction.browsingMode}${interaction.webSearchRan ? ' (used)' : ''} · ${interaction.draftStatus === 'inserted' ? 'Inserted into draft' : 'Not inserted'} · ${interaction.shareStatus}`;
-		article.append(questionHeading, question, answerHeading, answer, metadata);
+		const replayActions = document.createElement('div');
+		replayActions.className = 'button-row';
+		const originalReplay = document.createElement('button');
+		originalReplay.type = 'button';
+		originalReplay.textContent = 'Regenerate from original context';
+		originalReplay.disabled = !interaction.originalReplay.available;
+		if (!interaction.originalReplay.available) {
+			originalReplay.title = interaction.originalReplay.reason === 'missing-artifacts'
+				? 'Original media or artifacts are unavailable for exact replay.'
+				: 'Original provider or model metadata is no longer supported.';
+		}
+
+		originalReplay.addEventListener('click', async () => {
+			render(await window.caprineAiAssist.prepareHistoryReplay(chat.id, interaction.id, 'original'));
+			promptInput.focus?.();
+		});
+		const currentReplay = document.createElement('button');
+		currentReplay.type = 'button';
+		currentReplay.className = 'secondary';
+		currentReplay.textContent = 'Ask again with current conversation context';
+		currentReplay.addEventListener('click', async () => {
+			render(await window.caprineAiAssist.prepareHistoryReplay(chat.id, interaction.id, 'current'));
+			promptInput.focus?.();
+		});
+		replayActions.append(originalReplay, currentReplay);
+		article.append(questionHeading, question, answerHeading, answer, metadata, replayActions);
 
 		if (interaction.citations.length > 0) {
 			const citationsHeading = document.createElement('h4');
@@ -639,7 +671,7 @@ function render(state) {
 	renderedCaptureGeneration = state.conversation.captureGeneration;
 	renderMessageAnchor(state.anchor);
 	contextWindow.value = String(state.contextWindowSize);
-	webSearchMode.value = state.webSearchMode;
+	webSearchMode.value = state.review?.browsingMode ?? state.webSearchMode;
 	renderContextReview(state.review, isRequesting);
 	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
 		promptInput.value = state.invocation.prompt;
@@ -678,10 +710,11 @@ function render(state) {
 	mediaKind.disabled = isRequesting || isMediaResolving || !isConversationReady;
 	resolveMediaButton.disabled = isRequesting || isMediaResolving || !isConversationReady;
 	mediaStatus.textContent = mediaStatusForState(state);
-	promptInput.disabled = isRequesting || isReviewLocked || !isConversationReady;
-	contextWindow.disabled = isRequesting || isContextCapturing || !isConversationReady;
-	webSearchMode.disabled = isRequesting || isReviewLocked || !isConversationReady;
-	refreshContextButton.disabled = isRequesting || isContextCapturing || !isConversationReady;
+	const isOriginalHistoryReplay = state.review?.contextSource === 'historical-original';
+	promptInput.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || !isConversationReady;
+	contextWindow.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || !isConversationReady;
+	webSearchMode.disabled = isRequesting || isReviewLocked || isOriginalHistoryReplay || !isConversationReady;
+	refreshContextButton.disabled = isRequesting || isContextCapturing || isOriginalHistoryReplay || !isConversationReady;
 	refreshContextButton.textContent = state.review?.newMessagesAvailable ? 'Refresh context — new messages available' : 'Refresh context';
 	askButton.textContent = isReviewLocked
 		? 'Asked — Refresh context to ask again'

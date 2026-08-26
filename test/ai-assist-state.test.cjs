@@ -153,6 +153,18 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({chatId: '', type: 'select-history-chat'}), false);
 	assert.equal(isAiAssistPanelCommand({query: 'source title', type: 'search-history'}), true);
 	assert.equal(isAiAssistPanelCommand({query: 'x'.repeat(201), type: 'search-history'}), false);
+	assert.equal(isAiAssistPanelCommand({
+		chatId: 'chat-1',
+		contextSource: 'original',
+		interactionId: 'interaction-1',
+		type: 'prepare-history-replay',
+	}), true);
+	assert.equal(isAiAssistPanelCommand({
+		chatId: 'chat-1',
+		contextSource: 'silent',
+		interactionId: 'interaction-1',
+		type: 'prepare-history-replay',
+	}), false);
 	const insertionToken = 'draft-insertion-token:00000000-0000-4000-8000-000000000001';
 	assert.equal(isAiAssistPanelCommand({
 		answerGeneration: 3,
@@ -444,6 +456,9 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		...panelStateWithHandle,
 		review: {
 			actualCount: 3,
+			browsingMode: 'always',
+			contextSource: 'current',
+			editable: true,
 			items: [{editedExcerpt: 'Reviewed excerpt', id: 'context-capture-1:0', item: anchorRequest.item}],
 			locked: false,
 			newMessagesAvailable: true,

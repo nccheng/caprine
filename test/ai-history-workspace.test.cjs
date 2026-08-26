@@ -21,7 +21,7 @@ function interaction(overrides = {}) {
 		},
 		draftStatus: 'inserted',
 		id: 'interaction-1',
-		model: 'gpt-test',
+		model: 'gpt-5.6-luna',
 		outcome: 'completed',
 		provider: 'openai',
 		question: 'First question',
@@ -62,6 +62,7 @@ test('history workspace produces newest-first bounded renderer DTOs without loca
 	assert.equal(views[0].preview.length, 240);
 	assert.deepEqual(views[0].badges, ['Web', 'Image']);
 	assert.deepEqual(views[0].interactions[0].artifacts, [{id: 'transcript-1', kind: 'transcript'}]);
+	assert.deepEqual(views[0].interactions[0].originalReplay, {available: false, reason: 'missing-artifacts'});
 	assert.deepEqual(views[0].interactions[0].citations, [{title: 'Citation only', url: 'https://example.com/citation'}]);
 	assert.equal(views[1].interactions.length, 0);
 	assert.equal(JSON.stringify(views).includes('/private/path'), false);

@@ -96,6 +96,9 @@ export type AiAssistPanelState = {
 		images: ReviewedImageItem[];
 		items: ReviewedContextItem[];
 		locked: boolean;
+		browsingMode: WebSearchMode;
+		contextSource: 'current' | 'historical-current' | 'historical-original';
+		editable: boolean;
 		newMessagesAvailable: boolean;
 		question: string;
 		requestedCount: ContextWindowSize;
@@ -133,6 +136,7 @@ export type AiAssistPanelCommand =
 	| {editedExcerpt: string; itemId: string; reviewSequence: number; type: 'edit-context-item'}
 	| {type: 'get-state'}
 	| {itemId: string; processedHandleId: string; reviewSequence: number; type: 'include-reviewed-image'}
+	| {chatId: string; contextSource: 'current' | 'original'; interactionId: string; type: 'prepare-history-replay'}
 	| {type: 'new-history-chat'}
 	| {type: 'open-citation'; url: string}
 	| {answerGeneration: number; authorizationToken: string; conversationId: string; type: 'insert-answer'}
@@ -568,6 +572,13 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 		return hasExactKeys(value, ['chatId', 'type']) && isBoundedString(value.chatId, 512);
 	}
 
+	if (value.type === 'prepare-history-replay') {
+		return hasExactKeys(value, ['chatId', 'contextSource', 'interactionId', 'type'])
+			&& isBoundedString(value.chatId, 512)
+			&& ['current', 'original'].includes(value.contextSource as string)
+			&& isBoundedString(value.interactionId, 512);
+	}
+
 	if (value.type === 'open-citation') {
 		return hasExactKeys(value, ['type', 'url'])
 			&& typeof value.url === 'string'
@@ -803,7 +814,7 @@ function isReviewState(value: unknown): boolean {
 		return false;
 	}
 
-	const keys = ['actualCount', 'items', 'locked', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence'];
+	const keys = ['actualCount', 'browsingMode', 'contextSource', 'editable', 'items', 'locked', 'newMessagesAvailable', 'question', 'requestedCount', 'sequence'];
 	if (value.images !== undefined || value.imageSelection !== undefined) {
 		keys.push('imageSelection', 'images');
 	}
@@ -813,6 +824,9 @@ function isReviewState(value: unknown): boolean {
 		&& Number.isSafeInteger(value.actualCount)
 		&& (value.actualCount as number) >= 0
 		&& (value.actualCount as number) <= 50
+		&& webSearchModes.includes(value.browsingMode as never)
+		&& ['current', 'historical-current', 'historical-original'].includes(value.contextSource as string)
+		&& typeof value.editable === 'boolean'
 		&& Array.isArray(value.items)
 		&& value.items.length <= (value.actualCount as number)
 		&& value.items.every(item => isReviewedContextItem(item))
@@ -938,6 +952,7 @@ function isHistoryInteraction(value: unknown): boolean {
 			'draftStatus',
 			'id',
 			'model',
+			'originalReplay',
 			'question',
 			'shareStatus',
 			'webSearchRan',
@@ -972,6 +987,15 @@ function isHistoryInteraction(value: unknown): boolean {
 		&& ['inserted', 'not-inserted'].includes(value.draftStatus as string)
 		&& isBoundedString(value.id, 512)
 		&& isBoundedString(value.model, 200)
+		&& isRecord(value.originalReplay)
+		&& (
+			(hasExactKeys(value.originalReplay, ['available']) && value.originalReplay.available === true)
+			|| (
+				hasExactKeys(value.originalReplay, ['available', 'reason'])
+				&& value.originalReplay.available === false
+				&& ['missing-artifacts', 'unsupported-metadata'].includes(value.originalReplay.reason as string)
+			)
+		)
 		&& typeof value.question === 'string'
 		&& value.question.length <= 20_000
 		&& ['private', 'shared'].includes(value.shareStatus as string)
