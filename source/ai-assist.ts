@@ -273,6 +273,7 @@ class AiAssistController {
 			this.mediaResolver,
 			new OpenAiTranscriptionClient(),
 			() => this.conversationBinding.currentSnapshot,
+			{transcriptCache: this.historyStore},
 		);
 		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
 		ipcMain.handle(aiAssistIpcChannels.draftInsertionAuthorization, this.handleDraftInsertionAuthorizationCheck);
@@ -1644,10 +1645,8 @@ class AiAssistController {
 		this.updateTranscriptState(reviewSequence, transcriptId, item => ({...item, notice: undefined, status: 'transcribing'}));
 		this.broadcastState();
 
-		let apiKey = '';
 		try {
-			apiKey = this.readApiKey();
-			const [result] = await this.mediaTranscriptionService.transcribeBatch(apiKey, {
+			const [result] = await this.mediaTranscriptionService.transcribeBatch(() => this.readApiKey(), {
 				consent: 'transcribe-and-review',
 				items: [{handleId: handle.handleId, messageId: handle.messageId}],
 				snapshot: handle.snapshot,
@@ -1667,7 +1666,6 @@ class AiAssistController {
 				this.updateTranscriptState(reviewSequence, transcriptId, item => transcriptFailure(item, error));
 			}
 		} finally {
-			apiKey = '';
 			await this.mediaResolver.releaseHandle(handle.handleId).catch(() => undefined);
 			this.transcriptHandles.delete(transcriptId);
 			if (this.pendingTranscription === pending) {
@@ -2496,7 +2494,7 @@ class AiAssistController {
 
 			this.clearDeletedHistoryReferences(target);
 			if (target.scope === 'all') {
-				this.notice = `Deleted ${deletedCount} local AI ${deletedCount === 1 ? 'chat' : 'chats'} from this Mac. Messenger messages were not changed.`;
+				this.notice = 'Cleared all local AI history and reusable transcripts from this Mac. Messenger messages were not changed.';
 			} else if (target.scope === 'conversation') {
 				this.notice = `Cleared ${deletedCount} local AI ${deletedCount === 1 ? 'chat' : 'chats'} for the confirmed Messenger conversation. Messenger messages were not changed.`;
 			} else {

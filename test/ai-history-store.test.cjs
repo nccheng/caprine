@@ -5,6 +5,7 @@ const path = require('node:path');
 const {afterEach, test} = require('node:test');
 const {DatabaseSync} = require('node:sqlite');
 const {AiHistoryStore, aiHistorySchemaVersion} = require('../dist-js/ai-history-store.js');
+const {openAiTranscriptionModel, transcriptCacheSchemaVersion} = require('../dist-js/media-transcription.js');
 
 const temporaryDirectories = [];
 
@@ -278,6 +279,31 @@ test('delete operations are scoped and cascade only through the selected chat', 
 	store.close();
 });
 
+test('transcript cache round-trips by SHA-256 and only clear-all removes reusable content', () => {
+	const databasePath = temporaryDatabasePath();
+	const mediaSha256 = 'ab'.repeat(32);
+	const record = {
+		model: openAiTranscriptionModel,
+		schemaVersion: transcriptCacheSchemaVersion,
+		segments: [{endSeconds: 1.5, startSeconds: 0, text: 'Reusable transcript'}],
+	};
+	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
+	const chatId = store.createChat('thread:cache');
+	store.appendCompletedInteraction(chatId, interaction());
+	store.saveTranscriptCache(mediaSha256, record);
+	assert.deepEqual(store.loadTranscriptCache(mediaSha256), record);
+	assert.equal(store.clearConversation('thread:cache'), 1);
+	assert.deepEqual(store.loadTranscriptCache(mediaSha256), record);
+	store.close();
+
+	const reopened = new AiHistoryStore({databasePath});
+	assert.deepEqual(reopened.loadTranscriptCache(mediaSha256), record);
+	assert.equal(reopened.clearAll(), 1);
+	assert.equal(reopened.loadTranscriptCache(mediaSha256), undefined);
+	assert.throws(() => reopened.loadTranscriptCache('not-a-sha'), /lowercase SHA-256/);
+	reopened.close();
+});
+
 test('database deletion failures preserve the requested and unrelated history', () => {
 	const databasePath = temporaryDatabasePath();
 	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
@@ -306,6 +332,11 @@ test('database schema excludes forbidden secret, provider payload, DOM, cookie, 
 	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
 	const chatId = store.createChat('thread:inspection');
 	store.appendCompletedInteraction(chatId, interaction());
+	store.saveTranscriptCache('cd'.repeat(32), {
+		model: openAiTranscriptionModel,
+		schemaVersion: transcriptCacheSchemaVersion,
+		segments: [{endSeconds: 1, startSeconds: 0, text: 'Privacy-safe transcript'}],
+	});
 	store.close();
 	const bytes = readFileSync(databasePath, 'utf8');
 	for (const forbidden of ['api_key', 'auth_token', 'cookie', 'provider_payload', 'raw_dom', 'raw_audio', 'raw_video']) {
@@ -347,5 +378,6 @@ test('version 1 fixture migrates deterministically to the current schema', () =>
 	const columns = new Set(inspected.prepare('PRAGMA table_info(ai_history_interactions)').all().map(row => row.name));
 	assert.equal(columns.has('artifact_references_json'), true);
 	assert.equal(columns.has('outcome'), true);
+	assert.equal(inspected.prepare('SELECT count(*) AS count FROM sqlite_master WHERE type = \'table\' AND name = \'ai_transcript_cache\'').get().count, 1);
 	inspected.close();
 });
