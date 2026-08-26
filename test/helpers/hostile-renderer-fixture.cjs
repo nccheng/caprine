@@ -22,6 +22,24 @@ function documentFixture() {
 	};
 }
 
+function ipcRouter(authorizeSender, context, validators) {
+	let privilegedInvocations = 0;
+	return {
+		invoke(channel, event, payload) {
+			const validator = validators.get(channel);
+			if (!authorizeSender(channel, event, context) || !validator?.(payload)) {
+				return false;
+			}
+
+			privilegedInvocations += 1;
+			return true;
+		},
+		get privilegedInvocations() {
+			return privilegedInvocations;
+		},
+	};
+}
+
 function createHostileRendererFixture(panelUrl = 'file:///caprine/static/ai-assist/index.html') {
 	const messengerMainFrame = {
 		origin: 'https://www.facebook.com',
@@ -43,6 +61,25 @@ function createHostileRendererFixture(panelUrl = 'file:///caprine/static/ai-assi
 		apiKey: 'fixture-key-kept-in-main',
 		privateAnswer: 'fixture-answer-kept-in-panel',
 	};
+	const ordinaryMessenger = {
+		draft: '',
+		navigations: [],
+		playedMedia: 0,
+		sentMessages: 0,
+		navigate(url) {
+			this.navigations.push(url);
+		},
+		playMedia() {
+			this.playedMedia += 1;
+		},
+		send() {
+			this.sentMessages += 1;
+			this.draft = '';
+		},
+		type(text) {
+			this.draft = text;
+		},
+	};
 	panelDocument.add('answer-text', mainOnly.privateAnswer);
 
 	return {
@@ -57,6 +94,7 @@ function createHostileRendererFixture(panelUrl = 'file:///caprine/static/ai-assi
 			},
 		},
 		missingFrameEvent: {sender: messengerWebContents, senderFrame: undefined},
+		ordinaryMessenger,
 		panelDocument,
 		panelEvent: {sender: panelWebContents, senderFrame: panelMainFrame},
 		panelUrl,
@@ -75,4 +113,4 @@ function createHostileRendererFixture(panelUrl = 'file:///caprine/static/ai-assi
 	};
 }
 
-module.exports = {createHostileRendererFixture};
+module.exports = {createHostileRendererFixture, ipcRouter};

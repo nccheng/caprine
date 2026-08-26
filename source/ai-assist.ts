@@ -40,7 +40,7 @@ import {
 	captureMessageAnchorSnapshot,
 	MessageAnchorSnapshot,
 } from './ai-assist-state';
-import {isExpectedLocalPanelSender, isExpectedMessengerSender} from './ai-renderer-trust';
+import {isExpectedAiInboundSender} from './ai-renderer-trust';
 import {openCitationExternal} from './citation-navigation';
 import {MediaKind} from './media-contract';
 import {ConversationContextItem} from './messenger-context';
@@ -519,7 +519,7 @@ class AiAssistController {
 		event: IpcMainInvokeEvent,
 		value: unknown,
 	): Promise<AiComposerCommandResult> => {
-		if (!this.isExpectedMessengerSender(event) || !isAiComposerCommandRequest(value)) {
+		if (!this.isExpectedAiInboundSender(aiAssistIpcChannels.composerCommand, event) || !isAiComposerCommandRequest(value)) {
 			throw new TypeError('Rejected invalid AI Assist composer command IPC');
 		}
 
@@ -530,7 +530,7 @@ class AiAssistController {
 		event: IpcMainInvokeEvent,
 		value: unknown,
 	): Promise<AiComposerCommandResult> => {
-		if (!this.isExpectedMessengerSender(event) || !isAiMessageAnchorRequest(value)) {
+		if (!this.isExpectedAiInboundSender(aiAssistIpcChannels.messageAnchor, event) || !isAiMessageAnchorRequest(value)) {
 			throw new TypeError('Rejected invalid AI Assist message anchor IPC');
 		}
 
@@ -541,7 +541,7 @@ class AiAssistController {
 		event: IpcMainInvokeEvent,
 		value: unknown,
 	): Promise<AiAssistPanelState> => {
-		if (!this.isExpectedPanelSender(event) || !isAiAssistPanelCommand(value)) {
+		if (!this.isExpectedAiInboundSender(aiAssistIpcChannels.panelCommand, event) || !isAiAssistPanelCommand(value)) {
 			throw new TypeError('Rejected invalid AI Assist panel IPC');
 		}
 
@@ -752,7 +752,7 @@ class AiAssistController {
 	};
 
 	private readonly handleMessengerEvent = (event: IpcMainEvent, value: unknown): void => {
-		if (!this.isExpectedMessengerSender(event) || !isAiAssistMessengerEvent(value)) {
+		if (!this.isExpectedAiInboundSender(aiAssistIpcChannels.messengerEvent, event) || !isAiAssistMessengerEvent(value)) {
 			return;
 		}
 
@@ -826,7 +826,7 @@ class AiAssistController {
 		event: IpcMainInvokeEvent,
 		value: unknown,
 	): Promise<Extract<AiAssistMessengerEvent, {type: 'media-resolution'}>> => {
-		if (!this.isExpectedMessengerSender(event) || !isMessengerMediaResolverRequest(value)) {
+		if (!this.isExpectedAiInboundSender(messengerMediaResolverChannel, event) || !isMessengerMediaResolverRequest(value)) {
 			throw new TypeError('Rejected invalid AI Assist media resolver IPC');
 		}
 
@@ -879,7 +879,8 @@ class AiAssistController {
 		event: IpcMainInvokeEvent,
 		value: unknown,
 	): boolean => {
-		if (!this.isExpectedMessengerSender(event) || !isDraftInsertionAuthorizationCheck(value)) {
+		if (!this.isExpectedAiInboundSender(aiAssistIpcChannels.draftInsertionAuthorization, event)
+			|| !isDraftInsertionAuthorizationCheck(value)) {
 			throw new TypeError('Rejected invalid draft insertion authorization IPC');
 		}
 
@@ -1462,12 +1463,12 @@ class AiAssistController {
 		return panel;
 	}
 
-	private isExpectedPanelSender(event: IpcMainInvokeEvent): boolean {
-		return isExpectedLocalPanelSender(event, this.panelWindow, this.panelUrl);
-	}
-
-	private isExpectedMessengerSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
-		return isExpectedMessengerSender(event, this.messengerWindow.webContents);
+	private isExpectedAiInboundSender(channel: string, event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+		return isExpectedAiInboundSender(channel, event, {
+			messengerWebContents: this.messengerWindow.webContents,
+			panelUrl: this.panelUrl,
+			panelWindow: this.panelWindow,
+		});
 	}
 
 	private invalidate(

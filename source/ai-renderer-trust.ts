@@ -1,4 +1,6 @@
 import {isTrustedMessengerOrigin} from './ipc-validation';
+import {aiAssistIpcChannels} from './ai-assist-ipc';
+import {messengerMediaResolverChannel} from './media-resolver-ipc';
 
 type SenderFrameLike = {
 	origin: string;
@@ -18,6 +20,20 @@ type WindowLike = {
 	webContents: WebContentsLike;
 	isDestroyed(): boolean;
 };
+
+type AiRendererContext = {
+	messengerWebContents: WebContentsLike;
+	panelUrl: string | undefined;
+	panelWindow: WindowLike | undefined;
+};
+
+const messengerInboundChannels = new Set<string>([
+	aiAssistIpcChannels.composerCommand,
+	aiAssistIpcChannels.draftInsertionAuthorization,
+	aiAssistIpcChannels.messageAnchor,
+	aiAssistIpcChannels.messengerEvent,
+	messengerMediaResolverChannel,
+]);
 
 function isSenderFrame(value: unknown): value is SenderFrameLike {
 	return typeof value === 'object'
@@ -50,4 +66,17 @@ export function isExpectedMessengerSender(
 		&& isSenderFrame(event.senderFrame)
 		&& event.senderFrame === messengerWebContents.mainFrame
 		&& isTrustedMessengerOrigin(event.senderFrame.origin);
+}
+
+export function isExpectedAiInboundSender(
+	channel: string,
+	event: SenderEventLike,
+	context: AiRendererContext,
+): boolean {
+	if (channel === aiAssistIpcChannels.panelCommand) {
+		return isExpectedLocalPanelSender(event, context.panelWindow, context.panelUrl);
+	}
+
+	return messengerInboundChannels.has(channel)
+		&& isExpectedMessengerSender(event, context.messengerWebContents);
 }

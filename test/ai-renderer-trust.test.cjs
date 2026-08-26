@@ -5,13 +5,31 @@ const path = require('node:path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+	isExpectedAiInboundSender,
 	isExpectedLocalPanelSender,
 	isExpectedMessengerSender,
 } = require('../dist-js/ai-renderer-trust.js');
+const {
+	aiAssistIpcChannels,
+	isAiAssistMessengerEvent,
+	isAiAssistPanelCommand,
+	isAiComposerCommandRequest,
+	isAiMessageAnchorRequest,
+	isDraftInsertionAuthorizationCheck,
+} = require('../dist-js/ai-assist-ipc.js');
+const {
+	isMessengerMediaResolverRequest,
+	messengerMediaResolverChannel,
+} = require('../dist-js/media-resolver-ipc.js');
 const {DraftInsertionAuthorizationState} = require('../dist-js/draft-insertion.js');
-const {createHostileRendererFixture} = require('./helpers/hostile-renderer-fixture.cjs');
+const {createHostileRendererFixture, ipcRouter} = require('./helpers/hostile-renderer-fixture.cjs');
 
 const fixture = createHostileRendererFixture();
+const rendererContext = {
+	messengerWebContents: fixture.messengerMainEvent.sender,
+	panelUrl: fixture.panelUrl,
+	panelWindow: fixture.panelWindow,
+};
 
 test('hostile renderer cannot cross the Messenger or local-panel sender boundaries', () => {
 	assert.equal(isExpectedMessengerSender(fixture.messengerMainEvent, fixture.messengerMainEvent.sender), true);
@@ -28,6 +46,48 @@ test('hostile renderer cannot cross the Messenger or local-panel sender boundari
 	fixture.panelWindow.destroyed = true;
 	assert.equal(isExpectedLocalPanelSender(fixture.panelEvent, fixture.panelWindow, fixture.panelUrl), false);
 	fixture.panelWindow.destroyed = false;
+});
+
+test('hostile fixture routes every inbound AI channel through production sender and payload gates', () => {
+	const validators = new Map([
+		[aiAssistIpcChannels.composerCommand, isAiComposerCommandRequest],
+		[aiAssistIpcChannels.draftInsertionAuthorization, isDraftInsertionAuthorizationCheck],
+		[aiAssistIpcChannels.messageAnchor, isAiMessageAnchorRequest],
+		[aiAssistIpcChannels.messengerEvent, isAiAssistMessengerEvent],
+		[aiAssistIpcChannels.panelCommand, isAiAssistPanelCommand],
+		[messengerMediaResolverChannel, isMessengerMediaResolverRequest],
+	]);
+	const router = ipcRouter(isExpectedAiInboundSender, rendererContext, validators);
+	const messengerChannels = [
+		aiAssistIpcChannels.composerCommand,
+		aiAssistIpcChannels.draftInsertionAuthorization,
+		aiAssistIpcChannels.messageAnchor,
+		aiAssistIpcChannels.messengerEvent,
+		messengerMediaResolverChannel,
+	];
+
+	assert.equal(router.invoke(aiAssistIpcChannels.panelCommand, fixture.messengerMainEvent, {type: 'get-state'}), false);
+	for (const channel of messengerChannels) {
+		assert.equal(router.invoke(channel, fixture.untrustedOriginEvent, {}), false);
+		assert.equal(router.invoke(channel, fixture.messengerSubframeEvent, {}), false);
+		assert.equal(router.invoke(channel, fixture.wrongWindowEvent, {}), false);
+		assert.equal(router.invoke(channel, fixture.panelEvent, {}), false);
+		assert.equal(router.invoke(channel, fixture.messengerMainEvent, {}), false);
+	}
+
+	assert.equal(router.invoke(aiAssistIpcChannels.panelStateChanged, fixture.panelEvent, {type: 'get-state'}), false);
+	assert.equal(router.invoke(aiAssistIpcChannels.messengerCommand, fixture.messengerMainEvent, {}), false);
+	assert.equal(router.invoke('ai-assist:unknown-privileged-channel', fixture.panelEvent, {}), false);
+	assert.equal(router.privilegedInvocations, 0);
+
+	fixture.ordinaryMessenger.type('ordinary local draft');
+	fixture.ordinaryMessenger.playMedia();
+	fixture.ordinaryMessenger.navigate('/messages/t/thread-beta');
+	fixture.ordinaryMessenger.send();
+	assert.equal(fixture.ordinaryMessenger.draft, '');
+	assert.equal(fixture.ordinaryMessenger.playedMedia, 1);
+	assert.deepEqual(fixture.ordinaryMessenger.navigations, ['/messages/t/thread-beta']);
+	assert.equal(fixture.ordinaryMessenger.sentMessages, 1);
 });
 
 test('hostile Messenger document cannot read, spoof, or remove Caprine-owned private state', () => {
