@@ -1,10 +1,32 @@
-import {ConversationContextItem} from './messenger-context';
+import {
+	ConversationContextItem,
+	MessengerContextDiagnosticReason,
+} from './messenger-context';
 import {ConversationSnapshot} from './ai-assist-state';
 import {ReviewedImageItem} from './reviewed-images';
 import {ReviewedTranscriptItem, reviewedTranscriptExcerpt} from './reviewed-transcripts';
 
 export const contextWindowSizes = [10, 20, 50] as const;
 export type ContextWindowSize = typeof contextWindowSizes[number];
+export type ContextCaptureUnavailableReason = 'conversation-changed' | 'missing-anchor' | MessengerContextDiagnosticReason;
+
+const contextCaptureFailureNotices: Readonly<Record<ContextCaptureUnavailableReason, string>> = {
+	'adapter-error': 'Messenger adapter diagnostic: context inspection failed safely. Nothing was sent.',
+	'ambiguous-messages': 'Messenger adapter diagnostic: message rows were ambiguous. Nothing was sent.',
+	'conversation-changed': 'Messenger conversation changed during context capture. Nothing was sent.',
+	'conversation-root-missing': 'Messenger adapter diagnostic: conversation surface not found. Nothing was sent.',
+	'message-rows-missing': 'Messenger adapter diagnostic: conversation found, but message rows were not found. Nothing was sent.',
+	'missing-anchor': 'Messenger adapter diagnostic: the selected message is no longer available. Nothing was sent.',
+	'supported-content-missing': 'Messenger adapter diagnostic: message rows found, but supported content was not found. Nothing was sent.',
+};
+
+export function contextCaptureFailureNotice(reason: ContextCaptureUnavailableReason): string {
+	return contextCaptureFailureNotices[reason];
+}
+
+export function contextCaptureRetryNotice(reason: ContextCaptureUnavailableReason): string {
+	return `Select Refresh context to retry. ${contextCaptureFailureNotice(reason)}`;
+}
 
 export type ReviewedContextItem = {
 	editedExcerpt?: string;

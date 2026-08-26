@@ -2,12 +2,15 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
 	captureMessengerMessageAnchor,
+	captureLoadedMessengerMessageAnchor,
 	extractConversationContextCandidates,
 	extractLoadedMessengerConversationContext,
 	extractLoadedMessengerConversationTail,
+	inspectLoadedMessengerConversationContext,
 	maximumMessengerDomExtractionItems,
 	maximumMessengerTailTraversalElements,
 	messengerContextSelectors,
+	resolveLoadedMessengerMessageRow,
 } = require('../dist-js/messenger-context.js');
 const {contextVersion} = require('../dist-js/context-review.js');
 const {
@@ -16,6 +19,7 @@ const {
 } = require('./helpers/messenger-context-fixture.cjs');
 
 const sanitizedFixtureFilenames = [
+	'current-loaded-conversation.json',
 	'edge-cases.json',
 	'prepend-history.json',
 	'supported-messages.json',
@@ -39,7 +43,7 @@ test('fixture selector matching fails closed for syntax outside its supported su
 	assert.equal(row.matches('[role="row"]:last-child'), false);
 });
 
-for (const filename of ['supported-messages.json', 'edge-cases.json']) {
+for (const filename of ['supported-messages.json', 'edge-cases.json', 'current-loaded-conversation.json']) {
 	test(`sanitized Messenger context fixture ${filename} produces exact logical items`, () => {
 		const fixture = loadMessengerContextFixture(filename);
 		global.window = {location: {href: fixture.baseUrl}};
@@ -48,11 +52,56 @@ for (const filename of ['supported-messages.json', 'edge-cases.json']) {
 	});
 }
 
-test('sanitized newest-tail fixture reaches the exact bounded fingerprint item', () => {
-	const fixture = loadMessengerContextFixture('supported-messages.json');
-	global.window = {location: {href: fixture.baseUrl}};
+test('context inspection reports bounded adapter stages without message content', () => {
+	const missingRoot = new MessengerContextFixtureElement({tag: 'document'});
+	const missingRows = new MessengerContextFixtureElement({
+		children: [{attributes: {role: 'main'}}],
+		tag: 'document',
+	});
+	const unsupportedContent = new MessengerContextFixtureElement({
+		children: [{
+			attributes: {role: 'main'},
+			children: [{attributes: {'data-message-id': 'sanitized-message'}}],
+		}],
+		tag: 'document',
+	});
 
-	assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
+	assert.deepEqual(inspectLoadedMessengerConversationContext(missingRoot), {
+		items: [],
+		reason: 'conversation-root-missing',
+	});
+	assert.deepEqual(inspectLoadedMessengerConversationContext(missingRows), {
+		items: [],
+		reason: 'message-rows-missing',
+	});
+	assert.deepEqual(inspectLoadedMessengerConversationContext(unsupportedContent), {
+		items: [{
+			confidence: 'low',
+			messageId: 'sanitized-message',
+			omittedReason: 'no-supported-content',
+			sender: {role: 'unknown'},
+		}],
+		reason: 'supported-content-missing',
+	});
+});
+
+for (const filename of ['supported-messages.json', 'current-loaded-conversation.json']) {
+	test(`sanitized newest-tail fixture ${filename} reaches the exact bounded fingerprint item`, () => {
+		const fixture = loadMessengerContextFixture(filename);
+		global.window = {location: {href: fixture.baseUrl}};
+
+		assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
+	});
+}
+
+test('current loaded Messenger semantics resolve fallback message rows for anchoring', () => {
+	const fixture = loadMessengerContextFixture('current-loaded-conversation.json');
+	global.window = {location: {href: fixture.baseUrl}};
+	const target = fixture.root.querySelector('[data-message-id]').querySelector('[dir="auto"]');
+	const row = resolveLoadedMessengerMessageRow(target, fixture.root);
+
+	assert.equal(row?.getAttribute('data-message-id'), 'current-outgoing-1');
+	assert.equal(captureLoadedMessengerMessageAnchor(target, fixture.root)?.item.messageId, 'current-outgoing-1');
 });
 
 test('prepend-style fixture evolution preserves chronological logical identity', () => {

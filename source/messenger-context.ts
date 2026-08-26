@@ -15,6 +15,15 @@ export const conversationContextOmittedReasons = [
 ] as const;
 export type ConversationContextOmittedReason = typeof conversationContextOmittedReasons[number];
 
+export const messengerContextDiagnosticReasons = [
+	'conversation-root-missing',
+	'message-rows-missing',
+	'supported-content-missing',
+	'ambiguous-messages',
+	'adapter-error',
+] as const;
+export type MessengerContextDiagnosticReason = typeof messengerContextDiagnosticReasons[number];
+
 export type ConversationContextAttachment = {
 	kind: 'audio' | 'image' | 'video';
 };
@@ -81,9 +90,11 @@ export type MessengerContextCandidate = {
 
 export const messengerContextSelectors = {
 	conversation: '[role="main"] [role="grid"]',
-	message: '[role="row"]',
+	conversationFallback: '[role="main"]',
+	message: '[role="row"], [data-message-id], [data-messageid]',
 	messageIdentity: '[data-message-id], [data-messageid]',
 	messageText: '[data-ad-preview="message"]',
+	messageTextFallback: '[dir="auto"]',
 	nonMessageUi: '[role="navigation"], [role="complementary"], [role="tablist"], [data-messenger-sidebar]',
 	placeholder: '[aria-busy="true"], [data-virtualized-placeholder], [data-placeholder="true"]',
 	reaction: '[aria-label*="reaction" i], [aria-label*="reacted" i]',
@@ -91,6 +102,11 @@ export const messengerContextSelectors = {
 	senderAvatar: 'img[alt][data-message-author], [data-message-author] img[alt]',
 	timestamp: 'time[datetime], abbr[data-utime]',
 } as const;
+
+export type MessengerContextInspection = {
+	items: ConversationContextItem[];
+	reason?: MessengerContextDiagnosticReason;
+};
 
 const maximumStringLengths = {
 	description: 1000,
@@ -597,16 +613,18 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 		'a[href]',
 		'[role="button"]',
 	].join(',');
+	const primaryMessageText = [...element.querySelectorAll(messengerContextSelectors.messageText)];
+	const messageText = primaryMessageText.length > 0
+		? primaryMessageText
+		: [...element.querySelectorAll(messengerContextSelectors.messageTextFallback)]
+			.filter(candidate => !candidate.querySelector(messengerContextSelectors.messageTextFallback));
 	const candidate: MessengerContextCandidate = {
 		attachments: attachmentsFromElement(element),
 		domOrder,
 		linkPreview,
 		reactions: reactionFromElement(element),
 		stableId: stableIdFromElement(element),
-		text: textFromElements(
-			[...element.querySelectorAll(messengerContextSelectors.messageText)],
-			excludedText,
-		),
+		text: textFromElements(messageText, excludedText),
 		timestamp: timestampFromElement(element),
 		senderDisplayName: sender.senderDisplayName,
 		senderRole: sender.senderRole,
@@ -633,26 +651,67 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 	return candidate;
 }
 
-export function extractLoadedMessengerConversationContext(root: ParentNode = document): ConversationContextItem[] {
+export function resolveLoadedMessengerConversationRoot(root: ParentNode = document): Element | undefined {
+	return root.querySelector(messengerContextSelectors.conversation)
+		?? root.querySelector(messengerContextSelectors.conversationFallback)
+		?? undefined;
+}
+
+export function resolveLoadedMessengerMessageRow(
+	target: Element,
+	root: ParentNode = document,
+): HTMLElement | undefined {
 	try {
-		const conversation = root.querySelector(messengerContextSelectors.conversation);
+		const conversation = resolveLoadedMessengerConversationRoot(root);
+		const row = target.closest<HTMLElement>(messengerContextSelectors.message);
+		return conversation && row && conversation.contains(row) ? row : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function loadedMessengerMessageRows(conversation: Element): Element[] {
+	return [...conversation.querySelectorAll(messengerContextSelectors.message)]
+		.filter(row => visibleElement(row) && !row.querySelector(messengerContextSelectors.message))
+		.slice(-maximumMessengerDomExtractionItems);
+}
+
+export function inspectLoadedMessengerConversationContext(root: ParentNode = document): MessengerContextInspection {
+	try {
+		const conversation = resolveLoadedMessengerConversationRoot(root);
 		if (!conversation) {
-			return [];
+			return {items: [], reason: 'conversation-root-missing'};
 		}
 
-		const rows = [...conversation.querySelectorAll(messengerContextSelectors.message)]
-			.filter(row => visibleElement(row) && !row.querySelector(messengerContextSelectors.message))
-			.slice(-maximumMessengerDomExtractionItems);
-		return extractConversationContextCandidates(rows.map((row, domOrder) => {
+		const rows = loadedMessengerMessageRows(conversation);
+		if (rows.length === 0) {
+			return {items: [], reason: 'message-rows-missing'};
+		}
+
+		const items = extractConversationContextCandidates(rows.map((row, domOrder) => {
 			try {
 				return candidateFromElement(row, domOrder);
 			} catch {
 				return {domOrder, malformed: true};
 			}
 		}));
+		if (items.some(item => item.omittedReason === undefined)) {
+			return {items};
+		}
+
+		return {
+			items,
+			reason: items.some(item => item.omittedReason === 'ambiguous-message')
+				? 'ambiguous-messages'
+				: 'supported-content-missing',
+		};
 	} catch {
-		return [];
+		return {items: [], reason: 'adapter-error'};
 	}
+}
+
+export function extractLoadedMessengerConversationContext(root: ParentNode = document): ConversationContextItem[] {
+	return inspectLoadedMessengerConversationContext(root).items;
 }
 
 function recordMessengerTailVisit(visited: Set<Element>, element: Element): boolean {
@@ -683,7 +742,7 @@ function deepestMessengerTailElement(element: Element, visited: Set<Element>): E
 
 export function extractLoadedMessengerConversationTail(root: ParentNode = document): ConversationContextItem | undefined {
 	try {
-		const conversation = root.querySelector(messengerContextSelectors.conversation);
+		const conversation = resolveLoadedMessengerConversationRoot(root);
 		if (!conversation) {
 			return;
 		}
@@ -740,15 +799,13 @@ export function captureLoadedMessengerMessageAnchor(
 ): MessengerMessageAnchor | undefined {
 	let anchor: MessengerMessageAnchor | undefined;
 	try {
-		const conversation = root.querySelector(messengerContextSelectors.conversation);
-		const targetRow = target.closest(messengerContextSelectors.message);
+		const conversation = resolveLoadedMessengerConversationRoot(root);
+		const targetRow = resolveLoadedMessengerMessageRow(target, root);
 		if (!conversation || !targetRow || !conversation.contains(targetRow)) {
 			return;
 		}
 
-		const rows = [...conversation.querySelectorAll(messengerContextSelectors.message)]
-			.filter(row => visibleElement(row) && !row.querySelector(messengerContextSelectors.message))
-			.slice(-maximumMessengerDomExtractionItems);
+		const rows = loadedMessengerMessageRows(conversation);
 		const targetDomOrder = rows.indexOf(targetRow);
 		if (targetDomOrder < 0) {
 			return;

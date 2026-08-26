@@ -1,0 +1,51 @@
+{
+  "baseUrl": "https://messenger.invalid/thread/sanitized-current",
+  "dom": {
+    "tag": "document",
+    "children": [
+      {
+        "attributes": {"role": "main"},
+        "children": [
+          {
+            "attributes": {
+              "aria-label": "You sent a message",
+              "data-message-id": "current-outgoing-1"
+            },
+            "children": [
+              {"attributes": {"dir": "auto"}, "text": "Fallback text shape"}
+            ]
+          },
+          {
+            "attributes": {
+              "aria-label": "Morgan sent a message",
+              "data-messageid": "current-incoming-2"
+            },
+            "children": [
+              {"attributes": {"dir": "auto"}, "text": "Loaded conversation reply"}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "confidence": "high",
+      "messageId": "current-outgoing-1",
+      "sender": {"displayName": "You", "role": "outgoing"},
+      "text": "Fallback text shape"
+    },
+    {
+      "confidence": "high",
+      "messageId": "current-incoming-2",
+      "sender": {"displayName": "Morgan", "role": "incoming"},
+      "text": "Loaded conversation reply"
+    }
+  ],
+  "expectedTail": {
+    "confidence": "high",
+    "messageId": "current-incoming-2",
+    "sender": {"displayName": "Morgan", "role": "incoming"},
+    "text": "Loaded conversation reply"
+  }
+}

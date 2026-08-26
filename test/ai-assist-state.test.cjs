@@ -387,6 +387,18 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		stopReason: 'no-more-history',
 		type: 'context-capture',
 	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		reason: 'message-rows-missing',
+		requestId: 'context-capture-1',
+		status: 'unavailable',
+		type: 'context-capture',
+	}), true);
+	assert.equal(isAiAssistMessengerEvent({
+		reason: 'private-dom-detail',
+		requestId: 'context-capture-1',
+		status: 'unavailable',
+		type: 'context-capture',
+	}), false);
 	const rawBlobEvent = {
 		byteLength: 3,
 		bytes: new Uint8Array([1, 2, 3]).buffer,
