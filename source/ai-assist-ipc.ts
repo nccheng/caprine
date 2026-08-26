@@ -17,6 +17,8 @@ import {
 	conversationContextConfidenceLevels,
 	conversationContextOmittedReasons,
 	ConversationContextItem,
+	messengerContextDiagnosticReasons,
+	MessengerContextDiagnosticReason,
 } from './messenger-context';
 import {
 	draftInsertionFailureReasons,
@@ -248,7 +250,7 @@ export type AiAssistMessengerEvent =
 		type: 'context-capture';
 	}
 	| {
-		reason: 'conversation-changed' | 'empty-context' | 'missing-anchor';
+		reason: 'conversation-changed' | 'missing-anchor' | MessengerContextDiagnosticReason;
 		requestId: string;
 		status: 'unavailable';
 		type: 'context-capture';
@@ -1476,7 +1478,11 @@ export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMesse
 
 		if (value.status === 'unavailable') {
 			return hasExactKeys(value, ['reason', 'requestId', 'status', 'type'])
-				&& ['conversation-changed', 'empty-context', 'missing-anchor'].includes(value.reason as string);
+				&& [
+					'conversation-changed',
+					'missing-anchor',
+					...messengerContextDiagnosticReasons,
+				].includes(value.reason as never);
 		}
 
 		return value.status === 'available'

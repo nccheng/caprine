@@ -39,7 +39,9 @@ import {
 	captureLoadedMessengerMessageAnchor,
 	extractLoadedMessengerConversationContext,
 	extractLoadedMessengerConversationTail,
+	inspectLoadedMessengerConversationContext,
 	MessengerMessageAnchor,
+	resolveLoadedMessengerConversationRoot,
 } from './messenger-context';
 import {
 	captureBoundedContext,
@@ -1017,8 +1019,8 @@ function reportConversationState(requestId?: string): void {
 }
 
 function messengerConversationScrollContainer(): HTMLElement | undefined {
-	const conversation = document.querySelector<HTMLElement>('[role="main"] [role="grid"]');
-	let candidate = conversation?.parentElement ?? undefined;
+	const conversation = resolveLoadedMessengerConversationRoot(document) as HTMLElement | undefined;
+	let candidate = conversation;
 	while (candidate) {
 		if (candidate.scrollHeight > candidate.clientHeight + 1) {
 			return candidate;
@@ -1095,9 +1097,12 @@ async function captureMessengerContext(
 	}
 
 	const items = selectContextWindow(capture.items, command.requestedCount, command.anchorMessageId);
-	if (items.length === 0) {
+	if (items.length === 0 || !items.some(item => item.omittedReason === undefined)) {
+		const inspection = inspectLoadedMessengerConversationContext(document);
 		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
-			reason: command.anchorMessageId ? 'missing-anchor' : 'empty-context',
+			reason: command.anchorMessageId
+				? 'missing-anchor'
+				: (inspection.reason ?? 'supported-content-missing'),
 			requestId: command.requestId,
 			status: 'unavailable',
 			type: 'context-capture',

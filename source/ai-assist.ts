@@ -83,6 +83,7 @@ import {
 import {buildAiHistoryChatViews} from './ai-history-workspace';
 import {
 	buildReviewedPrompt,
+	contextCaptureFailureNotice,
 	ContextReviewSnapshot,
 	ContextWindowSize,
 	contextReviewSubmissionDecision,
@@ -1087,7 +1088,9 @@ class AiAssistController {
 		) {
 			this.clearContextReview();
 			this.error = undefined;
-			this.notice = 'Messenger context was unavailable or ambiguous. Nothing was sent. Select Refresh context to retry.';
+			this.notice = value.status === 'unavailable'
+				? `${contextCaptureFailureNotice(value.reason)} Select Refresh context to retry.`
+				: 'Messenger context was unavailable or ambiguous. Nothing was sent. Select Refresh context to retry.';
 			this.broadcastState();
 			pending.resolve();
 			return;
