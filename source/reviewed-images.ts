@@ -549,3 +549,11 @@ export function finalizeReviewedImageSelection(
 		releasedHandleIds,
 	};
 }
+
+export function retireReviewedImagesAfterUse(
+	items: ReadonlyArray<Readonly<ReviewedImageItem>>,
+): ReadonlyArray<Readonly<ReviewedImageItem>> {
+	return freezeItems(items.map(item => isProcessed(item) && item.status === 'selected'
+		? {...item, status: 'removed' as const}
+		: {...item}));
+}

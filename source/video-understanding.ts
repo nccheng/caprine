@@ -12,6 +12,7 @@ import {
 	VideoAnalysisFrame,
 	VideoPreprocessingArtifact,
 } from './video-preprocessing';
+import type {ReviewedTranscriptItem} from './reviewed-transcripts';
 
 export const maximumVideoFocusIntervals = 6;
 export const maximumVideoFocusedFrames = 48;
@@ -91,6 +92,24 @@ export type VideoFocusExtractor = {
 		signal?: AbortSignal,
 	): Promise<ReadonlyArray<Readonly<VideoAnalysisFrame>>>;
 };
+
+export function videoTranscriptForReview(
+	item: Readonly<ReviewedTranscriptItem>,
+): VideoPreprocessingArtifact['transcript'] {
+	if (item.status === 'no-audio') {
+		return {status: 'no-audio'};
+	}
+
+	const segments = item.editedSegments ?? item.originalSegments;
+	if (item.status !== 'completed' || !segments || segments.length === 0) {
+		throw new OpenAiRequestError('malformed-response', 'The reviewed video transcript is unavailable. Refresh context and try again.');
+	}
+
+	return {
+		segments: segments.map(segment => ({...segment})),
+		status: 'completed',
+	};
+}
 
 const timelineSchema: OpenAiJsonSchema = {
 	name: 'video_timeline_scan',
@@ -306,6 +325,7 @@ function buildAnswerPrompt(request: Readonly<VideoUnderstandingRequest>, scan: R
 		`Coverage: ${request.artifact.coverage}; ${request.artifact.frameCount} broad sampled frames and ${focusedFrameCount} newly extracted focused frames.`,
 		'This is full sampled-video understanding, not literal examination of every original frame. State material uncertainty and sparse coverage honestly.',
 		'Every claim grounded in the video must include one or more markers exactly like [Video 00:12].',
+		'The final answer must contain at least one valid [Video mm:ss] evidence marker, and every marker must refer to a timestamp inside this video.',
 		'Externally browsed facts must use [Web 1], [Web 2], and so on, and must never be presented as something visible or audible in the video.',
 		'Use both transcript and visual frames when they are relevant. Silent or no-speech video can be answered visually.',
 		'Pass 1 structured timeline:',
@@ -313,6 +333,23 @@ function buildAnswerPrompt(request: Readonly<VideoUnderstandingRequest>, scan: R
 		'Timestamped transcript:',
 		transcriptText(request.artifact),
 	].join('\n\n');
+}
+
+function validateVideoAnswer(answer: Readonly<OpenAiAnswer>, durationSeconds: number): void {
+	const markerPattern = /\[Video ([0-9]{2,}):([0-9]{2}(?:\.[0-9]{1,3})?)\]/gu;
+	const matches = [...answer.text.matchAll(markerPattern)];
+	if (matches.length === 0 || (answer.text.match(/\[Video/gu)?.length ?? 0) !== matches.length) {
+		throw new OpenAiRequestError('malformed-response', 'OpenAI returned a video answer without valid timestamp evidence. Try again.');
+	}
+
+	for (const match of matches) {
+		const minutes = Number(match[1]);
+		const seconds = Number(match[2]);
+		const timestampSeconds = (minutes * 60) + seconds;
+		if (seconds >= 60 || !Number.isFinite(timestampSeconds) || timestampSeconds > durationSeconds) {
+			throw new OpenAiRequestError('malformed-response', 'OpenAI returned a video answer with out-of-range timestamp evidence. Try again.');
+		}
+	}
 }
 
 function fallbackFocusedFrames(artifact: Readonly<VideoPreprocessingArtifact>): VideoAnalysisFrame[] {
@@ -421,6 +458,7 @@ export class VideoUnderstandingService {
 			options.signal,
 		);
 		failIfUnavailable(options);
+		validateVideoAnswer(answer, request.artifact.metadata.durationSeconds);
 		return {
 			answer,
 			coverage: request.artifact.coverage,

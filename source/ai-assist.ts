@@ -86,6 +86,7 @@ import {
 	createReviewedImageItems,
 	finalizeReviewedImageSelection,
 	releaseReviewedImageHandles,
+	retireReviewedImagesAfterUse,
 	ReviewedImageItem,
 	reviewedImageSelectionSummary,
 	updateReviewedImageSelection,
@@ -125,6 +126,7 @@ import {
 	OpenAiVideoUnderstandingProvider,
 	VideoUnderstandingProgress,
 	VideoUnderstandingService,
+	videoTranscriptForReview,
 } from './video-understanding';
 
 const panelPartition = 'ai-assist';
@@ -1824,12 +1826,15 @@ class AiAssistController {
 				transcriptAvailable: transcript.status === 'completed',
 			};
 		} catch (error) {
-			this.videoAnalysis = {
-				frameCount: 0,
-				phase: 'preprocessing',
-				status: 'failed',
-				transcriptAvailable: transcript.status === 'completed',
-			};
+			if (this.review?.sequence === reviewSequence && this.isRequestSnapshotCurrent(snapshot) && !signal?.aborted) {
+				this.videoAnalysis = {
+					frameCount: 0,
+					phase: 'preprocessing',
+					status: 'failed',
+					transcriptAvailable: transcript.status === 'completed',
+				};
+			}
+
 			throw error;
 		} finally {
 			this.broadcastState();
@@ -2269,8 +2274,17 @@ class AiAssistController {
 		const lockedReview = this.review;
 		const selectedVideoTranscript = lockedReview.snapshot.transcripts.find(item =>
 			item.kind === 'video' && ['completed', 'no-audio'].includes(item.status));
-		const selectedVideoArtifact = selectedVideoTranscript
+		const storedVideoArtifact = selectedVideoTranscript
 			? this.videoArtifacts.get(selectedVideoTranscript.id)
+			: undefined;
+		const selectedVideoArtifact = selectedVideoTranscript && storedVideoArtifact
+			? {
+				...storedVideoArtifact,
+				artifact: {
+					...storedVideoArtifact.artifact,
+					transcript: videoTranscriptForReview(selectedVideoTranscript),
+				},
+			}
 			: undefined;
 		try {
 			await this.runOpenAiRequest(
@@ -2462,10 +2476,16 @@ class AiAssistController {
 					text: answer.text,
 				});
 				if (options.videoArtifact
-					&& !reviewedImages.some(image => image.status === 'selected')
 					&& this.review
 					&& this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)) {
-					this.review = {...this.review, editable: false, locked: false};
+					this.review = {
+						...this.review,
+						editable: false,
+						locked: false,
+						snapshot: updateContextReview(this.review.snapshot, {
+							images: [...retireReviewedImagesAfterUse(this.review.snapshot.images)],
+						}),
+					};
 				}
 
 				this.error = undefined;

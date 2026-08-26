@@ -8,6 +8,7 @@ const {
 const {
 	maximumVideoFocusedFrames,
 	VideoUnderstandingService,
+	videoTranscriptForReview,
 } = require('../dist-js/video-understanding.js');
 
 function frame(timestampSeconds, byte = 1) {
@@ -90,6 +91,16 @@ test('video input builder sends ordered JPEG frames with explicit economical or 
 		],
 		role: 'user',
 	}]);
+});
+
+test('reviewed transcript edits replace original video transcript text before provider handoff', () => {
+	const transcript = videoTranscriptForReview({
+		editedSegments: [{endSeconds: 2, startSeconds: 1, text: 'redacted wording'}],
+		originalSegments: [{endSeconds: 2, startSeconds: 1, text: 'private original'}],
+		status: 'completed',
+	});
+	assert.equal(transcript.segments[0].text, 'redacted wording');
+	assert.doesNotMatch(JSON.stringify(transcript), /private original/u);
 });
 
 test('OpenAI video requests use strict structured Pass 1 and preserve Always web semantics in Pass 2', async () => {
@@ -274,6 +285,30 @@ test('timeline claims without timestamps and oversized focused extraction fail c
 		}),
 		error => error instanceof OpenAiRequestError && error.code === 'input-too-large',
 	);
+});
+
+test('final video answers require valid in-range timestamp evidence', async () => {
+	for (const invalidAnswer of ['Unattributed visual claim.', 'Claim [Video 00:99].']) {
+		const provider = {
+			async scan() {
+				return {events: [], focusIntervals: [], uncertaintyNotes: []};
+			},
+			async answer() {
+				return answer(invalidAnswer);
+			},
+		};
+		// eslint-disable-next-line no-await-in-loop
+		await assert.rejects(
+			new VideoUnderstandingService(provider, {
+				async extract() {
+					return [];
+				},
+			}).analyze({
+				apiKey: 'sk-private', artifact: artifact(), question: 'Question?', webSearchMode: 'off',
+			}),
+			error => error instanceof OpenAiRequestError && error.code === 'malformed-response',
+		);
+	}
 });
 
 test('cancellation and stale conversation checks stop between passes', async () => {

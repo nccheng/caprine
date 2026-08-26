@@ -9,6 +9,7 @@ const {
 	maximumReviewedImageAggregateBytes,
 	maximumReviewedImageCount,
 	releaseReviewedImageHandles,
+	retireReviewedImagesAfterUse,
 	reviewedImageSelectionSummary,
 	selectDefaultReviewedImages,
 	updateReviewedImageSelection,
@@ -47,6 +48,13 @@ function processed(index, byteLength = 12) {
 function selected(...items) {
 	return items.map(item => ({...item, status: 'selected'}));
 }
+
+test('used reviewed images retire after a reusable video request', () => {
+	const items = selected(processed(1), processed(2));
+	const retired = retireReviewedImagesAfterUse(items);
+	assert.deepEqual(retired.map(item => item.status), ['removed', 'removed']);
+	assert.notEqual(retired[0], items[0]);
+});
 
 function handleStore(items, candidateSnapshot = snapshot) {
 	const retained = new Map(items.map(item => [item.processedHandleId, {
