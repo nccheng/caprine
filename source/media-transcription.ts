@@ -50,8 +50,9 @@ export type TranscriptCacheRecord = {
 
 export type TranscriptCacheStore = {
 	deleteTranscriptCache(mediaSha256: string): void;
+	getTranscriptCacheGeneration(): number;
 	loadTranscriptCache(mediaSha256: string): unknown;
-	saveTranscriptCache(mediaSha256: string, record: TranscriptCacheRecord): void;
+	saveTranscriptCache(mediaSha256: string, record: TranscriptCacheRecord, expectedGeneration: number): void;
 };
 
 export const transcriptionErrorCodes = [
@@ -569,6 +570,8 @@ export class MediaTranscriptionService {
 					}
 
 					const transcriptions: MediaTranscription[] = [];
+					const pendingCacheWrites: Array<{mediaSha256: string; record: TranscriptCacheRecord}> = [];
+					const transcriptCacheGeneration = this.transcriptCache?.getTranscriptCacheGeneration();
 					let providerApiKey: string | undefined;
 					for (const [index, file] of files.entries()) {
 						const item = request.items[index];
@@ -611,14 +614,15 @@ export class MediaTranscriptionService {
 						}
 
 						this.mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot);
-						if (this.transcriptCache && !cacheHit) {
-							try {
-								this.transcriptCache.saveTranscriptCache(mediaSha256, {
+						if (!cacheHit) {
+							pendingCacheWrites.push({
+								mediaSha256,
+								record: {
 									model: transcript.model,
 									schemaVersion: transcriptCacheSchemaVersion,
 									segments: transcript.segments.map(segment => ({...segment})),
-								});
-							} catch {}
+								},
+							});
 						}
 
 						transcriptions.push({
@@ -632,6 +636,18 @@ export class MediaTranscriptionService {
 								mimeType: file.media.mimeType,
 							},
 						});
+					}
+
+					if (this.transcriptCache && transcriptCacheGeneration !== undefined) {
+						for (const pendingWrite of pendingCacheWrites) {
+							try {
+								this.transcriptCache.saveTranscriptCache(
+									pendingWrite.mediaSha256,
+									pendingWrite.record,
+									transcriptCacheGeneration,
+								);
+							} catch {}
+						}
 					}
 
 					return transcriptions;

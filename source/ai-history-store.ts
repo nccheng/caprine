@@ -169,6 +169,7 @@ export class AiHistoryStore {
 	private readonly failAt?: AiHistoryStoreOptions['failAt'];
 	private readonly generateId: () => string;
 	private readonly now: () => number;
+	private transcriptCacheGeneration = 0;
 
 	constructor(options: AiHistoryStoreOptions) {
 		this.database = new DatabaseSync(options.databasePath);
@@ -429,11 +430,17 @@ export class AiHistoryStore {
 	}
 
 	clearAll(): number {
-		return this.transaction(() => {
+		const deletedCount = this.transaction(() => {
 			const chatCount = Number(this.database.prepare('DELETE FROM ai_history_chats').run().changes);
 			const transcriptCount = Number(this.database.prepare('DELETE FROM ai_transcript_cache').run().changes);
 			return chatCount + transcriptCount;
 		});
+		this.transcriptCacheGeneration += 1;
+		return deletedCount;
+	}
+
+	getTranscriptCacheGeneration(): number {
+		return this.transcriptCacheGeneration;
 	}
 
 	loadTranscriptCache(mediaSha256: string): unknown {
@@ -454,8 +461,12 @@ export class AiHistoryStore {
 		};
 	}
 
-	saveTranscriptCache(mediaSha256: string, record: TranscriptCacheRecord): void {
+	saveTranscriptCache(mediaSha256: string, record: TranscriptCacheRecord, expectedGeneration: number): void {
 		requireMediaSha256(mediaSha256);
+		if (expectedGeneration !== this.transcriptCacheGeneration) {
+			return;
+		}
+
 		this.database.prepare(`
 			INSERT OR IGNORE INTO ai_transcript_cache (
 				media_sha256, schema_version, model, segments_json

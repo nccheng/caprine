@@ -290,7 +290,7 @@ test('transcript cache round-trips by SHA-256 and only clear-all removes reusabl
 	const store = new AiHistoryStore({databasePath, generateId: idGenerator()});
 	const chatId = store.createChat('thread:cache');
 	store.appendCompletedInteraction(chatId, interaction());
-	store.saveTranscriptCache(mediaSha256, record);
+	store.saveTranscriptCache(mediaSha256, record, store.getTranscriptCacheGeneration());
 	assert.deepEqual(store.loadTranscriptCache(mediaSha256), record);
 	assert.equal(store.clearConversation('thread:cache'), 1);
 	assert.deepEqual(store.loadTranscriptCache(mediaSha256), record);
@@ -336,7 +336,7 @@ test('database schema excludes forbidden secret, provider payload, DOM, cookie, 
 		model: openAiTranscriptionModel,
 		schemaVersion: transcriptCacheSchemaVersion,
 		segments: [{endSeconds: 1, startSeconds: 0, text: 'Privacy-safe transcript'}],
-	});
+	}, store.getTranscriptCacheGeneration());
 	store.close();
 	const bytes = readFileSync(databasePath, 'utf8');
 	for (const forbidden of ['api_key', 'auth_token', 'cookie', 'provider_payload', 'raw_dom', 'raw_audio', 'raw_video']) {

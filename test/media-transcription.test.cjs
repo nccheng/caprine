@@ -49,16 +49,24 @@ async function expectCode(promise, code) {
 
 function memoryTranscriptCache() {
 	const records = new Map();
+	let generation = 0;
 	return {
+		clearAll() {
+			records.clear();
+			generation += 1;
+		},
 		deleteTranscriptCache(mediaSha256) {
 			records.delete(mediaSha256);
+		},
+		getTranscriptCacheGeneration() {
+			return generation;
 		},
 		loadTranscriptCache(mediaSha256) {
 			return records.get(mediaSha256);
 		},
 		records,
-		saveTranscriptCache(mediaSha256, record) {
-			if (!records.has(mediaSha256)) {
+		saveTranscriptCache(mediaSha256, record, expectedGeneration) {
+			if (expectedGeneration === generation && !records.has(mediaSha256)) {
 				records.set(mediaSha256, structuredClone(record));
 			}
 		},
@@ -385,6 +393,51 @@ test('identical media bytes reuse a bounded cache record and rebind current requ
 	assert.deepEqual(await readdir(directory), []);
 });
 
+test('clear-all generation prevents an active provider completion from repopulating the cache', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const cache = memoryTranscriptCache();
+	let releaseProvider;
+	let providerStarted;
+	const started = new Promise(resolve => {
+		providerStarted = resolve;
+	});
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe() {
+			providerStarted();
+			await new Promise(resolve => {
+				releaseProvider = resolve;
+			});
+			return {
+				model: openAiTranscriptionModel,
+				segments: [{endSeconds: 1, startSeconds: 0, text: 'Late transcript'}],
+			};
+		},
+	}, () => snapshot, {inspectDuration: async () => 1, transcriptCache: cache});
+	const media = await resolver.resolveBlob(
+		new Uint8Array([41, 42, 43]).buffer,
+		'audio/wav',
+		'audio',
+		'message-clear-race',
+		snapshot,
+		1,
+	);
+	const result = service.transcribeBatch(
+		'sk-private',
+		request({items: [{handleId: media.handleId, messageId: media.messageId}]}),
+	);
+	await started;
+	cache.clearAll();
+	releaseProvider();
+	await result;
+
+	assert.equal(cache.records.size, 0);
+	assert.deepEqual(await readdir(directory), []);
+});
+
 test('malformed cache entries fail closed, are evicted, and require a new explicit action before provider retry', async () => {
 	const directory = await fixtureDirectory();
 	const resolver = new MessengerMediaResolver(directory, async () => {
@@ -483,6 +536,55 @@ test('media transcription discards stale completions and releases bytes after pr
 		assert.equal(cache.records.size, 0);
 		assert.deepEqual(await readdir(directory), []);
 	}));
+});
+
+test('a failed two-item batch does not cache an earlier successful item', async () => {
+	const directory = await fixtureDirectory();
+	const resolver = new MessengerMediaResolver(directory, async () => {
+		throw new Error('unexpected Messenger fetch');
+	});
+	await resolver.cleanupRestartArtifacts();
+	const first = await resolver.resolveBlob(
+		new Uint8Array([51, 52]).buffer,
+		'audio/wav',
+		'audio',
+		'message-first',
+		snapshot,
+		1,
+	);
+	const second = await resolver.resolveBlob(
+		new Uint8Array([53, 54]).buffer,
+		'audio/wav',
+		'audio',
+		'message-second',
+		snapshot,
+		1,
+	);
+	const cache = memoryTranscriptCache();
+	let providerCalls = 0;
+	const service = new MediaTranscriptionService(resolver, {
+		async transcribe() {
+			providerCalls += 1;
+			if (providerCalls === 2) {
+				throw new TranscriptionError('provider-unavailable', 'Provider failed.');
+			}
+
+			return {
+				model: openAiTranscriptionModel,
+				segments: [{endSeconds: 1, startSeconds: 0, text: 'First transcript'}],
+			};
+		},
+	}, () => snapshot, {inspectDuration: async () => 1, transcriptCache: cache});
+
+	await expectCode(service.transcribeBatch('sk-private', request({
+		items: [
+			{handleId: first.handleId, messageId: first.messageId},
+			{handleId: second.handleId, messageId: second.messageId},
+		],
+	})), 'provider-unavailable');
+	assert.equal(providerCalls, 2);
+	assert.equal(cache.records.size, 0);
+	assert.deepEqual(await readdir(directory), []);
 });
 
 test('media transcription processes one authoritative two-item batch and releases both handles', async () => {
