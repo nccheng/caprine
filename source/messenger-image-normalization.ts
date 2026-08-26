@@ -77,8 +77,10 @@ type NativeImageFactory = {
 type CaptureStore = Pick<MessengerImageCaptureStore, 'describeHandle' | 'releaseHandle' | 'withCapture'>;
 
 type StoredProcessedImage = {
+	abortListener: () => void;
 	bytes: Uint8Array;
 	description: ProcessedMessengerImageDescription;
+	signal: AbortSignal;
 };
 
 function finitePositiveInteger(value: number): boolean {
@@ -260,6 +262,7 @@ export class ProcessedMessengerImageStore {
 	): Promise<MessengerImageNormalizationResult> {
 		const capture = this.captures.describeHandle(captureHandleId, messageId, snapshot);
 		if (!capture) {
+			this.captures.releaseHandle(captureHandleId);
 			return {
 				reason: this.isSnapshotCurrent(snapshot) ? 'source-unavailable' : 'conversation-changed',
 				status: 'unavailable',
@@ -311,6 +314,14 @@ export class ProcessedMessengerImageStore {
 		snapshot: Readonly<ConversationSnapshot>,
 	): ProcessedMessengerImageDescription | undefined {
 		const stored = this.stored.get(handleId);
+		if (
+			stored
+			&& (stored.signal.aborted || !this.isSnapshotCurrent(stored.description.snapshot))
+		) {
+			this.releaseStored(handleId, stored);
+			return undefined;
+		}
+
 		return stored
 			&& stored.description.messageId === messageId
 			&& sameSnapshot(stored.description.snapshot, snapshot)
@@ -330,15 +341,23 @@ export class ProcessedMessengerImageStore {
 	): Promise<T> {
 		const stored = this.stored.get(handleId);
 		if (
+			stored
+			&& (stored.signal.aborted || !this.isSnapshotCurrent(stored.description.snapshot))
+		) {
+			this.releaseStored(handleId, stored);
+			throw new TypeError('Rejected stale processed Messenger image');
+		}
+
+		if (
 			!stored
 			|| stored.description.messageId !== messageId
 			|| !sameSnapshot(stored.description.snapshot, snapshot)
-			|| !this.isSnapshotCurrent(snapshot)
 		) {
 			throw new TypeError('Rejected stale processed Messenger image');
 		}
 
 		this.stored.delete(handleId);
+		stored.signal.removeEventListener('abort', stored.abortListener);
 		try {
 			return await callback(stored.bytes, stored.description);
 		} finally {
@@ -352,9 +371,7 @@ export class ProcessedMessengerImageStore {
 			return false;
 		}
 
-		this.stored.delete(handleId);
-		this.releaseBytes(stored.bytes);
-		return true;
+		return this.releaseStored(handleId, stored);
 	}
 
 	releaseAll(): void {
@@ -431,8 +448,33 @@ export class ProcessedMessengerImageStore {
 			status: 'processed',
 			width: normalized.width,
 		});
-		this.stored.set(handleId, {bytes, description});
+		const stored: StoredProcessedImage = {
+			abortListener: () => {
+				this.releaseStored(handleId, stored);
+			},
+			bytes,
+			description,
+			signal,
+		};
+		this.stored.set(handleId, stored);
+		signal.addEventListener('abort', stored.abortListener, {once: true});
+		if (signal.aborted) {
+			this.releaseStored(handleId, stored);
+			return {reason: 'aborted', status: 'unavailable'};
+		}
+
 		return description;
+	}
+
+	private releaseStored(handleId: string, stored: StoredProcessedImage): boolean {
+		if (this.stored.get(handleId) !== stored) {
+			return false;
+		}
+
+		this.stored.delete(handleId);
+		stored.signal.removeEventListener('abort', stored.abortListener);
+		this.releaseBytes(stored.bytes);
+		return true;
 	}
 
 	private releaseBytes(bytes: Uint8Array): void {

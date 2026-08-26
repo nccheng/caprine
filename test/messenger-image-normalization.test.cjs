@@ -223,6 +223,32 @@ test('invalid and oversized sources fail before normalization and release the ca
 	}));
 });
 
+test('stale source ownership transfer releases the capture exactly once', async () => {
+	const captures = captureStore();
+	let current = false;
+	const originalDescribe = captures.describeHandle;
+	captures.describeHandle = (...arguments_) => current
+		? originalDescribe.apply(captures, arguments_)
+		: undefined;
+	const store = new ProcessedMessengerImageStore(
+		captures,
+		() => current,
+	);
+
+	assert.deepEqual(
+		await store.normalize(
+			'image-capture-1',
+			'fixture-image',
+			snapshot,
+			new AbortController().signal,
+		),
+		{reason: 'conversation-changed', status: 'unavailable'},
+	);
+	assert.equal(captures.releases, 1);
+	current = true;
+	assert.equal(captures.describeHandle('image-capture-1', 'fixture-image', snapshot), undefined);
+});
+
 test('malformed oversized failed and canceled outputs never become successful images', async () => {
 	const scenarios = [
 		{
@@ -329,9 +355,40 @@ test('conversation changes stale handoff and explicit cleanup release processed 
 		store.withProcessedImage(result.handleId, result.messageId, snapshot, async () => undefined),
 		/Rejected stale processed Messenger image/,
 	);
-	assert.equal(store.releaseHandle(result.handleId), true);
 	assert.equal(store.releaseHandle(result.handleId), false);
 	store.releaseAll();
+	assert.equal(released.length, 2);
+	assert.equal(released.every(bytes => bytes.every(byte => byte === 0)), true);
+});
+
+test('aborting after normalization discards the processed handle before handoff', async () => {
+	const captures = captureStore();
+	const abortController = new AbortController();
+	const released = [];
+	const store = new ProcessedMessengerImageStore(
+		captures,
+		() => true,
+		async () => ({
+			bytes: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1]),
+			height: 2,
+			mimeType: 'image/png',
+			width: 4,
+		}),
+		bytes => released.push([...bytes]),
+	);
+	const result = await store.normalize(
+		'image-capture-1',
+		'fixture-image',
+		snapshot,
+		abortController.signal,
+	);
+	assert.equal(result.status, 'processed');
+	abortController.abort();
+	assert.equal(store.describeHandle(result.handleId, result.messageId, snapshot), undefined);
+	await assert.rejects(
+		store.withProcessedImage(result.handleId, result.messageId, snapshot, async () => undefined),
+		/Rejected stale processed Messenger image/,
+	);
 	assert.equal(released.length, 2);
 	assert.equal(released.every(bytes => bytes.every(byte => byte === 0)), true);
 });
