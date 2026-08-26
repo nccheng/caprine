@@ -147,8 +147,19 @@ export function reconcileLoadedCaprineAiShareDecorations(root: ParentNode = docu
 			return 0;
 		}
 
-		const allRows = [...conversation.querySelectorAll(messengerContextSelectors.message)]
-			.filter(row => !row.querySelector(messengerContextSelectors.message));
+		const allRows: Element[] = [];
+		for (const row of conversation.querySelectorAll(messengerContextSelectors.message)) {
+			try {
+				if (!row.querySelector(messengerContextSelectors.message)) {
+					allRows.push(row);
+				}
+			} catch {
+				try {
+					reconcileResolvedDecoration(row, undefined);
+				} catch {}
+			}
+		}
+
 		const rows = allRows.slice(-maximumMessengerDomExtractionItems);
 		for (const row of allRows.slice(0, -maximumMessengerDomExtractionItems)) {
 			try {

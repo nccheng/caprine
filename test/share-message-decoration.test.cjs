@@ -135,7 +135,7 @@ test('one malformed row cannot prevent stale cleanup and valid reconciliation el
 	const [outgoing, incoming, malformed] = fixtureRows(fixture);
 	assert.equal(reconcileLoadedCaprineAiShareDecorations(fixture.root), 2);
 	outgoing.querySelector('[data-ad-preview="message"]').textContent = 'Edited ordinary text';
-	malformed.throwOnSelectors = ['[data-ad-preview="message"]'];
+	malformed.throwOnSelectors = ['[role="row"]'];
 
 	assert.equal(reconcileLoadedCaprineAiShareDecorations(fixture.root), 1);
 	assert.equal(outgoing.querySelector(decorationSelector), undefined);
