@@ -1156,7 +1156,15 @@ function startConversationObserver(): void {
 		reconcileLoadedCaprineAiShareDecorations();
 	});
 	conversationObserver.observe(document.documentElement, {
-		attributeFilter: ['aria-current', 'aria-selected', 'href'],
+		attributeFilter: [
+			'aria-current',
+			'aria-label',
+			'aria-selected',
+			'data-ad-preview',
+			'data-message-id',
+			'data-messageid',
+			'href',
+		],
 		attributes: true,
 		characterData: true,
 		childList: true,

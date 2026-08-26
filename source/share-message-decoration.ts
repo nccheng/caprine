@@ -147,16 +147,32 @@ export function reconcileLoadedCaprineAiShareDecorations(root: ParentNode = docu
 			return 0;
 		}
 
-		const rows = [...conversation.querySelectorAll(messengerContextSelectors.message)]
-			.filter(row => !row.querySelector(messengerContextSelectors.message))
-			.slice(-maximumMessengerDomExtractionItems);
-		const viewModels = new Map(rows.map(row => [row, viewModelForRow(row)]));
+		const allRows = [...conversation.querySelectorAll(messengerContextSelectors.message)]
+			.filter(row => !row.querySelector(messengerContextSelectors.message));
+		const rows = allRows.slice(-maximumMessengerDomExtractionItems);
+		for (const row of allRows.slice(0, -maximumMessengerDomExtractionItems)) {
+			try {
+				reconcileResolvedDecoration(row, undefined);
+			} catch {}
+		}
+
+		const viewModels = new Map<Element, CaprineAiShareDecorationViewModel | undefined>();
+		for (const row of rows) {
+			try {
+				viewModels.set(row, viewModelForRow(row));
+			} catch {
+				viewModels.set(row, undefined);
+			}
+		}
+
 		const identityGroups = new Map<string, Element[]>();
 		for (const row of rows) {
-			const identity = stableMessageId(row);
-			if (identity) {
-				identityGroups.set(identity, [...(identityGroups.get(identity) ?? []), row]);
-			}
+			try {
+				const identity = stableMessageId(row);
+				if (identity) {
+					identityGroups.set(identity, [...(identityGroups.get(identity) ?? []), row]);
+				}
+			} catch {}
 		}
 
 		const suppressedRows = new Set<Element>();
@@ -178,9 +194,11 @@ export function reconcileLoadedCaprineAiShareDecorations(root: ParentNode = docu
 
 		let decoratedCount = 0;
 		for (const row of rows) {
-			if (reconcileResolvedDecoration(row, suppressedRows.has(row) ? undefined : viewModels.get(row))) {
-				decoratedCount += 1;
-			}
+			try {
+				if (reconcileResolvedDecoration(row, suppressedRows.has(row) ? undefined : viewModels.get(row))) {
+					decoratedCount += 1;
+				}
+			} catch {}
 		}
 
 		return decoratedCount;

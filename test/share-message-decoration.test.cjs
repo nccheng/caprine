@@ -10,7 +10,10 @@ const {
 	removeLoadedCaprineAiShareDecorations,
 } = require('../dist-js/share-message-decoration.js');
 const {formatCaprineAiShareText} = require('../dist-js/share-text-protocol.js');
-const {loadMessengerContextFixture} = require('./helpers/messenger-context-fixture.cjs');
+const {
+	loadMessengerContextFixture,
+	MessengerContextFixtureElement,
+} = require('./helpers/messenger-context-fixture.cjs');
 
 const decorationSelector = `[${caprineAiShareDecorationAttribute}]`;
 
@@ -127,7 +130,43 @@ test('coexisting virtualized copies decorate only the latest consistent row and 
 	assert.equal(first.root.querySelectorAll(decorationSelector).length, 0);
 });
 
+test('one malformed row cannot prevent stale cleanup and valid reconciliation elsewhere', () => {
+	const fixture = loadMessengerContextFixture('share-decoration.json');
+	const [outgoing, incoming, malformed] = fixtureRows(fixture);
+	assert.equal(reconcileLoadedCaprineAiShareDecorations(fixture.root), 2);
+	outgoing.querySelector('[data-ad-preview="message"]').textContent = 'Edited ordinary text';
+	malformed.throwOnSelectors = ['[data-ad-preview="message"]'];
+
+	assert.equal(reconcileLoadedCaprineAiShareDecorations(fixture.root), 1);
+	assert.equal(outgoing.querySelector(decorationSelector), undefined);
+	assert.ok(incoming.querySelector(decorationSelector));
+});
+
+test('rows outside the bounded parsing window cannot retain stale trusted decoration', () => {
+	const fixture = loadMessengerContextFixture('share-decoration.json');
+	const conversation = fixture.root.querySelector('[role="main"] [role="grid"]');
+	const outgoing = fixtureRows(fixture)[0];
+	assert.equal(reconcileCaprineAiShareDecoration(outgoing), true);
+	outgoing.querySelector('[data-ad-preview="message"]').textContent = 'Edited ordinary text';
+	const fillers = Array.from({length: 500}, (_, index) => new MessengerContextFixtureElement({
+		attributes: {
+			'aria-label': 'Alex sent a message',
+			'data-message-id': `filler-${index}`,
+			role: 'row',
+		},
+		children: [{attributes: {'data-ad-preview': 'message'}, text: `Ordinary ${index}`}],
+	}));
+	conversation.setChildren([outgoing, ...fillers]);
+
+	assert.equal(reconcileLoadedCaprineAiShareDecorations(fixture.root), 0);
+	assert.equal(outgoing.querySelector(decorationSelector), undefined);
+});
+
 test('production decoration code never uses HTML parsing for provider content', () => {
 	const source = readFileSync(path.join(__dirname, '..', 'source', 'share-message-decoration.ts'), 'utf8');
 	assert.equal(source.includes('innerHTML'), false);
+	const browserSource = readFileSync(path.join(__dirname, '..', 'source', 'browser.ts'), 'utf8');
+	for (const attribute of ['aria-label', 'data-ad-preview', 'data-message-id', 'data-messageid']) {
+		assert.ok(browserSource.includes(`'${attribute}'`));
+	}
 });
