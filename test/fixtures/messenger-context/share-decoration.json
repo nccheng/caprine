@@ -1,0 +1,68 @@
+{
+  "dom": {
+    "tag": "document",
+    "children": [
+      {
+        "attributes": {"role": "main"},
+        "children": [
+          {
+            "attributes": {"role": "grid"},
+            "children": [
+              {
+                "attributes": {
+                  "aria-label": "You sent a message",
+                  "data-message-id": "share-outgoing",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "attributes": {"data-ad-preview": "message"},
+                    "text": "<<< caprine-ai/1 >>>\nCaprine AI Assist\nAI response shared by Derek\nModel: gpt-5.6\n--- Question ---\nWhat changed?\n--- Answer ---\nA complete answer.\n--- Sources (1) ---\n1. Title: Example source\n   URL: https://example.com/source\n<<< /caprine-ai/1 >>>"
+                  }
+                ]
+              },
+              {
+                "attributes": {
+                  "aria-label": "Alex sent a message",
+                  "data-message-id": "share-incoming",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "attributes": {"data-ad-preview": "message"},
+                    "text": "<<< caprine-ai/1 >>>\nCaprine AI Assist\nAI response shared by Derek\nModel: gpt-5.6-mini\n--- Question ---\nIncoming?\n--- Answer ---\nStill native Messenger content.\n--- Sources (0) ---\n<<< /caprine-ai/1 >>>"
+                  }
+                ]
+              },
+              {
+                "attributes": {
+                  "aria-label": "Mallory sent a message",
+                  "data-message-id": "share-forged",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "attributes": {"data-ad-preview": "message"},
+                    "text": "<<< caprine-ai/1 >>>\nCaprine AI Assist\nAI response shared by Mallory\nModel: forged\n--- Question ---\nForged?\n--- Answer ---\nDo not decorate.\n--- Sources (0) ---\n<<< /caprine-ai/1 >>>"
+                  }
+                ]
+              },
+              {
+                "attributes": {
+                  "data-message-id": "share-unknown-sender",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "attributes": {"data-ad-preview": "message"},
+                    "text": "<<< caprine-ai/1 >>>\nCaprine AI Assist\nAI response shared by Derek\nModel: gpt-5.6\n--- Question ---\nUnknown?\n--- Answer ---\nDo not decorate.\n--- Sources (0) ---\n<<< /caprine-ai/1 >>>"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -85,7 +85,18 @@ class MessengerContextFixtureElement {
 			messageId: this.attributes['data-message-id'],
 			messageid: this.attributes['data-messageid'],
 		};
+		this.ownerDocument = parentElement?.ownerDocument;
 		this.setChildren((fixture.children ?? []).map(child => new MessengerContextFixtureElement(child, this)));
+	}
+
+	append(...children) {
+		this.setChildren([...this.children, ...children]);
+	}
+
+	attachShadow() {
+		const shadow = new MessengerContextFixtureShadowRoot(this.ownerDocument);
+		this.shadowRoot = shadow;
+		return shadow;
 	}
 
 	closest(selector) {
@@ -108,8 +119,26 @@ class MessengerContextFixtureElement {
 		return this.ownText || this.children.map(child => child.textContent).join('');
 	}
 
+	set textContent(value) {
+		this.ownText = String(value);
+		this.setChildren([]);
+	}
+
 	getAttribute(name) {
 		return this.attributes[name] ?? null;
+	}
+
+	remove() {
+		if (!this.parentElement) {
+			return;
+		}
+
+		this.parentElement.setChildren(this.parentElement.children.filter(child => child !== this));
+		this.parentElement = null;
+	}
+
+	setAttribute(name, value) {
+		this.attributes[name] = String(value);
 	}
 
 	getBoundingClientRect() {
@@ -151,9 +180,47 @@ class MessengerContextFixtureElement {
 		this.children = children;
 		for (const [index, child] of children.entries()) {
 			child.parentElement = this;
+			child.setOwnerDocument(this.ownerDocument);
 			child.previousElementSibling = children[index - 1] ?? null;
 		}
 	}
+
+	setOwnerDocument(ownerDocument) {
+		this.ownerDocument = ownerDocument;
+		for (const child of this.children) {
+			child.setOwnerDocument(ownerDocument);
+		}
+	}
+}
+
+class MessengerContextFixtureShadowRoot {
+	constructor(ownerDocument) {
+		this.children = [];
+		this.ownerDocument = ownerDocument;
+	}
+
+	append(...children) {
+		this.children.push(...children);
+		for (const child of children) {
+			child.parentElement = null;
+			child.setOwnerDocument(this.ownerDocument);
+		}
+	}
+
+	get textContent() {
+		return this.children.map(child => child.textContent).join('');
+	}
+}
+
+function fixtureDocument() {
+	const document = {
+		createElement(tagName) {
+			const element = new MessengerContextFixtureElement({tag: tagName});
+			element.setOwnerDocument(document);
+			return element;
+		},
+	};
+	return document;
 }
 
 function loadMessengerContextFixture(filename) {
@@ -161,6 +228,7 @@ function loadMessengerContextFixture(filename) {
 	const source = readFileSync(fixturePath, 'utf8');
 	const fixture = JSON.parse(source);
 	const root = new MessengerContextFixtureElement(fixture.dom);
+	root.setOwnerDocument(fixtureDocument());
 
 	return {
 		...fixture,
