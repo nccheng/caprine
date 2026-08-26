@@ -1,6 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const {buildAiHistoryChatViews, maximumHistoryChats} = require('../dist-js/ai-history-workspace.js');
+const {
+	buildAiHistoryChatViews,
+	maximumHistoryChats,
+	maximumHistoryTranscriptDtoCharacters,
+} = require('../dist-js/ai-history-workspace.js');
 
 function interaction(overrides = {}) {
 	return {
@@ -135,4 +139,63 @@ test('history workspace exposes only bounded renderable video evidence and no lo
 	assert.deepEqual(view.interactions[0].videoArtifact.transcript, item.videoArtifact.transcript.segments);
 	assert.equal(JSON.stringify(view).includes('mediaSha256'), false);
 	assert.equal(JSON.stringify(view).includes('sourceMessageId'), false);
+});
+
+test('history workspace exposes reviewed transcript snapshots without hashes or source identifiers', () => {
+	const transcript = {
+		contextItemId: 'context-voice',
+		durationSeconds: 2,
+		editedSegments: [{endSeconds: 2, startSeconds: 0, text: 'Edited words'}],
+		id: 'transcript:context-voice',
+		kind: 'audio',
+		mediaSha256: 'ab'.repeat(32),
+		messageId: 'message-voice',
+		originalSegments: [{endSeconds: 2, startSeconds: 0, text: 'Original words'}],
+		senderLabel: 'Voice message from Alex',
+		status: 'included',
+	};
+	const [view] = buildAiHistoryChatViews([{
+		badges: ['Audio'], contextCount: 1, createdAt: 1, id: 'chat-audio', interactionCount: 1,
+		lastActivityAt: 2, preview: 'Audio answer', title: 'Audio question',
+	}], {
+		conversationId: 'messenger-thread:one', createdAt: 1, id: 'chat-audio',
+		interactions: [interaction({artifactReferences: [], reviewedTranscripts: [transcript]})],
+	});
+
+	assert.deepEqual(view.interactions[0].reviewedTranscripts, [{
+		durationSeconds: 2,
+		editedSegments: transcript.editedSegments,
+		id: transcript.id,
+		kind: 'audio',
+		originalSegments: transcript.originalSegments,
+		senderLabel: transcript.senderLabel,
+		status: 'included',
+	}]);
+	assert.equal(JSON.stringify(view).includes('mediaSha256'), false);
+	assert.equal(JSON.stringify(view).includes('message-voice'), false);
+	assert.equal(JSON.stringify(view).includes('context-voice'), true);
+});
+
+test('history workspace rejects aggregate transcript text above the renderer ceiling', () => {
+	const oversized = 'x'.repeat(maximumHistoryTranscriptDtoCharacters + 1);
+	assert.throws(() => buildAiHistoryChatViews([{
+		badges: ['Audio'], contextCount: 1, createdAt: 1, id: 'chat-limit', interactionCount: 1,
+		lastActivityAt: 2, preview: 'Audio answer', title: 'Audio question',
+	}], {
+		conversationId: 'messenger-thread:one', createdAt: 1, id: 'chat-limit',
+		interactions: [interaction({
+			artifactReferences: [],
+			reviewedTranscripts: [{
+				contextItemId: 'context-voice',
+				durationSeconds: 2,
+				id: 'transcript:context-voice',
+				kind: 'audio',
+				mediaSha256: 'ab'.repeat(32),
+				messageId: 'message-voice',
+				originalSegments: [{endSeconds: 2, startSeconds: 0, text: oversized}],
+				senderLabel: 'Voice message from Alex',
+				status: 'included',
+			}],
+		})],
+	}), /renderer text limit/);
 });

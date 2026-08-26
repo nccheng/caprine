@@ -879,6 +879,27 @@ function appendHistoryDetail(chat, isRequesting) {
 			article.append(citationsHeading, citations);
 		}
 
+		if (interaction.reviewedTranscripts?.length > 0) {
+			const transcriptDetails = document.createElement('details');
+			transcriptDetails.className = 'history-reviewed-transcripts';
+			const transcriptSummary = document.createElement('summary');
+			transcriptSummary.textContent = `Reviewed media transcripts · ${interaction.reviewedTranscripts.length}`;
+			transcriptDetails.append(transcriptSummary);
+			for (const transcriptItem of interaction.reviewedTranscripts) {
+				const heading = document.createElement('h4');
+				heading.textContent = `${transcriptItem.kind === 'video' ? 'Video' : 'Voice'} · ${transcriptItem.senderLabel} · ${videoTime(transcriptItem.durationSeconds)} · ${transcriptItem.status === 'included' ? 'Included' : 'Removed before request'}`;
+				transcriptDetails.append(heading);
+				const transcript = document.createElement('pre');
+				transcript.tabIndex = 0;
+				const segments = transcriptItem.editedSegments ?? transcriptItem.originalSegments;
+				transcript.textContent = `${transcriptItem.editedSegments ? 'Edited transcript' : 'Original transcript'}${transcriptItem.status === 'removed' ? ' (retained in local history only; not sent as context)' : ''}\n${segments.map(segment =>
+					`[${videoTime(segment.startSeconds)}–${videoTime(segment.endSeconds)}] ${segment.text}`).join('\n')}`;
+				transcriptDetails.append(transcript);
+			}
+
+			article.append(transcriptDetails);
+		}
+
 		if (interaction.videoArtifact) {
 			const video = interaction.videoArtifact;
 			const videoDetails = document.createElement('details');

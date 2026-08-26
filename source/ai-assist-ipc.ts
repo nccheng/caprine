@@ -40,7 +40,12 @@ import {
 	mediaSourceTypes,
 	MediaSourceType,
 } from './media-contract';
-import {AiHistoryChatView, maximumHistoryChats, maximumHistoryInteractionsPerChat} from './ai-history-workspace';
+import {
+	AiHistoryChatView,
+	maximumHistoryChats,
+	maximumHistoryInteractionsPerChat,
+	maximumHistoryTranscriptDtoCharacters,
+} from './ai-history-workspace';
 import {AiHistoryDeletionConfirmation, AiHistoryDeletionScope} from './ai-history-deletion';
 import {ReviewedImageItem, ReviewedImageSelectionSummary} from './reviewed-images';
 import {
@@ -1110,6 +1115,10 @@ function isHistoryInteraction(value: unknown): boolean {
 		keys.push('videoArtifact');
 	}
 
+	if (value.reviewedTranscripts !== undefined) {
+		keys.push('reviewedTranscripts');
+	}
+
 	return isRecord(value)
 		&& hasExactKeys(value, keys)
 		&& typeof value.answer === 'string'
@@ -1153,9 +1162,67 @@ function isHistoryInteraction(value: unknown): boolean {
 		)
 		&& typeof value.question === 'string'
 		&& value.question.length <= 20_000
+		&& (value.reviewedTranscripts === undefined || isHistoryReviewedTranscripts(value.reviewedTranscripts))
 		&& ['private', 'shared'].includes(value.shareStatus as string)
 		&& (value.videoArtifact === undefined || isHistoryVideoArtifact(value.videoArtifact))
 		&& typeof value.webSearchRan === 'boolean';
+}
+
+function isHistoryReviewedTranscripts(value: unknown): boolean {
+	let totalCharacters = 0;
+	return Array.isArray(value)
+		&& value.length <= 50
+		&& value.every(transcript => {
+			if (!isRecord(transcript)) {
+				return false;
+			}
+
+			const keys = ['durationSeconds', 'id', 'kind', 'originalSegments', 'senderLabel', 'status'];
+			if (transcript.editedSegments !== undefined) {
+				keys.push('editedSegments');
+			}
+
+			const validSegments = (segments: unknown): segments is Array<{endSeconds: number; startSeconds: number; text: string}> =>
+				Array.isArray(segments)
+				&& segments.length > 0
+				&& segments.length <= 1000
+				&& segments.every(segment => isRecord(segment)
+					&& hasExactKeys(segment, ['endSeconds', 'startSeconds', 'text'])
+					&& isDuration(segment.startSeconds)
+					&& isDuration(segment.endSeconds)
+					&& (segment.endSeconds as number) > (segment.startSeconds as number)
+					&& isBoundedString(segment.text, 20_000));
+			if (!hasExactKeys(transcript, keys)
+				|| !isDuration(transcript.durationSeconds)
+				|| (transcript.durationSeconds as number) <= 0
+				|| !isBoundedString(transcript.id, 512)
+				|| !['audio', 'video'].includes(transcript.kind as string)
+				|| !validSegments(transcript.originalSegments)
+				|| !isBoundedString(transcript.senderLabel, 200)
+				|| !['included', 'removed'].includes(transcript.status as string)
+				|| (transcript.editedSegments !== undefined && !validSegments(transcript.editedSegments))) {
+				return false;
+			}
+
+			if (transcript.editedSegments === undefined) {
+				totalCharacters += transcript.originalSegments.reduce((total, segment) => total + segment.text.length, 0);
+				return totalCharacters <= maximumHistoryTranscriptDtoCharacters;
+			}
+
+			const {originalSegments, editedSegments} = transcript;
+			const timingMatches = editedSegments.length === originalSegments.length
+				&& editedSegments.every((segment, index) => (
+					segment.startSeconds === originalSegments[index].startSeconds
+					&& segment.endSeconds === originalSegments[index].endSeconds
+				));
+			if (!timingMatches) {
+				return false;
+			}
+
+			totalCharacters += [...originalSegments, ...editedSegments]
+				.reduce((total, segment) => total + segment.text.length, 0);
+			return totalCharacters <= maximumHistoryTranscriptDtoCharacters;
+		});
 }
 
 function isHistoryVideoArtifact(value: unknown): boolean {

@@ -2,12 +2,17 @@ import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {ContextWindowSize, ReviewedContextItem} from './context-review';
 import {
+	maximumTranscriptCharacters,
+	maximumTranscriptSegments,
+	TranscriptSegment,
 	TranscriptCacheRecord,
 	transcriptCacheSchemaVersion,
 } from './media-transcription';
 import {OpenAiUrlCitation, OpenAiWebSource, WebSearchMode} from './openai-client';
+import {maximumHistoryReviewedTranscriptCharacters} from './reviewed-transcripts';
 
-export const aiHistorySchemaVersion = 5;
+export const aiHistorySchemaVersion = 6;
+export const maximumHistoryReviewedTranscripts = 50;
 
 export const maximumVideoArtifactKeyframes = 12;
 export const maximumVideoArtifactKeyframeBytes = 512 * 1024;
@@ -56,6 +61,19 @@ export type AiHistoryArtifactReference = {
 	path: string;
 };
 
+export type AiHistoryReviewedTranscript = {
+	contextItemId: string;
+	durationSeconds: number;
+	editedSegments?: TranscriptSegment[];
+	id: string;
+	kind: 'audio' | 'video';
+	mediaSha256: string;
+	messageId: string;
+	originalSegments: TranscriptSegment[];
+	senderLabel: string;
+	status: 'included' | 'removed';
+};
+
 export type AiHistoryReviewedContext = {
 	actualCount: number;
 	contextVersion: string;
@@ -74,6 +92,7 @@ export type AiHistoryInteractionInput = {
 	outcome: 'completed';
 	provider: 'openai';
 	question: string;
+	reviewedTranscripts?: AiHistoryReviewedTranscript[];
 	requestedAt: number;
 	webSearch: {
 		citations: OpenAiUrlCitation[];
@@ -109,7 +128,7 @@ export type AiHistoryChatSummary = {
 
 type AiHistoryStoreOptions = {
 	databasePath: string;
-	failAt?: (stage: 'after-interaction' | 'after-question-turn') => void;
+	failAt?: (stage: 'after-interaction' | 'after-question-turn' | 'after-reviewed-transcripts') => void;
 	generateId?: () => string;
 	now?: () => number;
 };
@@ -161,6 +180,19 @@ type VideoKeyframeRow = {
 	bytes: Uint8Array;
 	mime_type: 'image/jpeg';
 	timestamp_seconds: number;
+};
+
+type ReviewedTranscriptRow = {
+	context_item_id: string;
+	duration_seconds: number;
+	edited_segments_json?: string;
+	id: string;
+	kind: 'audio' | 'video';
+	media_sha256: string;
+	message_id: string;
+	original_segments_json: string;
+	sender_label: string;
+	status: 'included' | 'removed';
 };
 
 type SummaryRow = {
@@ -393,6 +425,12 @@ export class AiHistoryStore {
 							OR LOWER(search_i.web_search_sources_json) LIKE ? ESCAPE '\\'
 							OR EXISTS (
 								SELECT 1
+								FROM ai_history_reviewed_transcripts transcript_r
+								WHERE transcript_r.interaction_id = search_i.id
+									AND LOWER(transcript_r.effective_text) LIKE ? ESCAPE '\\'
+							)
+							OR EXISTS (
+								SELECT 1
 								FROM ai_history_interaction_video_artifacts video_r
 								JOIN ai_video_analysis_artifacts video_a ON video_a.id = video_r.artifact_id
 								WHERE video_r.interaction_id = search_i.id
@@ -406,7 +444,7 @@ export class AiHistoryStore {
 			GROUP BY c.id
 			ORDER BY last_activity_at DESC, c.created_at DESC, c.id DESC
 			LIMIT 100
-		`).all(conversationId, normalizedQuery, pattern, pattern, pattern, pattern, pattern, pattern) as SummaryRow[];
+		`).all(conversationId, normalizedQuery, pattern, pattern, pattern, pattern, pattern, pattern, pattern) as SummaryRow[];
 
 		return rows.map(row => ({
 			badges: [
@@ -501,6 +539,12 @@ export class AiHistoryStore {
 					OR LOWER(i.web_search_sources_json) LIKE ? ESCAPE '\\'
 					OR EXISTS (
 						SELECT 1
+						FROM ai_history_reviewed_transcripts transcript_r
+						WHERE transcript_r.interaction_id = i.id
+							AND LOWER(transcript_r.effective_text) LIKE ? ESCAPE '\\'
+					)
+					OR EXISTS (
+						SELECT 1
 						FROM ai_history_interaction_video_artifacts video_r
 						JOIN ai_video_analysis_artifacts video_a ON video_a.id = video_r.artifact_id
 						WHERE video_r.interaction_id = i.id
@@ -510,7 +554,7 @@ export class AiHistoryStore {
 							)
 					)
 				)
-		`).all(conversationId, pattern, pattern, pattern, pattern, pattern, pattern) as Array<{chat_id: string}>).map(row => row.chat_id));
+		`).all(conversationId, pattern, pattern, pattern, pattern, pattern, pattern, pattern) as Array<{chat_id: string}>).map(row => row.chat_id));
 
 		return this.loadConversation(conversationId).filter(chat => matchingChatIds.has(chat.id));
 	}
@@ -639,6 +683,11 @@ export class AiHistoryStore {
 			INSERT INTO ai_history_turns (id, interaction_id, role, content, created_at)
 			VALUES (?, ?, 'assistant', ?, ?)
 		`).run(answerTurnId, interactionId, input.answer, input.completedAt);
+		if (input.reviewedTranscripts?.length) {
+			this.insertReviewedTranscripts(interactionId, input.reviewedTranscripts);
+			this.failAt?.('after-reviewed-transcripts');
+		}
+
 		if (input.videoArtifact) {
 			this.upsertVideoArtifact(interactionId, input.videoArtifact);
 		}
@@ -648,6 +697,7 @@ export class AiHistoryStore {
 
 	private interactionWithVideoArtifact(row: InteractionRow): AiHistoryInteraction {
 		const interaction = interactionFromRow(row);
+		const reviewedTranscripts = this.loadReviewedTranscripts(row.id);
 		const artifactRow = this.database.prepare(`
 			SELECT a.*, r.focused_frame_count, r.timeline_json,
 				r.transcript_json AS interaction_transcript_json, r.uncertainty_notes_json
@@ -655,9 +705,62 @@ export class AiHistoryStore {
 			JOIN ai_video_analysis_artifacts a ON a.id = r.artifact_id
 			WHERE r.interaction_id = ?
 		`).get(row.id) as VideoArtifactRow | undefined;
-		return artifactRow
-			? {...interaction, videoArtifact: this.videoArtifactFromRow(artifactRow)}
-			: interaction;
+		return {
+			...interaction,
+			...(reviewedTranscripts.length > 0 ? {reviewedTranscripts} : {}),
+			...(artifactRow ? {videoArtifact: this.videoArtifactFromRow(artifactRow)} : {}),
+		};
+	}
+
+	private insertReviewedTranscripts(interactionId: string, transcripts: readonly AiHistoryReviewedTranscript[]): void {
+		const insert = this.database.prepare(`
+			INSERT INTO ai_history_reviewed_transcripts (
+				interaction_id, id, context_item_id, message_id, kind, sender_label,
+				duration_seconds, media_sha256, status, original_segments_json,
+				edited_segments_json, effective_text
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`);
+		for (const transcript of transcripts) {
+			const effectiveSegments = transcript.status === 'included'
+				? (transcript.editedSegments ?? transcript.originalSegments)
+				: [];
+			insert.run(
+				interactionId,
+				transcript.id,
+				transcript.contextItemId,
+				transcript.messageId,
+				transcript.kind,
+				transcript.senderLabel,
+				transcript.durationSeconds,
+				transcript.mediaSha256,
+				transcript.status,
+				JSON.stringify(transcript.originalSegments),
+				transcript.editedSegments ? JSON.stringify(transcript.editedSegments) : null,
+				effectiveSegments.map(segment => segment.text).join('\n'),
+			);
+		}
+	}
+
+	private loadReviewedTranscripts(interactionId: string): AiHistoryReviewedTranscript[] {
+		const rows = this.database.prepare(`
+			SELECT id, context_item_id, message_id, kind, sender_label, duration_seconds,
+				media_sha256, status, original_segments_json, edited_segments_json
+			FROM ai_history_reviewed_transcripts
+			WHERE interaction_id = ?
+			ORDER BY rowid
+		`).all(interactionId) as ReviewedTranscriptRow[];
+		return rows.map(row => ({
+			contextItemId: row.context_item_id,
+			durationSeconds: row.duration_seconds,
+			...(row.edited_segments_json ? {editedSegments: parseJson<TranscriptSegment[]>(row.edited_segments_json)} : {}),
+			id: row.id,
+			kind: row.kind,
+			mediaSha256: row.media_sha256,
+			messageId: row.message_id,
+			originalSegments: parseJson<TranscriptSegment[]>(row.original_segments_json),
+			senderLabel: row.sender_label,
+			status: row.status,
+		}));
 	}
 
 	private videoArtifactFromRow(row: VideoArtifactRow): AiHistoryVideoArtifact {
@@ -799,8 +902,85 @@ export class AiHistoryStore {
 		JSON.stringify(input.webSearch.citations);
 		JSON.stringify(input.webSearch.sources);
 		JSON.stringify(input.artifactReferences ?? []);
+		if ((input.reviewedTranscripts?.length ?? 0) > maximumHistoryReviewedTranscripts) {
+			throw new TypeError('reviewed transcript history exceeds the durable item limit');
+		}
+
+		const transcriptIds = new Set<string>();
+		let transcriptCharacters = 0;
+		for (const transcript of input.reviewedTranscripts ?? []) {
+			this.validateReviewedTranscript(transcript);
+			transcriptCharacters += [...transcript.originalSegments, ...(transcript.editedSegments ?? [])]
+				.reduce((total, segment) => total + segment.text.length, 0);
+			if (transcriptCharacters > maximumHistoryReviewedTranscriptCharacters) {
+				throw new TypeError('reviewed transcript history exceeds the durable text limit');
+			}
+
+			if (transcriptIds.has(transcript.id)) {
+				throw new TypeError('reviewed transcript history IDs must be unique per interaction');
+			}
+
+			transcriptIds.add(transcript.id);
+		}
+
 		if (input.videoArtifact) {
 			this.validateVideoArtifact(input.videoArtifact);
+		}
+	}
+
+	private validateReviewedTranscript(transcript: Readonly<AiHistoryReviewedTranscript>): void {
+		requireIdentifier(transcript.id, 'reviewed transcript ID');
+		requireIdentifier(transcript.contextItemId, 'reviewed transcript context item ID');
+		requireIdentifier(transcript.messageId, 'reviewed transcript message ID');
+		requireText(transcript.senderLabel, 'reviewed transcript sender label', 200);
+		requireMediaSha256(transcript.mediaSha256);
+		if (!['audio', 'video'].includes(transcript.kind)
+			|| !['included', 'removed'].includes(transcript.status)
+			|| !Number.isFinite(transcript.durationSeconds)
+			|| transcript.durationSeconds <= 0
+			|| transcript.durationSeconds > 5 * 60) {
+			throw new TypeError('reviewed transcript history metadata is invalid');
+		}
+
+		this.validateReviewedTranscriptSegments(transcript.originalSegments, transcript.durationSeconds, 'original');
+		if (transcript.editedSegments) {
+			this.validateReviewedTranscriptSegments(transcript.editedSegments, transcript.durationSeconds, 'edited');
+			if (transcript.editedSegments.length !== transcript.originalSegments.length
+				|| transcript.editedSegments.some((segment, index) => (
+					segment.startSeconds !== transcript.originalSegments[index].startSeconds
+					|| segment.endSeconds !== transcript.originalSegments[index].endSeconds
+				))) {
+				throw new TypeError('reviewed transcript edit timing must match the immutable original');
+			}
+		}
+	}
+
+	private validateReviewedTranscriptSegments(
+		segments: readonly TranscriptSegment[],
+		durationSeconds: number,
+		name: string,
+	): void {
+		if (segments.length === 0 || segments.length > maximumTranscriptSegments) {
+			throw new TypeError(`${name} reviewed transcript segments exceed the durable limit`);
+		}
+
+		let characters = 0;
+		let previousEnd = 0;
+		for (const segment of segments) {
+			characters += requireText(segment.text, `${name} reviewed transcript segment`).length;
+			if (!Number.isFinite(segment.startSeconds)
+				|| !Number.isFinite(segment.endSeconds)
+				|| segment.startSeconds < previousEnd
+				|| segment.endSeconds <= segment.startSeconds
+				|| segment.endSeconds > durationSeconds) {
+				throw new TypeError(`${name} reviewed transcript segment timing is invalid`);
+			}
+
+			previousEnd = segment.endSeconds;
+		}
+
+		if (characters > maximumTranscriptCharacters) {
+			throw new TypeError(`${name} reviewed transcript text exceeds the durable limit`);
 		}
 	}
 
@@ -1016,6 +1196,30 @@ export class AiHistoryStore {
 								FROM ai_video_analysis_artifacts
 								WHERE id = ai_history_interaction_video_artifacts.artifact_id
 							);
+						`);
+						break;
+					}
+
+					case 6: {
+						this.database.exec(`
+							CREATE TABLE ai_history_reviewed_transcripts (
+								interaction_id TEXT NOT NULL REFERENCES ai_history_interactions(id) ON DELETE CASCADE,
+								id TEXT NOT NULL,
+								context_item_id TEXT NOT NULL,
+								message_id TEXT NOT NULL,
+								kind TEXT NOT NULL CHECK (kind IN ('audio', 'video')),
+								sender_label TEXT NOT NULL,
+								duration_seconds REAL NOT NULL CHECK (duration_seconds > 0 AND duration_seconds <= 300),
+								media_sha256 TEXT NOT NULL
+									CHECK (length(media_sha256) = 64 AND media_sha256 NOT GLOB '*[^0-9a-f]*'),
+								status TEXT NOT NULL CHECK (status IN ('included', 'removed')),
+								original_segments_json TEXT NOT NULL,
+								edited_segments_json TEXT,
+								effective_text TEXT NOT NULL,
+								PRIMARY KEY (interaction_id, id)
+							) STRICT;
+							CREATE INDEX ai_history_reviewed_transcripts_interaction
+								ON ai_history_reviewed_transcripts (interaction_id);
 						`);
 						break;
 					}

@@ -1,9 +1,15 @@
-import {AiHistoryChat, AiHistoryChatSummary, AiHistoryInteraction} from './ai-history-store';
+import {
+	AiHistoryChat,
+	AiHistoryChatSummary,
+	AiHistoryInteraction,
+} from './ai-history-store';
 import {originalHistoryReplayAvailability} from './ai-history-replay';
 import {openAiResponseModel} from './openai-client';
+import {maximumHistoryReviewedTranscriptCharacters} from './reviewed-transcripts';
 
 export const maximumHistoryChats = 100;
 export const maximumHistoryInteractionsPerChat = 25;
+export const maximumHistoryTranscriptDtoCharacters = maximumHistoryReviewedTranscriptCharacters;
 
 export type AiHistoryBadge = 'Audio' | 'Image' | 'Video' | 'Web';
 
@@ -25,6 +31,15 @@ export type AiHistoryInteractionView = {
 	model: string;
 	originalReplay: {available: true} | {available: false; reason: 'missing-artifacts' | 'unsupported-metadata'};
 	question: string;
+	reviewedTranscripts?: Array<{
+		durationSeconds: number;
+		editedSegments?: Array<{endSeconds: number; startSeconds: number; text: string}>;
+		id: string;
+		kind: 'audio' | 'video';
+		originalSegments: Array<{endSeconds: number; startSeconds: number; text: string}>;
+		senderLabel: string;
+		status: 'included' | 'removed';
+	}>;
 	shareStatus: 'private' | 'shared';
 	videoArtifact?: {
 		coverage: 'balanced' | 'sparse';
@@ -96,6 +111,13 @@ function contextExcerpt(interaction: AiHistoryInteraction): AiHistoryContextItem
 }
 
 function interactionView(interaction: AiHistoryInteraction): AiHistoryInteractionView {
+	const reviewedTranscriptCharacters = (interaction.reviewedTranscripts ?? [])
+		.flatMap(transcript => [...transcript.originalSegments, ...(transcript.editedSegments ?? [])])
+		.reduce((total, segment) => total + segment.text.length, 0);
+	if (reviewedTranscriptCharacters > maximumHistoryTranscriptDtoCharacters) {
+		throw new TypeError('reviewed transcript history exceeds the renderer text limit');
+	}
+
 	const citations = new Map<string, {title: string; url: string}>();
 	for (const citation of interaction.webSearch.citations) {
 		citations.set(citation.url, {
@@ -123,6 +145,19 @@ function interactionView(interaction: AiHistoryInteraction): AiHistoryInteractio
 		model: boundedText(interaction.model, 200),
 		originalReplay: originalHistoryReplayAvailability(interaction, openAiResponseModel),
 		question: boundedText(interaction.question),
+		...(interaction.reviewedTranscripts?.length ? {
+			reviewedTranscripts: interaction.reviewedTranscripts.map(transcript => ({
+				durationSeconds: transcript.durationSeconds,
+				...(transcript.editedSegments ? {
+					editedSegments: transcript.editedSegments.map(segment => ({...segment, text: boundedText(segment.text)})),
+				} : {}),
+				id: boundedText(transcript.id, 512),
+				kind: transcript.kind,
+				originalSegments: transcript.originalSegments.map(segment => ({...segment, text: boundedText(segment.text)})),
+				senderLabel: boundedText(transcript.senderLabel, 200),
+				status: transcript.status,
+			})),
+		} : {}),
 		shareStatus: interaction.shareStatus,
 		...(interaction.videoArtifact ? {
 			videoArtifact: {

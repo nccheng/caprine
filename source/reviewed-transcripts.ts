@@ -4,6 +4,7 @@ import type {TranscriptSegment, TranscriptionErrorCode} from './media-transcript
 
 export const transcriptDisclosure = 'This media will be sent to OpenAI for transcription';
 export const maximumReviewedTranscriptCharacters = 100_000;
+export const maximumHistoryReviewedTranscriptCharacters = maximumReviewedTranscriptCharacters * 2;
 
 export type ReviewedTranscriptStatus =
 	| 'available'
@@ -131,10 +132,8 @@ export function editReviewedTranscript(
 export function removeReviewedTranscript(item: Readonly<ReviewedTranscriptItem>): ReviewedTranscriptItem {
 	const {
 		byteLength: _byteLength,
-		editedSegments: _editedSegments,
 		mimeType: _mimeType,
 		notice: _notice,
-		originalSegments: _originalSegments,
 		...retained
 	} = item;
 	return {...retained, status: 'removed'};

@@ -63,6 +63,7 @@ import {
 } from './openai-client';
 import {
 	AiHistoryInteractionInput,
+	AiHistoryReviewedTranscript,
 	AiHistoryStore,
 	AiHistoryVideoArtifact,
 	AiHistoryVideoArtifactInput,
@@ -250,6 +251,8 @@ class AiAssistController {
 		savedTimeline?: AiHistoryVideoArtifact['timeline'];
 		snapshot: Readonly<ConversationSnapshot>;
 	}>();
+
+	private readonly transcriptMediaHashes = new Map<string, string>();
 
 	private readonly imageCaptures: MessengerImageCaptureStore;
 	private readonly processedImages: ProcessedMessengerImageStore;
@@ -1286,6 +1289,7 @@ class AiAssistController {
 			.map(item => item.id);
 		for (const transcriptId of transcriptIds) {
 			this.releaseTranscriptResources(reviewSequence, transcriptId);
+			this.transcriptMediaHashes.delete(transcriptId);
 		}
 
 		const snapshot = removeContextReviewItem(this.review.snapshot, itemId);
@@ -1817,6 +1821,7 @@ class AiAssistController {
 					).catch(() => undefined);
 				}
 			} else {
+				this.transcriptMediaHashes.set(transcriptId, result.mediaSha256);
 				this.updateTranscriptState(reviewSequence, transcriptId, item => completeReviewedTranscript(item, {
 					byteLength: result.source.byteLength,
 					durationSeconds: result.source.durationSeconds,
@@ -2713,6 +2718,27 @@ class AiAssistController {
 				outcome: 'completed',
 				provider: 'openai',
 				question: review.question,
+				reviewedTranscripts: review.transcripts.flatMap(item => {
+					const mediaSha256 = this.transcriptMediaHashes.get(item.id);
+					if (!mediaSha256 || !item.durationSeconds || !item.originalSegments
+						|| !['completed', 'removed'].includes(item.status)) {
+						return [];
+					}
+
+					const transcript: AiHistoryReviewedTranscript = {
+						contextItemId: item.contextItemId,
+						durationSeconds: item.durationSeconds,
+						...(item.editedSegments ? {editedSegments: item.editedSegments.map(segment => ({...segment}))} : {}),
+						id: item.id,
+						kind: item.kind,
+						mediaSha256,
+						messageId: item.messageId,
+						originalSegments: item.originalSegments.map(segment => ({...segment})),
+						senderLabel: item.senderLabel,
+						status: item.status === 'removed' ? 'removed' : 'included',
+					};
+					return [transcript];
+				}),
 				requestedAt,
 				webSearch: {
 					citations: answer.webSearch.citations,
@@ -2805,22 +2831,31 @@ class AiAssistController {
 
 		this.clearContextReview();
 		let restoredReview = restoreOriginalHistoryReview(interaction, snapshot);
+		for (const transcript of interaction.reviewedTranscripts ?? []) {
+			this.transcriptMediaHashes.set(transcript.id, transcript.mediaSha256);
+		}
+
 		if (interaction.videoArtifact) {
 			const video = interaction.videoArtifact;
-			const transcriptId = `history-video:${interaction.id}`;
-			restoredReview = updateContextReview(restoredReview, {
-				transcripts: [{
-					contextItemId: interaction.context.items.find(({item}) => item.messageId === video.sourceMessageId)?.id ?? transcriptId,
-					durationSeconds: video.durationSeconds,
-					id: transcriptId,
-					kind: 'video',
-					messageId: video.sourceMessageId,
-					...(video.transcript.status === 'completed'
-						? {originalSegments: video.transcript.segments.map(segment => ({...segment})), status: 'completed' as const}
-						: {notice: 'No audio track was present in the saved analysis.', status: 'no-audio' as const}),
-					senderLabel: 'Saved video from this Messenger conversation',
-				}],
-			});
+			const restoredVideoTranscript = restoredReview.transcripts.find(item => item.messageId === video.sourceMessageId && item.kind === 'video');
+			const transcriptId = restoredVideoTranscript?.id ?? `history-video:${interaction.id}`;
+			if (!restoredVideoTranscript) {
+				restoredReview = updateContextReview(restoredReview, {
+					transcripts: [...restoredReview.transcripts, {
+						contextItemId: interaction.context.items.find(({item}) => item.messageId === video.sourceMessageId)?.id ?? transcriptId,
+						durationSeconds: video.durationSeconds,
+						id: transcriptId,
+						kind: 'video',
+						messageId: video.sourceMessageId,
+						...(video.transcript.status === 'completed'
+							? {originalSegments: video.transcript.segments.map(segment => ({...segment})), status: 'completed' as const}
+							: {notice: 'No audio track was present in the saved analysis.', status: 'no-audio' as const}),
+						senderLabel: 'Saved video from this Messenger conversation',
+					}],
+				});
+				this.transcriptMediaHashes.set(transcriptId, video.mediaSha256);
+			}
+
 			this.videoArtifacts.set(transcriptId, {
 				artifact: {
 					coverage: video.coverage,
@@ -3076,6 +3111,7 @@ class AiAssistController {
 		this.pendingTranscription?.abortController.abort();
 		this.pendingTranscription = undefined;
 		this.transcriptHandles.clear();
+		this.transcriptMediaHashes.clear();
 		this.videoArtifacts.clear();
 		this.videoAnalysis = undefined;
 		this.cancelMediaResolution();
@@ -3100,6 +3136,7 @@ class AiAssistController {
 		this.pendingTranscription?.abortController.abort();
 		this.pendingTranscription = undefined;
 		this.transcriptHandles.clear();
+		this.transcriptMediaHashes.clear();
 		this.videoArtifacts.clear();
 		this.videoAnalysis = undefined;
 		this.cancelMediaResolution();
