@@ -1079,6 +1079,32 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		['prepare', 'all', undefined],
 		['prepare', 'chat', 'chat-1'],
 	]);
+	const currentDeleteChatButton = [...elements.values()]
+		.filter(node => node.textContent === 'Delete this AI chat')
+		.at(-1);
+	const chatConfirmationState = {
+		...historyState,
+		history: {
+			...historyState.history,
+			deletionConfirmation: {
+				authorizationToken: 'history-deletion-token:chat',
+				confirmLabel: 'Delete AI chat',
+				message: 'Delete this local AI chat, but no Messenger messages.',
+				scope: 'chat',
+				title: 'Delete this local AI chat?',
+			},
+		},
+	};
+	commandState.current = chatConfirmationState;
+	await currentDeleteChatButton.listeners.get('click')();
+	assert.equal(context.document.activeElement, element('cancel-history-deletion-button'));
+	commandState.current = historyState;
+	await element('cancel-history-deletion-button').listeners.get('click')();
+	const restoredDeleteChatButton = [...elements.values()]
+		.filter(node => node.textContent === 'Delete this AI chat')
+		.at(-1);
+	assert.notEqual(restoredDeleteChatButton, currentDeleteChatButton);
+	assert.equal(context.document.activeElement, restoredDeleteChatButton);
 	commandState.current = {...state('ready', 1), webSearchMode: 'auto'};
 	element('web-search-mode').value = 'auto';
 	await element('web-search-mode').listeners.get('change')();

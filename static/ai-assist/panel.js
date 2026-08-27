@@ -75,6 +75,8 @@ let renderedAnswerSignature;
 let renderedHistoryDeletionToken;
 let diagnosticsCopySequence;
 let historyDeletionFocusTarget;
+let renderedHistoryDeleteButton;
+let renderedHistoryDeleteChatId;
 let initialFocusApplied = false;
 const contextReviewRows = new Map();
 const reviewedImageRows = new Map();
@@ -870,6 +872,8 @@ function videoTime(seconds) {
 
 function appendHistoryDetail(chat, isRequesting) {
 	historyDetail.textContent = '';
+	renderedHistoryDeleteButton = undefined;
+	renderedHistoryDeleteChatId = undefined;
 	if (!chat) {
 		historyDetail.textContent = 'Select a chat to inspect its frozen local history.';
 		return;
@@ -885,8 +889,10 @@ function appendHistoryDetail(chat, isRequesting) {
 	deleteButton.className = 'danger';
 	deleteButton.textContent = 'Delete this AI chat';
 	deleteButton.disabled = isRequesting;
+	renderedHistoryDeleteButton = deleteButton;
+	renderedHistoryDeleteChatId = chat.id;
 	deleteButton.addEventListener('click', async () => {
-		historyDeletionFocusTarget = deleteButton;
+		historyDeletionFocusTarget = {chatId: chat.id, scope: 'chat'};
 		render(await window.caprineAiAssist.prepareHistoryDeletion('chat', chat.id));
 	});
 	deleteActions.append(deleteButton);
@@ -1122,7 +1128,11 @@ function renderHistoryDeletionConfirmation(confirmation) {
 		}
 
 		if (renderedHistoryDeletionToken) {
-			focusFirstAvailable(historyDeletionFocusTarget, newHistoryChatButton, closeButton);
+			const focusTarget = historyDeletionFocusTarget?.scope === 'chat'
+				&& historyDeletionFocusTarget.chatId === renderedHistoryDeleteChatId
+				? renderedHistoryDeleteButton
+				: historyDeletionFocusTarget?.element;
+			focusFirstAvailable(focusTarget, newHistoryChatButton, closeButton);
 		}
 
 		renderedHistoryDeletionToken = undefined;
@@ -1331,12 +1341,12 @@ newHistoryChatButton.addEventListener('click', async () => {
 });
 
 clearConversationHistoryButton.addEventListener('click', async () => {
-	historyDeletionFocusTarget = clearConversationHistoryButton;
+	historyDeletionFocusTarget = {element: clearConversationHistoryButton, scope: 'conversation'};
 	render(await window.caprineAiAssist.prepareHistoryDeletion('conversation'));
 });
 
 clearAllHistoryButton.addEventListener('click', async () => {
-	historyDeletionFocusTarget = clearAllHistoryButton;
+	historyDeletionFocusTarget = {element: clearAllHistoryButton, scope: 'all'};
 	render(await window.caprineAiAssist.prepareHistoryDeletion('all'));
 });
 
