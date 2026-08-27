@@ -167,12 +167,6 @@ test('stable leaf-text fallback excludes message chrome and unrelated UI text', 
 			{tag: 'blockquote', text: 'Quoted reply'},
 			{attributes: {'aria-label': '👍 2 reactions'}, text: 'Reaction text'},
 			{attributes: {datetime: '2026-08-27T00:00:00Z'}, tag: 'time', text: 'Yesterday'},
-			{
-				attributes: {href: 'https://example.invalid'},
-				href: 'https://example.invalid',
-				tag: 'a',
-				text: 'Link chrome',
-			},
 			{tag: 'button', text: 'Button text'},
 			{tag: 'input', text: 'Form control text'},
 			{attributes: {role: 'textbox'}, text: 'Composer text'},
@@ -185,7 +179,47 @@ test('stable leaf-text fallback excludes message chrome and unrelated UI text', 
 
 	const [item] = extractLoadedMessengerConversationContext(root);
 	assert.equal(item.text, 'Expected plain text');
-	assert.doesNotMatch(item.text, /reply|reaction|yesterday|link|button|control|composer|hidden|placeholder|navigation|sidebar/i);
+	assert.doesNotMatch(item.text, /reply|reaction|yesterday|button|control|composer|hidden|placeholder|navigation|sidebar/i);
+});
+
+test('stable leaf-text fallback never promotes recognized link-preview sibling chrome', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'leaf-link-preview', role: 'row'},
+		children: [{
+			children: [
+				{
+					attributes: {href: 'https://example.invalid'},
+					href: 'https://example.invalid',
+					tag: 'a',
+				},
+				{text: 'Example preview title'},
+			],
+		}],
+	}]);
+
+	const [item] = extractLoadedMessengerConversationContext(root);
+	assert.equal(item.text, undefined);
+	assert.deepEqual(item.linkPreview, {
+		domain: 'example.invalid',
+		url: 'https://example.invalid/',
+	});
+});
+
+test('leaf-only exclusions do not change existing primary message marker extraction', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'Avery sent a message', role: 'row'},
+		children: [{
+			attributes: {'data-ad-preview': 'message'},
+			children: [{tag: 'button', text: 'See more'}],
+			text: 'Established primary text',
+		}],
+	}]);
+
+	assert.deepEqual(extractLoadedMessengerConversationContext(root), [{
+		confidence: 'medium',
+		sender: {displayName: 'Avery', role: 'incoming'},
+		text: 'Established primary text',
+	}]);
 });
 
 test('stable leaf-text fallback fails closed at existing traversal and string bounds', () => {

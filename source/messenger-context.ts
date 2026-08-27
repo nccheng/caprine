@@ -644,8 +644,11 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 		messengerContextSelectors.reply,
 		messengerContextSelectors.timestamp,
 		'a[href]',
-		'button',
 		'[role="button"]',
+	].join(',');
+	const fallbackExcludedText = [
+		excludedText,
+		'button',
 		'input',
 		'label',
 		'option',
@@ -670,7 +673,9 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 		reactions: reactionFromElement(element),
 		stableId,
 		text: supportedText
-			?? (stableId && sender.confident ? singleVisibleLeafText(element, excludedText) : undefined),
+			?? (stableId && sender.confident && !linkPreview
+				? singleVisibleLeafText(element, fallbackExcludedText)
+				: undefined),
 		timestamp: timestampFromElement(element),
 		senderDisplayName: sender.senderDisplayName,
 		senderRole: sender.senderRole,
