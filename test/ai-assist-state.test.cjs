@@ -205,6 +205,15 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
 	assert.equal(isAiAssistMessengerCommand({
 		conversationId: 'messenger-thread:123',
+		type: 'focus-composer',
+	}), true);
+	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
+		prompt: 'private',
+		type: 'focus-composer',
+	}), false);
+	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
 		requestId: 'context-capture-1',
 		requestedCount: 20,
 		type: 'capture-context',
@@ -1070,6 +1079,32 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		['prepare', 'all', undefined],
 		['prepare', 'chat', 'chat-1'],
 	]);
+	const currentDeleteChatButton = [...elements.values()]
+		.filter(node => node.textContent === 'Delete this AI chat')
+		.at(-1);
+	const chatConfirmationState = {
+		...historyState,
+		history: {
+			...historyState.history,
+			deletionConfirmation: {
+				authorizationToken: 'history-deletion-token:chat',
+				confirmLabel: 'Delete AI chat',
+				message: 'Delete this local AI chat, but no Messenger messages.',
+				scope: 'chat',
+				title: 'Delete this local AI chat?',
+			},
+		},
+	};
+	commandState.current = chatConfirmationState;
+	await currentDeleteChatButton.listeners.get('click')();
+	assert.equal(context.document.activeElement, element('cancel-history-deletion-button'));
+	commandState.current = historyState;
+	await element('cancel-history-deletion-button').listeners.get('click')();
+	const restoredDeleteChatButton = [...elements.values()]
+		.filter(node => node.textContent === 'Delete this AI chat')
+		.at(-1);
+	assert.notEqual(restoredDeleteChatButton, currentDeleteChatButton);
+	assert.equal(context.document.activeElement, restoredDeleteChatButton);
 	commandState.current = {...state('ready', 1), webSearchMode: 'auto'};
 	element('web-search-mode').value = 'auto';
 	await element('web-search-mode').listeners.get('change')();
@@ -1475,7 +1510,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(element('answer-sources').hidden, false);
 	const citationMarker = [...elements.values()].find(node => node.className === 'citation-marker');
 	const citationSource = [...elements.values()].find(node => node.className === 'citation-source');
-	assert.equal(citationMarker.attributes.get('aria-label'), 'Open source 1 for cited text: Cited');
+	assert.equal(citationMarker.attributes.get('aria-label'), 'Open cited source 1');
 	assert.equal(citationSource.textContent, 'Cited source');
 	assert.equal(citationSource.attributes.get('aria-label'), 'Open cited source 1: Cited source');
 	assert.equal([...elements.values()].some(node => node.textContent === 'Uncited source'), false);

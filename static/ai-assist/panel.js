@@ -74,9 +74,29 @@ let renderedInsertion;
 let renderedAnswerSignature;
 let renderedHistoryDeletionToken;
 let diagnosticsCopySequence;
+let historyDeletionFocusTarget;
+let renderedHistoryDeleteButton;
+let renderedHistoryDeleteChatId;
+let initialFocusApplied = false;
 const contextReviewRows = new Map();
 const reviewedImageRows = new Map();
 const reviewedTranscriptRows = new Map();
+
+function focusFirstAvailable(...elements) {
+	for (const element of elements) {
+		if (
+			element
+			&& !element.disabled
+			&& !element.hidden
+			&& (typeof document.contains !== 'function' || document.contains(element))
+		) {
+			element.focus?.();
+			return true;
+		}
+	}
+
+	return false;
+}
 
 function shouldClearPrompt(state) {
 	return state.conversation.status !== 'ready'
@@ -115,10 +135,12 @@ function renderAnswer(state) {
 		return;
 	}
 
+	const hadRenderedAnswerState = renderedAnswerSignature !== undefined;
 	renderedAnswerSignature = signature;
 	answerOutput.textContent = '';
 	answerSourceList.textContent = '';
 	answerSources.hidden = true;
+	answerSources.open = false;
 	if (!renderedAnswer) {
 		answerOutput.textContent = 'No answer yet.';
 		answerSearchStatus.textContent = 'No answer yet.';
@@ -129,6 +151,10 @@ function renderAnswer(state) {
 	if (view.status === 'malformed') {
 		answerOutput.textContent = view.text || 'No answer yet.';
 		answerSearchStatus.textContent = 'Search evidence could not be displayed safely.';
+		if (hadRenderedAnswerState) {
+			focusFirstAvailable(answerOutput);
+		}
+
 		return;
 	}
 
@@ -149,7 +175,7 @@ function renderAnswer(state) {
 		button.type = 'button';
 		button.className = 'citation-marker';
 		button.textContent = `[${marker.sourceNumber}]`;
-		button.setAttribute('aria-label', `Open source ${marker.sourceNumber} for cited text: ${marker.evidence}`);
+		button.setAttribute('aria-label', `Open cited source ${marker.sourceNumber}`);
 		button.addEventListener('click', async () => {
 			await window.caprineAiAssist.openCitation(marker.url);
 		});
@@ -164,6 +190,10 @@ function renderAnswer(state) {
 	}
 
 	if (view.sources.length === 0) {
+		if (hadRenderedAnswerState) {
+			focusFirstAvailable(answerOutput);
+		}
+
 		return;
 	}
 
@@ -183,6 +213,10 @@ function renderAnswer(state) {
 		});
 		item.append(button);
 		answerSourceList.append(item);
+	}
+
+	if (hadRenderedAnswerState) {
+		focusFirstAvailable(answerOutput);
 	}
 }
 
@@ -310,6 +344,7 @@ function updateContextReviewRow(row, reviewed, index, reviewState) {
 	row.itemId = reviewed.id;
 	row.reviewSequence = reviewSequence;
 	row.remove.disabled = locked;
+	row.remove.setAttribute('aria-label', `Remove message ${index + 1} from reviewed context`);
 	if (item.sender.role === 'outgoing') {
 		row.heading.textContent = `Message ${index + 1} · sent by you`;
 	} else if (item.sender.role === 'incoming') {
@@ -333,6 +368,7 @@ function updateContextReviewRow(row, reviewed, index, reviewState) {
 
 		row.renderedValue = renderedValue;
 		row.editor.setAttribute('aria-label', `Edit message ${index + 1} excerpt`);
+		row.save.setAttribute('aria-label', `Save redaction for message ${index + 1}`);
 		row.marker.textContent = reviewed.editedExcerpt === undefined ? 'Original excerpt' : 'Edited excerpt';
 	} else {
 		row.excerpt.textContent = contextExcerpt(item);
@@ -359,7 +395,11 @@ function createContextReviewRow(reviewed, index, reviewSequence, locked) {
 		reviewSequence,
 	};
 	remove.addEventListener('click', async () => {
+		const removedIndex = [...contextReviewRows.keys()].indexOf(row.itemId);
 		render(await window.caprineAiAssist.removeContextItem(row.reviewSequence, row.itemId));
+		const remainingRows = [...contextReviewRows.values()];
+		const focusRow = remainingRows[Math.min(removedIndex, remainingRows.length - 1)];
+		focusFirstAvailable(focusRow?.editor, focusRow?.remove, refreshContextButton);
 	});
 	buttons.append(remove);
 	if (reviewed.item.omittedReason) {
@@ -483,6 +523,8 @@ function updateReviewedTranscriptRow(row, item, reviewSequence, locked, credenti
 	row.item = item;
 	row.reviewSequence = reviewSequence;
 	row.heading.textContent = item.senderLabel;
+	row.save.setAttribute('aria-label', `Save transcript edits for ${item.senderLabel}`);
+	row.remove.setAttribute('aria-label', `Remove transcript for ${item.senderLabel}`);
 	row.metadata.textContent = [
 		item.durationSeconds === undefined ? undefined : `${item.durationSeconds.toFixed(1)} seconds`,
 		item.byteLength === undefined ? undefined : `${item.byteLength.toLocaleString()} bytes`,
@@ -540,6 +582,8 @@ function updateReviewedTranscriptRow(row, item, reviewSequence, locked, credenti
 			row.action.textContent = item.kind === 'video' ? 'Prepare video audio' : 'Prepare voice message';
 		}
 	}
+
+	row.action.setAttribute('aria-label', `${row.action.textContent} for ${item.senderLabel}`);
 
 	if (item.status === 'extracting' || item.status === 'transcribing') {
 		row.action.disabled = locked;
@@ -606,7 +650,8 @@ function createReviewedTranscriptRow(item, reviewSequence, locked, credentialsCo
 	});
 	remove.addEventListener('click', async () => {
 		render(await window.caprineAiAssist.removeTranscript(row.reviewSequence, row.item.id));
-		row.action.focus?.();
+		const currentRow = reviewedTranscriptRows.get(row.item.id);
+		focusFirstAvailable(currentRow?.action, refreshContextButton);
 	});
 	buttons.append(action, save, remove);
 	article.append(heading, metadata, disclosure, status, marker, segmentContainer, buttons);
@@ -736,6 +781,7 @@ function updateReviewedImageRow(row, image, reviewSequence, locked) {
 		row.action.textContent = image.status === 'available' ? 'Include' : 'Remove';
 		row.action.className = image.status === 'available' ? 'secondary' : 'danger';
 		row.action.disabled = locked || image.status === 'removed';
+		row.action.setAttribute('aria-label', `${row.action.textContent} processed image from ${image.senderLabel}`);
 	}
 }
 
@@ -766,10 +812,17 @@ function createReviewedImageRow(image, reviewSequence, locked) {
 		row.processedHandleId = image.processedHandleId;
 		row.thumbnail = thumbnail;
 		action.addEventListener('click', async () => {
+			const changedIndex = [...reviewedImageRows.keys()].indexOf(row.itemId);
 			const state = action.textContent === 'Include'
 				? await window.caprineAiAssist.includeReviewedImage(row.reviewSequence, row.itemId, row.processedHandleId)
 				: await window.caprineAiAssist.removeReviewedImage(row.reviewSequence, row.itemId, row.processedHandleId);
 			render(state);
+			if (action.disabled) {
+				const remainingRows = [...reviewedImageRows.values()]
+					.filter(candidate => candidate.action && !candidate.action.disabled);
+				const focusRow = remainingRows[Math.min(changedIndex, remainingRows.length - 1)];
+				focusFirstAvailable(focusRow?.action, refreshContextButton);
+			}
 		});
 		article.append(heading, context, thumbnail, metadata, status, action);
 	}
@@ -819,6 +872,8 @@ function videoTime(seconds) {
 
 function appendHistoryDetail(chat, isRequesting) {
 	historyDetail.textContent = '';
+	renderedHistoryDeleteButton = undefined;
+	renderedHistoryDeleteChatId = undefined;
 	if (!chat) {
 		historyDetail.textContent = 'Select a chat to inspect its frozen local history.';
 		return;
@@ -834,7 +889,10 @@ function appendHistoryDetail(chat, isRequesting) {
 	deleteButton.className = 'danger';
 	deleteButton.textContent = 'Delete this AI chat';
 	deleteButton.disabled = isRequesting;
+	renderedHistoryDeleteButton = deleteButton;
+	renderedHistoryDeleteChatId = chat.id;
 	deleteButton.addEventListener('click', async () => {
+		historyDeletionFocusTarget = {chatId: chat.id, scope: 'chat'};
 		render(await window.caprineAiAssist.prepareHistoryDeletion('chat', chat.id));
 	});
 	deleteActions.append(deleteButton);
@@ -1070,11 +1128,15 @@ function renderHistoryDeletionConfirmation(confirmation) {
 		}
 
 		if (renderedHistoryDeletionToken) {
-			const focusTarget = newHistoryChatButton.disabled ? closeButton : newHistoryChatButton;
-			focusTarget.focus?.();
+			const focusTarget = historyDeletionFocusTarget?.scope === 'chat'
+				&& historyDeletionFocusTarget.chatId === renderedHistoryDeleteChatId
+				? renderedHistoryDeleteButton
+				: historyDeletionFocusTarget?.element;
+			focusFirstAvailable(focusTarget, newHistoryChatButton, closeButton);
 		}
 
 		renderedHistoryDeletionToken = undefined;
+		historyDeletionFocusTarget = undefined;
 		return;
 	}
 
@@ -1190,6 +1252,15 @@ function render(state) {
 	renderVideoAnalysis(state);
 	renderedInsertion = state.request.insertion;
 	insertAnswerButton.disabled = !renderedInsertion || !state.request.answer || !isConversationReady;
+	if (!initialFocusApplied) {
+		initialFocusApplied = true;
+		focusFirstAvailable(
+			state.invocation || state.review ? promptInput : undefined,
+			state.credentials.configured ? undefined : apiKeyInput,
+			isConversationReady ? refreshContextButton : refreshConversationButton,
+			closeButton,
+		);
+	}
 }
 
 promptInput.addEventListener('input', () => {
@@ -1270,10 +1341,12 @@ newHistoryChatButton.addEventListener('click', async () => {
 });
 
 clearConversationHistoryButton.addEventListener('click', async () => {
+	historyDeletionFocusTarget = {element: clearConversationHistoryButton, scope: 'conversation'};
 	render(await window.caprineAiAssist.prepareHistoryDeletion('conversation'));
 });
 
 clearAllHistoryButton.addEventListener('click', async () => {
+	historyDeletionFocusTarget = {element: clearAllHistoryButton, scope: 'all'};
 	render(await window.caprineAiAssist.prepareHistoryDeletion('all'));
 });
 
