@@ -27,6 +27,19 @@ const {
 } = require('../dist-js/ai-assist-ipc.js');
 const {isMessengerMediaResolverRequest} = require('../dist-js/media-resolver-ipc.js');
 
+const diagnostics = {
+	aiEnabled: true,
+	contextAdapter: 'healthy',
+	copySequence: 1,
+	historyDatabase: 'reachable',
+	lastMediaError: 'none',
+	lastProviderError: 'none',
+	messengerConversation: 'healthy',
+	openAiKey: 'configured',
+	panel: 'loaded',
+	videoTools: {ffmpeg: 'available', ffprobe: 'available'},
+};
+
 test('AI session state transitions are bounded and generation-safe', () => {
 	const state = new AiAssistSessionStateMachine();
 
@@ -67,12 +80,16 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'open'}), false);
 	assert.equal(isAiAssistPanelCommand({type: 'close', extra: true}), false);
+	assert.equal(isAiAssistPanelCommand({copySequence: 1, type: 'copy-diagnostics'}), true);
+	assert.equal(isAiAssistPanelCommand({copySequence: 0, type: 'copy-diagnostics'}), false);
+	assert.equal(isAiAssistPanelCommand({copySequence: 1, text: 'private', type: 'copy-diagnostics'}), false);
 	assert.equal(isAiAssistPanelState({
 		conversation: {captureGeneration: 2, displayName: 'Derek', status: 'ready'},
 		contextCapturePending: false,
 		contextWindowSize: 10,
 		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
+		diagnostics,
 		enabled: true,
 		history: {chats: [], query: '', status: 'ready'},
 		media: {candidates: []},
@@ -92,6 +109,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		contextWindowSize: 10,
 		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
+		diagnostics,
 		enabled: true,
 		history: {
 			chats: [],
@@ -477,6 +495,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		contextWindowSize: 20,
 		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
+		diagnostics,
 		enabled: true,
 		history: {chats: [], query: '', status: 'ready'},
 		media: {
@@ -570,6 +589,7 @@ test('history state validator accepts bounded saved video evidence and rejects n
 		contextCapturePending: false,
 		contextWindowSize: 10,
 		credentials: {configured: true, secureStorageAvailable: true},
+		diagnostics,
 		enabled: true,
 		history: {
 			chats: [{
@@ -961,6 +981,11 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		contextWindowSize: 20,
 		webSearchMode: 'always',
 		credentials: {configured: true, secureStorageAvailable: true},
+		diagnostics: {
+			...diagnostics,
+			contextAdapter: status === 'ready' ? 'healthy' : 'degraded',
+			messengerConversation: status === 'ready' ? 'healthy' : 'degraded',
+		},
 		enabled: true,
 		history: {chats: [], query: '', status: 'ready'},
 		media: {candidates: []},

@@ -5,6 +5,7 @@ import {pathToFileURL} from 'node:url';
 import {
 	app,
 	BrowserWindow,
+	clipboard,
 	IpcMainEvent,
 	IpcMainInvokeEvent,
 	ipcMain,
@@ -126,7 +127,13 @@ import {
 	transcriptFailure,
 	updateReviewedTranscript,
 } from './reviewed-transcripts';
-import {VideoMetadataInspector} from './video-toolchain';
+import {inspectMacVideoToolAvailability, VideoMetadataInspector} from './video-toolchain';
+import {
+	AiAssistDiagnostics,
+	AiAssistDiagnosticHealth,
+	DiagnosticsCopyAuthorization,
+	formatAiAssistDiagnostics,
+} from './ai-assist-diagnostics';
 import {
 	VideoFramePreprocessor,
 	VideoPreprocessingArtifact,
@@ -154,6 +161,13 @@ type OpenAiRequestRunOptions = {
 		savedTimeline?: AiHistoryVideoArtifact['timeline'];
 	};
 };
+
+class HistoryPersistenceError extends Error {
+	constructor() {
+		super('Caprine could not save the completed interaction.');
+		this.name = 'HistoryPersistenceError';
+	}
+}
 
 async function sha256File(filePath: string, signal?: AbortSignal): Promise<string> {
 	const hash = createHash('sha256');
@@ -234,6 +248,13 @@ class AiAssistController {
 	private contextCaptureCounter = 0;
 	private imageTargetRequestCounter = 0;
 	private error?: {code: OpenAiErrorCode; message: string};
+	private readonly diagnosticsHealth = new AiAssistDiagnosticHealth(false);
+	private readonly diagnosticsCopyAuthorization = new DiagnosticsCopyAuthorization();
+	private diagnosticsFingerprint = '';
+	private lastMediaError: AiAssistDiagnostics['lastMediaError'] = 'none';
+	private lastProviderError: AiAssistDiagnostics['lastProviderError'] = 'none';
+	private panelLoaded = false;
+	private videoToolAvailability: AiAssistDiagnostics['videoTools'] = {ffmpeg: 'checking', ffprobe: 'checking'};
 	private invocation?: AiAssistPanelState['invocation'];
 	private invocationSequence = 0;
 	private mediaCandidates: MessengerMediaCandidate[] = [];
@@ -339,6 +360,7 @@ class AiAssistController {
 			this.historyStore = new AiHistoryStore({
 				databasePath: path.join(app.getPath('userData'), 'ai-assist-history.sqlite'),
 			});
+			this.diagnosticsHealth.historySucceeded();
 		} catch {
 			console.error('AI Assist local history is unavailable');
 		}
@@ -369,6 +391,7 @@ class AiAssistController {
 			() => this.conversationBinding.currentSnapshot,
 			{transcriptCache: this.historyStore},
 		);
+		void this.refreshVideoToolAvailability();
 		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
 		ipcMain.handle(aiAssistIpcChannels.draftInsertionAuthorization, this.handleDraftInsertionAuthorizationCheck);
 		ipcMain.handle(aiAssistIpcChannels.messageAnchor, this.handleMessageAnchor);
@@ -398,6 +421,11 @@ class AiAssistController {
 			request.insertion = insertion;
 		}
 
+		const history: AiAssistPanelState['history'] = {
+			...this.historyState,
+			...(this.historyDeletion.confirmation ? {deletionConfirmation: this.historyDeletion.confirmation} : {}),
+		};
+		const diagnostics = this.diagnosticsState;
 		return {
 			...(this.anchor && this.isRequestSnapshotCurrent(this.anchor.snapshot.snapshot) ? {
 				anchor: {
@@ -418,11 +446,9 @@ class AiAssistController {
 				configured: this.hasApiKey,
 				secureStorageAvailable: safeStorage.isEncryptionAvailable(),
 			},
+			diagnostics,
 			enabled: config.get('aiAssistEnabled'),
-			history: {
-				...this.historyState,
-				...(this.historyDeletion.confirmation ? {deletionConfirmation: this.historyDeletion.confirmation} : {}),
-			},
+			history,
 			...(this.invocation ? {invocation: this.invocation} : {}),
 			media: {
 				candidates: this.mediaCandidates,
@@ -451,6 +477,28 @@ class AiAssistController {
 		};
 	}
 
+	private get diagnosticsState(): AiAssistDiagnostics {
+		const conversationHealthy = this.conversationBinding.panelState.status === 'ready';
+		const fields = {
+			aiEnabled: config.get('aiAssistEnabled'),
+			contextAdapter: this.diagnosticsHealth.contextAdapter,
+			historyDatabase: this.diagnosticsHealth.historyDatabase,
+			lastMediaError: this.lastMediaError,
+			lastProviderError: this.lastProviderError,
+			messengerConversation: conversationHealthy ? 'healthy' : 'degraded',
+			openAiKey: this.hasApiKey ? 'configured' : 'missing',
+			panel: this.panelLoaded ? 'loaded' : 'loading',
+			videoTools: this.videoToolAvailability,
+		} satisfies Omit<AiAssistDiagnostics, 'copySequence'>;
+		const fingerprint = JSON.stringify(fields);
+		if (this.diagnosticsFingerprint && fingerprint !== this.diagnosticsFingerprint) {
+			this.diagnosticsCopyAuthorization.advance();
+		}
+
+		this.diagnosticsFingerprint = fingerprint;
+		return {...fields, copySequence: this.diagnosticsCopyAuthorization.current};
+	}
+
 	private get historyState(): AiAssistPanelState['history'] {
 		const snapshot = this.conversationBinding.currentSnapshot;
 		if (!snapshot) {
@@ -465,6 +513,7 @@ class AiAssistController {
 		}
 
 		if (!this.historyStore) {
+			this.diagnosticsHealth.historyFailed();
 			return {chats: [], query: this.historyQuery, status: 'unavailable'};
 		}
 
@@ -478,7 +527,6 @@ class AiAssistController {
 				? this.historyStore.loadChat(snapshot.conversationId, this.selectedHistoryChatId)
 				: undefined;
 			const chats = buildAiHistoryChatViews(summaries, selectedChat);
-
 			return {
 				chats,
 				query: this.historyQuery,
@@ -486,6 +534,7 @@ class AiAssistController {
 				status: 'ready',
 			};
 		} catch {
+			this.diagnosticsHealth.historyFailed();
 			return {chats: [], query: this.historyQuery, status: 'unavailable'};
 		}
 	}
@@ -582,6 +631,18 @@ class AiAssistController {
 
 			case 'confirm-history-deletion': {
 				this.confirmHistoryDeletion(value.authorizationToken);
+				break;
+			}
+
+			case 'copy-diagnostics': {
+				const diagnostics = this.diagnosticsState;
+				if (value.copySequence !== diagnostics.copySequence || !this.diagnosticsCopyAuthorization.consume(value.copySequence)) {
+					throw new TypeError('Rejected stale AI Assist diagnostics copy request');
+				}
+
+				clipboard.writeText(formatAiAssistDiagnostics(diagnostics));
+				this.notice = 'Redacted diagnostics copied.';
+				this.broadcastState();
 				break;
 			}
 
@@ -1019,6 +1080,7 @@ class AiAssistController {
 		this.cancelPendingContextCapture();
 		const snapshot = this.conversationBinding.currentSnapshot;
 		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot)) {
+			this.diagnosticsHealth.contextDegraded();
 			this.clearContextReview();
 			this.error = undefined;
 			this.notice = 'Messenger context is unavailable. Refresh context and try again.';
@@ -1038,6 +1100,7 @@ class AiAssistController {
 				}
 
 				this.pendingContextCapture = undefined;
+				this.diagnosticsHealth.contextDegraded();
 				this.notifyMessenger({requestId, type: 'cancel-context-capture'});
 				this.error = undefined;
 				this.notice = 'Messenger context capture timed out. Nothing was sent. Select Refresh context to retry.';
@@ -1086,6 +1149,7 @@ class AiAssistController {
 			|| (value.stopReason === 'complete' && value.items.length !== pending.requestedCount)
 			|| (pending.anchorMessageId && !value.items.some(item => item.messageId === pending.anchorMessageId))
 		) {
+			this.diagnosticsHealth.contextDegraded();
 			this.clearContextReview();
 			this.error = undefined;
 			this.notice = value.status === 'unavailable'
@@ -1097,6 +1161,7 @@ class AiAssistController {
 		}
 
 		const reviewedItems = value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item}));
+		this.diagnosticsHealth.contextHealthy();
 		this.review = {
 			browsingMode: config.get('aiAssistWebSearchMode'),
 			contextSource: pending.contextSource,
@@ -1432,6 +1497,7 @@ class AiAssistController {
 			}
 		});
 		panel.webContents.on('dom-ready', () => {
+			this.panelLoaded = true;
 			this.broadcastState();
 		});
 		panel.once('ready-to-show', () => {
@@ -1448,6 +1514,7 @@ class AiAssistController {
 				}
 
 				this.panelWindow = undefined;
+				this.panelLoaded = false;
 				this.panelReady = undefined;
 				this.panelUrl = undefined;
 			}
@@ -1479,6 +1546,10 @@ class AiAssistController {
 		invalidateConversation = true,
 		preserveConversationReportId?: string,
 	): void {
+		if (['conversation-changed', 'conversation-unavailable', 'messenger-reloaded', 'panel-failed'].includes(reason)) {
+			this.diagnosticsHealth.contextDegraded();
+		}
+
 		this.advanceConversationLifecycle(preserveConversationReportId);
 		this.clearConversationBoundRequestState();
 		this.clearMediaState();
@@ -2759,15 +2830,16 @@ class AiAssistController {
 					this.selectedHistoryChatId = result.chatId;
 				}
 
+				this.diagnosticsHealth.historySucceeded();
 				return result.interactionId;
 			}
 
-			return this.historyStore.appendCompletedInteraction(historyChatId, input);
+			const interactionId = this.historyStore.appendCompletedInteraction(historyChatId, input);
+			this.diagnosticsHealth.historySucceeded();
+			return interactionId;
 		} catch {
-			throw new OpenAiRequestError(
-				'provider-unavailable',
-				'OpenAI answered, but Caprine could not save the completed interaction. Nothing was shown.',
-			);
+			this.diagnosticsHealth.historyFailed();
+			throw new HistoryPersistenceError();
 		}
 	}
 
@@ -3156,19 +3228,39 @@ class AiAssistController {
 	}
 
 	private reportMediaDiagnostic(diagnostic: MediaDiagnostic): void {
+		this.lastMediaError = diagnostic.outcome === 'ready' ? this.lastMediaError : diagnostic.outcome;
 		console.info('AI Assist media resolver', diagnostic);
+		this.broadcastState();
 	}
 
 	private setRequestError(error: unknown): void {
+		const historyFailure = error instanceof HistoryPersistenceError;
 		const requestError = error instanceof OpenAiRequestError
 			? error
-			: new OpenAiRequestError('provider-unavailable', 'OpenAI is unavailable right now. Try again later.');
+			: new OpenAiRequestError(
+				'provider-unavailable',
+				historyFailure
+					? 'OpenAI answered, but Caprine could not save the completed interaction. Nothing was shown.'
+					: 'OpenAI is unavailable right now. Try again later.',
+			);
 		this.clearAnswer();
 		this.notice = undefined;
 		this.error = {
 			code: requestError.code,
 			message: requestError.message,
 		};
+		if (!historyFailure) {
+			this.lastProviderError = requestError.code;
+		}
+	}
+
+	private async refreshVideoToolAvailability(): Promise<void> {
+		const availability = await inspectMacVideoToolAvailability();
+		this.videoToolAvailability = {
+			ffmpeg: availability.ffmpeg ? 'available' : 'missing',
+			ffprobe: availability.ffprobe ? 'available' : 'missing',
+		};
+		this.broadcastState();
 	}
 
 	private cancelActiveRequest(): void {

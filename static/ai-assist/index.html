@@ -35,6 +35,26 @@
 					<button id="delete-key-button" class="danger" type="button">Delete key</button>
 				</div>
 			</section>
+			<section aria-labelledby="diagnostics-heading">
+				<h2 id="diagnostics-heading">Diagnostics</h2>
+				<p>Bounded local status only. No Messenger content, AI text, secrets, URLs, or file paths are included.</p>
+				<dl id="diagnostics-list" class="diagnostics-list">
+					<div><dt>AI enabled</dt><dd id="diagnostic-ai-enabled"></dd></div>
+					<div><dt>OpenAI key</dt><dd id="diagnostic-openai-key"></dd></div>
+					<div><dt>Local panel</dt><dd id="diagnostic-panel"></dd></div>
+					<div><dt>Messenger conversation</dt><dd id="diagnostic-conversation"></dd></div>
+					<div><dt>Context adapter</dt><dd id="diagnostic-context-adapter"></dd></div>
+					<div><dt>ffmpeg</dt><dd id="diagnostic-ffmpeg"></dd></div>
+					<div><dt>ffprobe</dt><dd id="diagnostic-ffprobe"></dd></div>
+					<div><dt>History database</dt><dd id="diagnostic-history"></dd></div>
+					<div><dt>Last provider error</dt><dd id="diagnostic-provider-error"></dd></div>
+					<div><dt>Last media error</dt><dd id="diagnostic-media-error"></dd></div>
+				</dl>
+				<div class="button-row">
+					<button id="copy-diagnostics-button" class="secondary" type="button">Copy redacted summary</button>
+				</div>
+				<p id="diagnostics-copy-status" class="request-message" role="status"></p>
+			</section>
 			<section aria-labelledby="context-heading">
 				<h2 id="context-heading">Context review</h2>
 				<p>Review the exact Messenger excerpts below. Nothing is sent to OpenAI until you select Ask.</p>

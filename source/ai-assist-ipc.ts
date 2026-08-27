@@ -60,6 +60,7 @@ import {
 	MessengerImageCaptureTarget,
 	validateMessengerImageCaptureRectangle,
 } from './messenger-image-capture';
+import {AiAssistDiagnostics, isAiAssistDiagnostics} from './ai-assist-diagnostics';
 
 export const aiAssistIpcChannels = {
 	composerCommand: 'ai-assist:composer-command',
@@ -88,6 +89,7 @@ export type AiAssistPanelState = {
 		configured: boolean;
 		secureStorageAvailable: boolean;
 	};
+	diagnostics: AiAssistDiagnostics;
 	enabled: boolean;
 	history: {
 		chats: AiHistoryChatView[];
@@ -156,6 +158,7 @@ export type AiAssistPanelCommand =
 	| {type: 'cancel'}
 	| {authorizationToken: string; type: 'cancel-history-deletion'}
 	| {type: 'close'}
+	| {copySequence: number; type: 'copy-diagnostics'}
 	| {authorizationToken: string; type: 'confirm-history-deletion'}
 	| {type: 'delete-api-key'}
 	| {reviewSequence: number; transcriptId: string; type: 'cancel-transcription'}
@@ -597,6 +600,12 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 
 	if (['cancel', 'close', 'delete-api-key', 'get-state', 'new-history-chat', 'refresh-context', 'refresh-conversation', 'test-api-key'].includes(value.type)) {
 		return hasExactKeys(value, ['type']);
+	}
+
+	if (value.type === 'copy-diagnostics') {
+		return hasExactKeys(value, ['copySequence', 'type'])
+			&& Number.isSafeInteger(value.copySequence)
+			&& (value.copySequence as number) > 0;
 	}
 
 	if (value.type === 'select-history-chat') {
@@ -1332,7 +1341,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 		return false;
 	}
 
-	const keys = ['contextCapturePending', 'contextWindowSize', 'conversation', 'credentials', 'enabled', 'history', 'media', 'request', 'session', 'webSearchMode'];
+	const keys = ['contextCapturePending', 'contextWindowSize', 'conversation', 'credentials', 'diagnostics', 'enabled', 'history', 'media', 'request', 'session', 'webSearchMode'];
 	if (value.anchor !== undefined) {
 		keys.push('anchor');
 	}
@@ -1367,6 +1376,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 			&& hasExactKeys(value.anchor, ['item', 'loadedCount', 'loadedIndex', 'sequence'])
 		))
 		&& isCredentialsState(value.credentials)
+		&& isAiAssistDiagnostics(value.diagnostics)
 		&& typeof value.enabled === 'boolean'
 		&& isHistoryState(value.history)
 		&& (value.invocation === undefined || isInvocationState(value.invocation))

@@ -5,6 +5,18 @@ const keyStatus = document.querySelector('#key-status');
 const saveKeyButton = document.querySelector('#save-key-button');
 const testKeyButton = document.querySelector('#test-key-button');
 const deleteKeyButton = document.querySelector('#delete-key-button');
+const copyDiagnosticsButton = document.querySelector('#copy-diagnostics-button');
+const diagnosticsCopyStatus = document.querySelector('#diagnostics-copy-status');
+const diagnosticAiEnabled = document.querySelector('#diagnostic-ai-enabled');
+const diagnosticOpenAiKey = document.querySelector('#diagnostic-openai-key');
+const diagnosticPanel = document.querySelector('#diagnostic-panel');
+const diagnosticConversation = document.querySelector('#diagnostic-conversation');
+const diagnosticContextAdapter = document.querySelector('#diagnostic-context-adapter');
+const diagnosticFfmpeg = document.querySelector('#diagnostic-ffmpeg');
+const diagnosticFfprobe = document.querySelector('#diagnostic-ffprobe');
+const diagnosticHistory = document.querySelector('#diagnostic-history');
+const diagnosticProviderError = document.querySelector('#diagnostic-provider-error');
+const diagnosticMediaError = document.querySelector('#diagnostic-media-error');
 const refreshConversationButton = document.querySelector('#refresh-conversation-button');
 const contextWindow = document.querySelector('#context-window');
 const webSearchMode = document.querySelector('#web-search-mode');
@@ -61,6 +73,7 @@ let promptCaptureGeneration;
 let renderedInsertion;
 let renderedAnswerSignature;
 let renderedHistoryDeletionToken;
+let diagnosticsCopySequence;
 const contextReviewRows = new Map();
 const reviewedImageRows = new Map();
 const reviewedTranscriptRows = new Map();
@@ -71,6 +84,20 @@ function shouldClearPrompt(state) {
 			promptInput.value
 			&& promptCaptureGeneration !== state.conversation.captureGeneration,
 		);
+}
+
+function renderDiagnostics(diagnostics) {
+	diagnosticsCopySequence = diagnostics.copySequence;
+	diagnosticAiEnabled.textContent = diagnostics.aiEnabled ? 'yes' : 'no';
+	diagnosticOpenAiKey.textContent = diagnostics.openAiKey;
+	diagnosticPanel.textContent = diagnostics.panel;
+	diagnosticConversation.textContent = diagnostics.messengerConversation;
+	diagnosticContextAdapter.textContent = diagnostics.contextAdapter;
+	diagnosticFfmpeg.textContent = diagnostics.videoTools.ffmpeg;
+	diagnosticFfprobe.textContent = diagnostics.videoTools.ffprobe;
+	diagnosticHistory.textContent = diagnostics.historyDatabase;
+	diagnosticProviderError.textContent = diagnostics.lastProviderError ?? 'none';
+	diagnosticMediaError.textContent = diagnostics.lastMediaError ?? 'none';
 }
 
 function sourceLabel(source) {
@@ -1074,6 +1101,7 @@ function render(state) {
 	const isImageSelectionBlocked = Boolean(state.review?.imageSelection?.blockingNotice);
 	renderHistory(state.history, isConversationReady, isRequesting);
 	renderHistoryDeletionConfirmation(state.history.deletionConfirmation);
+	renderDiagnostics(state.diagnostics);
 	if (shouldClearPrompt(state)) {
 		promptInput.value = '';
 		promptCaptureGeneration = undefined;
@@ -1271,6 +1299,24 @@ historyDeletionDialog.addEventListener('cancel', async event => {
 	const token = renderedHistoryDeletionToken;
 	if (token) {
 		render(await window.caprineAiAssist.cancelHistoryDeletion(token));
+	}
+});
+
+copyDiagnosticsButton.addEventListener('click', async () => {
+	const copySequence = diagnosticsCopySequence;
+	if (!copySequence) {
+		return;
+	}
+
+	copyDiagnosticsButton.disabled = true;
+	diagnosticsCopyStatus.textContent = 'Copying redacted diagnostics…';
+	try {
+		render(await window.caprineAiAssist.copyDiagnostics(copySequence));
+		diagnosticsCopyStatus.textContent = 'Redacted diagnostics copied.';
+	} catch {
+		diagnosticsCopyStatus.textContent = 'Diagnostics changed before they could be copied. Try again.';
+	} finally {
+		copyDiagnosticsButton.disabled = false;
 	}
 });
 

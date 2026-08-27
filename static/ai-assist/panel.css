@@ -72,6 +72,28 @@ section p {
 	line-height: 1.45;
 }
 
+.diagnostics-list {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 6px 12px;
+	margin: 12px 0 0;
+	font-size: 13px;
+}
+
+.diagnostics-list div {
+	display: contents;
+}
+
+.diagnostics-list dt {
+	color: #b9bec9;
+}
+
+.diagnostics-list dd {
+	margin: 0;
+	font-weight: 650;
+	text-align: right;
+}
+
 form {
 	margin-top: 12px;
 }

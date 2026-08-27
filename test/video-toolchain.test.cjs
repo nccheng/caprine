@@ -10,6 +10,7 @@ const {
 	BoundedProcessRunner,
 	allowedVideoInputFormats,
 	findMacVideoTools,
+	inspectMacVideoToolAvailability,
 	maximumVideoDurationSeconds,
 	parseFfprobeMetadata,
 	VideoAudioExtractor,
@@ -109,6 +110,28 @@ test('macOS video tool discovery searches PATH before common Homebrew locations 
 		},
 		pathValue: '',
 	}), 'tools-unavailable');
+});
+
+test('video tool availability distinguishes missing ffmpeg and ffprobe without exposing paths', async () => {
+	const ffmpegOnly = await inspectMacVideoToolAvailability({
+		async accessImplementation(filePath) {
+			if (!filePath.endsWith('/ffmpeg')) {
+				throw new Error('missing');
+			}
+		},
+		pathValue: '/tools',
+	});
+	assert.deepEqual(ffmpegOnly, {ffmpeg: true, ffprobe: false});
+	const ffprobeOnly = await inspectMacVideoToolAvailability({
+		async accessImplementation(filePath) {
+			if (!filePath.endsWith('/ffprobe')) {
+				throw new Error('missing');
+			}
+		},
+		pathValue: '/tools',
+	});
+	assert.deepEqual(ffprobeOnly, {ffmpeg: false, ffprobe: true});
+	assert.equal(JSON.stringify(ffmpegOnly).includes('/tools'), false);
 });
 
 test('bounded process runner uses no shell and returns bounded output', async () => {
