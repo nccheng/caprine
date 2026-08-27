@@ -1,0 +1,66 @@
+{
+  "baseUrl": "https://messenger.invalid/thread/synthetic-leaf-text",
+  "dom": {
+    "tag": "document",
+    "children": [
+      {
+        "attributes": {"role": "main"},
+        "children": [
+          {
+            "attributes": {"role": "grid"},
+            "children": [
+              {
+                "attributes": {
+                  "aria-label": "You sent a message",
+                  "data-message-id": "synthetic-leaf-outgoing",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "children": [
+                      {"text": "Synthetic outgoing leaf"}
+                    ]
+                  }
+                ]
+              },
+              {
+                "attributes": {
+                  "aria-label": "River sent a message",
+                  "data-message-id": "synthetic-leaf-incoming",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "children": [
+                      {"text": "Synthetic incoming leaf"}
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "confidence": "high",
+      "messageId": "synthetic-leaf-outgoing",
+      "sender": {"displayName": "You", "role": "outgoing"},
+      "text": "Synthetic outgoing leaf"
+    },
+    {
+      "confidence": "high",
+      "messageId": "synthetic-leaf-incoming",
+      "sender": {"displayName": "River", "role": "incoming"},
+      "text": "Synthetic incoming leaf"
+    }
+  ],
+  "expectedTail": {
+    "confidence": "high",
+    "messageId": "synthetic-leaf-incoming",
+    "sender": {"displayName": "River", "role": "incoming"},
+    "text": "Synthetic incoming leaf"
+  }
+}

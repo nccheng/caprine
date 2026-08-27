@@ -22,6 +22,7 @@ const sanitizedFixtureFilenames = [
 	'current-loaded-conversation.json',
 	'edge-cases.json',
 	'prepend-history.json',
+	'stable-leaf-text.json',
 	'supported-messages.json',
 ];
 
@@ -43,7 +44,7 @@ test('fixture selector matching fails closed for syntax outside its supported su
 	assert.equal(row.matches('[role="row"]:last-child'), false);
 });
 
-for (const filename of ['supported-messages.json', 'edge-cases.json', 'current-loaded-conversation.json']) {
+for (const filename of ['supported-messages.json', 'edge-cases.json', 'current-loaded-conversation.json', 'stable-leaf-text.json']) {
 	test(`sanitized Messenger context fixture ${filename} produces exact logical items`, () => {
 		const fixture = loadMessengerContextFixture(filename);
 		global.window = {location: {href: fixture.baseUrl}};
@@ -85,7 +86,7 @@ test('context inspection reports bounded adapter stages without message content'
 	});
 });
 
-for (const filename of ['supported-messages.json', 'current-loaded-conversation.json']) {
+for (const filename of ['supported-messages.json', 'current-loaded-conversation.json', 'stable-leaf-text.json']) {
 	test(`sanitized newest-tail fixture ${filename} reaches the exact bounded fingerprint item`, () => {
 		const fixture = loadMessengerContextFixture(filename);
 		global.window = {location: {href: fixture.baseUrl}};
@@ -102,6 +103,146 @@ test('current loaded Messenger semantics resolve fallback message rows for ancho
 
 	assert.equal(row?.getAttribute('data-message-id'), 'current-outgoing-1');
 	assert.equal(captureLoadedMessengerMessageAnchor(target, fixture.root)?.item.messageId, 'current-outgoing-1');
+});
+
+test('stable leaf-text semantics use one logical item for full, tail, and anchor extraction', () => {
+	const fixture = loadMessengerContextFixture('stable-leaf-text.json');
+	global.window = {location: {href: fixture.baseUrl}};
+	const target = fixture.root.querySelectorAll('[data-message-id]').at(-1)?.children[0]?.children[0];
+
+	assert.deepEqual(extractLoadedMessengerConversationContext(fixture.root), fixture.expected);
+	assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
+	assert.deepEqual(captureLoadedMessengerMessageAnchor(target, fixture.root)?.item, fixture.expectedTail);
+});
+
+function messengerFixtureRoot(rows) {
+	return new MessengerContextFixtureElement({
+		children: [{
+			attributes: {role: 'main'},
+			children: [{attributes: {role: 'grid'}, children: rows}],
+		}],
+		tag: 'document',
+	});
+}
+
+test('stable leaf-text fallback requires stable identity, confident sender, and one distinct candidate', () => {
+	const root = messengerFixtureRoot([
+		{
+			attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'leaf-valid', role: 'row'},
+			children: [{children: [{text: 'Only candidate'}, {text: 'Only candidate'}]}],
+		},
+		{
+			attributes: {'aria-label': 'Avery sent a message', role: 'row'},
+			children: [{text: 'Missing stable identity'}],
+		},
+		{
+			attributes: {'data-message-id': 'leaf-missing-sender', role: 'row'},
+			children: [{text: 'Missing sender evidence'}],
+		},
+		{
+			attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'leaf-empty', role: 'row'},
+			children: [{attributes: {'aria-hidden': 'true'}, text: 'Hidden candidate'}],
+		},
+		{
+			attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'leaf-ambiguous', role: 'row'},
+			children: [{text: 'First candidate'}, {text: 'Second candidate'}],
+		},
+	]);
+
+	const items = extractLoadedMessengerConversationContext(root);
+	assert.equal(items[0].text, 'Only candidate');
+	for (const item of items.slice(1)) {
+		assert.equal(item.text, undefined);
+		assert.equal(item.omittedReason, 'no-supported-content');
+	}
+
+	assert.equal(inspectLoadedMessengerConversationContext(root).reason, undefined);
+});
+
+test('stable leaf-text fallback excludes message chrome and unrelated UI text', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'leaf-exclusions', role: 'row'},
+		children: [
+			{children: [{text: 'Expected plain text'}]},
+			{tag: 'blockquote', text: 'Quoted reply'},
+			{attributes: {'aria-label': '👍 2 reactions'}, text: 'Reaction text'},
+			{attributes: {datetime: '2026-08-27T00:00:00Z'}, tag: 'time', text: 'Yesterday'},
+			{tag: 'button', text: 'Button text'},
+			{tag: 'input', text: 'Form control text'},
+			{attributes: {role: 'textbox'}, text: 'Composer text'},
+			{attributes: {'aria-hidden': 'true'}, text: 'Hidden text'},
+			{attributes: {'data-placeholder': 'true'}, children: [{text: 'Placeholder text'}]},
+			{attributes: {role: 'navigation'}, children: [{text: 'Navigation text'}]},
+			{attributes: {'data-messenger-sidebar': ''}, children: [{text: 'Sidebar text'}]},
+		],
+	}]);
+
+	const [item] = extractLoadedMessengerConversationContext(root);
+	assert.equal(item.text, 'Expected plain text');
+	assert.doesNotMatch(item.text, /reply|reaction|yesterday|button|control|composer|hidden|placeholder|navigation|sidebar/i);
+});
+
+test('stable leaf-text fallback never promotes recognized link-preview sibling chrome', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'leaf-link-preview', role: 'row'},
+		children: [{
+			children: [
+				{
+					attributes: {href: 'https://example.invalid'},
+					href: 'https://example.invalid',
+					tag: 'a',
+				},
+				{text: 'Example preview title'},
+			],
+		}],
+	}]);
+
+	const [item] = extractLoadedMessengerConversationContext(root);
+	assert.equal(item.text, undefined);
+	assert.deepEqual(item.linkPreview, {
+		domain: 'example.invalid',
+		url: 'https://example.invalid/',
+	});
+});
+
+test('leaf-only exclusions do not change existing primary message marker extraction', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'Avery sent a message', role: 'row'},
+		children: [{
+			attributes: {'data-ad-preview': 'message'},
+			children: [{tag: 'button', text: 'See more'}],
+			text: 'Established primary text',
+		}],
+	}]);
+
+	assert.deepEqual(extractLoadedMessengerConversationContext(root), [{
+		confidence: 'medium',
+		sender: {displayName: 'Avery', role: 'incoming'},
+		text: 'Established primary text',
+	}]);
+});
+
+test('stable leaf-text fallback fails closed at existing traversal and string bounds', () => {
+	let nested = {text: 'Too deeply nested'};
+	for (let index = 0; index <= maximumMessengerTailTraversalElements; index += 1) {
+		nested = {children: [nested]};
+	}
+
+	const root = messengerFixtureRoot([
+		{
+			attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'leaf-too-deep', role: 'row'},
+			children: [nested],
+		},
+		{
+			attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'leaf-too-long', role: 'row'},
+			children: [{text: 'x'.repeat(20_001)}],
+		},
+	]);
+
+	const inspection = inspectLoadedMessengerConversationContext(root);
+	assert.equal(inspection.reason, 'supported-content-missing');
+	assert.deepEqual(inspection.items.map(item => item.text), [undefined, undefined]);
+	assert.deepEqual(inspection.items.map(item => item.omittedReason), ['no-supported-content', 'no-supported-content']);
 });
 
 test('prepend-style fixture evolution preserves chronological logical identity', () => {
