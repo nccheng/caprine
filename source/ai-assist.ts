@@ -130,6 +130,7 @@ import {
 import {inspectMacVideoToolAvailability, VideoMetadataInspector} from './video-toolchain';
 import {
 	AiAssistDiagnostics,
+	AiAssistDiagnosticHealth,
 	DiagnosticsCopyAuthorization,
 	formatAiAssistDiagnostics,
 } from './ai-assist-diagnostics';
@@ -160,6 +161,13 @@ type OpenAiRequestRunOptions = {
 		savedTimeline?: AiHistoryVideoArtifact['timeline'];
 	};
 };
+
+class HistoryPersistenceError extends Error {
+	constructor() {
+		super('Caprine could not save the completed interaction.');
+		this.name = 'HistoryPersistenceError';
+	}
+}
 
 async function sha256File(filePath: string, signal?: AbortSignal): Promise<string> {
 	const hash = createHash('sha256');
@@ -240,10 +248,9 @@ class AiAssistController {
 	private contextCaptureCounter = 0;
 	private imageTargetRequestCounter = 0;
 	private error?: {code: OpenAiErrorCode; message: string};
-	private contextAdapterStatus: AiAssistDiagnostics['contextAdapter'] = 'not-checked';
+	private readonly diagnosticsHealth = new AiAssistDiagnosticHealth(false);
 	private readonly diagnosticsCopyAuthorization = new DiagnosticsCopyAuthorization();
 	private diagnosticsFingerprint = '';
-	private historyDatabaseReachable = false;
 	private lastMediaError: AiAssistDiagnostics['lastMediaError'] = 'none';
 	private lastProviderError: AiAssistDiagnostics['lastProviderError'] = 'none';
 	private panelLoaded = false;
@@ -353,7 +360,7 @@ class AiAssistController {
 			this.historyStore = new AiHistoryStore({
 				databasePath: path.join(app.getPath('userData'), 'ai-assist-history.sqlite'),
 			});
-			this.historyDatabaseReachable = true;
+			this.diagnosticsHealth.historySucceeded();
 		} catch {
 			console.error('AI Assist local history is unavailable');
 		}
@@ -474,8 +481,8 @@ class AiAssistController {
 		const conversationHealthy = this.conversationBinding.panelState.status === 'ready';
 		const fields = {
 			aiEnabled: config.get('aiAssistEnabled'),
-			contextAdapter: this.contextAdapterStatus,
-			historyDatabase: this.historyDatabaseReachable ? 'reachable' : 'unavailable',
+			contextAdapter: this.diagnosticsHealth.contextAdapter,
+			historyDatabase: this.diagnosticsHealth.historyDatabase,
 			lastMediaError: this.lastMediaError,
 			lastProviderError: this.lastProviderError,
 			messengerConversation: conversationHealthy ? 'healthy' : 'degraded',
@@ -506,7 +513,7 @@ class AiAssistController {
 		}
 
 		if (!this.historyStore) {
-			this.historyDatabaseReachable = false;
+			this.diagnosticsHealth.historyFailed();
 			return {chats: [], query: this.historyQuery, status: 'unavailable'};
 		}
 
@@ -520,8 +527,6 @@ class AiAssistController {
 				? this.historyStore.loadChat(snapshot.conversationId, this.selectedHistoryChatId)
 				: undefined;
 			const chats = buildAiHistoryChatViews(summaries, selectedChat);
-			this.historyDatabaseReachable = true;
-
 			return {
 				chats,
 				query: this.historyQuery,
@@ -529,7 +534,7 @@ class AiAssistController {
 				status: 'ready',
 			};
 		} catch {
-			this.historyDatabaseReachable = false;
+			this.diagnosticsHealth.historyFailed();
 			return {chats: [], query: this.historyQuery, status: 'unavailable'};
 		}
 	}
@@ -1075,7 +1080,7 @@ class AiAssistController {
 		this.cancelPendingContextCapture();
 		const snapshot = this.conversationBinding.currentSnapshot;
 		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot)) {
-			this.contextAdapterStatus = 'degraded';
+			this.diagnosticsHealth.contextDegraded();
 			this.clearContextReview();
 			this.error = undefined;
 			this.notice = 'Messenger context is unavailable. Refresh context and try again.';
@@ -1095,7 +1100,7 @@ class AiAssistController {
 				}
 
 				this.pendingContextCapture = undefined;
-				this.contextAdapterStatus = 'degraded';
+				this.diagnosticsHealth.contextDegraded();
 				this.notifyMessenger({requestId, type: 'cancel-context-capture'});
 				this.error = undefined;
 				this.notice = 'Messenger context capture timed out. Nothing was sent. Select Refresh context to retry.';
@@ -1144,7 +1149,7 @@ class AiAssistController {
 			|| (value.stopReason === 'complete' && value.items.length !== pending.requestedCount)
 			|| (pending.anchorMessageId && !value.items.some(item => item.messageId === pending.anchorMessageId))
 		) {
-			this.contextAdapterStatus = 'degraded';
+			this.diagnosticsHealth.contextDegraded();
 			this.clearContextReview();
 			this.error = undefined;
 			this.notice = value.status === 'unavailable'
@@ -1156,7 +1161,7 @@ class AiAssistController {
 		}
 
 		const reviewedItems = value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item}));
-		this.contextAdapterStatus = 'healthy';
+		this.diagnosticsHealth.contextHealthy();
 		this.review = {
 			browsingMode: config.get('aiAssistWebSearchMode'),
 			contextSource: pending.contextSource,
@@ -1541,6 +1546,10 @@ class AiAssistController {
 		invalidateConversation = true,
 		preserveConversationReportId?: string,
 	): void {
+		if (['conversation-changed', 'conversation-unavailable', 'messenger-reloaded', 'panel-failed'].includes(reason)) {
+			this.diagnosticsHealth.contextDegraded();
+		}
+
 		this.advanceConversationLifecycle(preserveConversationReportId);
 		this.clearConversationBoundRequestState();
 		this.clearMediaState();
@@ -2821,15 +2830,16 @@ class AiAssistController {
 					this.selectedHistoryChatId = result.chatId;
 				}
 
+				this.diagnosticsHealth.historySucceeded();
 				return result.interactionId;
 			}
 
-			return this.historyStore.appendCompletedInteraction(historyChatId, input);
+			const interactionId = this.historyStore.appendCompletedInteraction(historyChatId, input);
+			this.diagnosticsHealth.historySucceeded();
+			return interactionId;
 		} catch {
-			throw new OpenAiRequestError(
-				'provider-unavailable',
-				'OpenAI answered, but Caprine could not save the completed interaction. Nothing was shown.',
-			);
+			this.diagnosticsHealth.historyFailed();
+			throw new HistoryPersistenceError();
 		}
 	}
 
@@ -3224,16 +3234,24 @@ class AiAssistController {
 	}
 
 	private setRequestError(error: unknown): void {
+		const historyFailure = error instanceof HistoryPersistenceError;
 		const requestError = error instanceof OpenAiRequestError
 			? error
-			: new OpenAiRequestError('provider-unavailable', 'OpenAI is unavailable right now. Try again later.');
+			: new OpenAiRequestError(
+				'provider-unavailable',
+				historyFailure
+					? 'OpenAI answered, but Caprine could not save the completed interaction. Nothing was shown.'
+					: 'OpenAI is unavailable right now. Try again later.',
+			);
 		this.clearAnswer();
 		this.notice = undefined;
 		this.error = {
 			code: requestError.code,
 			message: requestError.message,
 		};
-		this.lastProviderError = requestError.code;
+		if (!historyFailure) {
+			this.lastProviderError = requestError.code;
+		}
 	}
 
 	private async refreshVideoToolAvailability(): Promise<void> {

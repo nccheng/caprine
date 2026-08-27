@@ -102,3 +102,36 @@ export class DiagnosticsCopyAuthorization {
 		return true;
 	}
 }
+
+export class AiAssistDiagnosticHealth {
+	private contextStatus: AiAssistDiagnostics['contextAdapter'] = 'not-checked';
+	private historyStatus: AiAssistDiagnostics['historyDatabase'];
+
+	constructor(historyReachable: boolean) {
+		this.historyStatus = historyReachable ? 'reachable' : 'unavailable';
+	}
+
+	get contextAdapter(): AiAssistDiagnostics['contextAdapter'] {
+		return this.contextStatus;
+	}
+
+	get historyDatabase(): AiAssistDiagnostics['historyDatabase'] {
+		return this.historyStatus;
+	}
+
+	contextDegraded(): void {
+		this.contextStatus = 'degraded';
+	}
+
+	contextHealthy(): void {
+		this.contextStatus = 'healthy';
+	}
+
+	historyFailed(): void {
+		this.historyStatus = 'unavailable';
+	}
+
+	historySucceeded(): void {
+		this.historyStatus = 'reachable';
+	}
+}

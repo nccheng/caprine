@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+	AiAssistDiagnosticHealth,
 	DiagnosticsCopyAuthorization,
 	formatAiAssistDiagnostics,
 	isAiAssistDiagnostics,
@@ -63,4 +64,18 @@ test('diagnostics copy authorization is one-shot and rejects stale or replayed s
 	authorization.advance();
 	assert.equal(authorization.consume(2), false);
 	assert.equal(authorization.consume(3), true);
+});
+
+test('diagnostic health distinguishes history failures and invalidates stale context health', () => {
+	const health = new AiAssistDiagnosticHealth(true);
+	assert.equal(health.historyDatabase, 'reachable');
+	assert.equal(health.contextAdapter, 'not-checked');
+	health.contextHealthy();
+	health.historyFailed();
+	assert.equal(health.contextAdapter, 'healthy');
+	assert.equal(health.historyDatabase, 'unavailable');
+	health.contextDegraded();
+	assert.equal(health.contextAdapter, 'degraded');
+	health.historySucceeded();
+	assert.equal(health.historyDatabase, 'reachable');
 });
