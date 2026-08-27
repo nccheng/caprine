@@ -2,7 +2,7 @@
 	"groups": [
 		{
 			"name": "renderer trust, IPC validation, and lifecycle invalidation",
-			"files": ["ai-renderer-trust.test.cjs", "ai-assist-diagnostics.test.cjs", "ai-assist-state.test.cjs", "draft-insertion.test.cjs"]
+			"files": ["ai-renderer-trust.test.cjs", "ai-assist-accessibility.test.cjs", "ai-assist-diagnostics.test.cjs", "ai-assist-state.test.cjs", "draft-insertion.test.cjs"]
 		},
 		{
 			"name": "composer interception and IME recovery",

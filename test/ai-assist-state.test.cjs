@@ -205,6 +205,15 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistMessengerCommand({type: 'set-enabled', enabled: true}), true);
 	assert.equal(isAiAssistMessengerCommand({
 		conversationId: 'messenger-thread:123',
+		type: 'focus-composer',
+	}), true);
+	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
+		prompt: 'private',
+		type: 'focus-composer',
+	}), false);
+	assert.equal(isAiAssistMessengerCommand({
+		conversationId: 'messenger-thread:123',
 		requestId: 'context-capture-1',
 		requestedCount: 20,
 		type: 'capture-context',
@@ -1475,7 +1484,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(element('answer-sources').hidden, false);
 	const citationMarker = [...elements.values()].find(node => node.className === 'citation-marker');
 	const citationSource = [...elements.values()].find(node => node.className === 'citation-source');
-	assert.equal(citationMarker.attributes.get('aria-label'), 'Open source 1 for cited text: Cited');
+	assert.equal(citationMarker.attributes.get('aria-label'), 'Open cited source 1');
 	assert.equal(citationSource.textContent, 'Cited source');
 	assert.equal(citationSource.attributes.get('aria-label'), 'Open cited source 1: Cited source');
 	assert.equal([...elements.values()].some(node => node.textContent === 'Uncited source'), false);

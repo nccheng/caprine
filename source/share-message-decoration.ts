@@ -63,9 +63,13 @@ function createDecorationHost(document: Document, viewModel: CaprineAiShareDecor
 		section { display: flex; flex-wrap: wrap; gap: 3px 7px; align-items: baseline; }
 		strong { color: inherit; font-weight: 600; }
 		details { flex-basis: 100%; }
-		summary { cursor: pointer; width: max-content; }
+		summary { cursor: pointer; width: max-content; max-width: 100%; }
+		summary:focus-visible { outline: 2px solid currentcolor; outline-offset: 2px; }
 		ol { margin: 4px 0 0; padding-inline-start: 20px; }
 		li { overflow-wrap: anywhere; }
+		@media (prefers-reduced-motion: reduce) {
+			*, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+		}
 	`;
 	shadow.append(style);
 	const section = document.createElement('section');

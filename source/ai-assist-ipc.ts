@@ -197,6 +197,7 @@ export type AiAssistMessengerCommand =
 		requestedCount: ContextWindowSize;
 		type: 'capture-context';
 	}
+	| {conversationId: string; type: 'focus-composer'}
 	| {enabled: boolean; type: 'set-enabled'}
 	| {
 		answerGeneration: number;
@@ -1436,6 +1437,11 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 	if (value.type === 'cancel-draft-insertion') {
 		return hasExactKeys(value, ['requestId', 'type'])
 			&& isDraftInsertionRequestId(value.requestId);
+	}
+
+	if (value.type === 'focus-composer') {
+		return hasExactKeys(value, ['conversationId', 'type'])
+			&& isConversationId(value.conversationId);
 	}
 
 	if (value.type === 'report-conversation') {

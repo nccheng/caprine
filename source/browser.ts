@@ -12,6 +12,7 @@ import {
 	isAiAssistMessengerEvent,
 	isAiAssistMessengerCommand,
 } from './ai-assist-ipc';
+import {restoreMessengerComposerFocus} from './ai-assist-focus';
 import {
 	AiComposerCommandSnapshot,
 	AiComposerCommandState,
@@ -1375,6 +1376,22 @@ electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unk
 
 	if (value.type === 'cancel-context-capture') {
 		contextCaptureCoordinator.cancel(value.requestId);
+		return;
+	}
+
+	if (value.type === 'focus-composer') {
+		if (isAiAssistEnabled) {
+			restoreMessengerComposerFocus(value.conversationId, {
+				currentConversationId,
+				focus(composer) {
+					composer.focus();
+				},
+				isEditable: isDraftInsertionComposerEditable,
+				isFocused: composer => document.activeElement === composer,
+				visibleComposers: visibleMessengerComposers,
+			});
+		}
+
 		return;
 	}
 

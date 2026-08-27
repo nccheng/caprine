@@ -354,6 +354,8 @@ class AiAssistController {
 	private panelUrl?: string;
 	private panelReady?: Promise<boolean>;
 	private panelWindow?: BrowserWindow;
+	private panelFocusReturnSnapshot?: Readonly<ConversationSnapshot>;
+	private restoreFocusAfterPanelClose = true;
 
 	constructor(private readonly messengerWindow: BrowserWindow) {
 		try {
@@ -547,6 +549,7 @@ class AiAssistController {
 		config.set('aiAssistEnabled', enabled);
 		if (!enabled) {
 			this.invalidate('ai-disabled');
+			this.restoreFocusAfterPanelClose = false;
 			this.panelWindow?.destroy();
 			this.panelWindow = undefined;
 		}
@@ -560,6 +563,7 @@ class AiAssistController {
 			return;
 		}
 
+		this.panelFocusReturnSnapshot = undefined;
 		this.showPanelWindow();
 		void this.refreshConversation();
 		this.broadcastState();
@@ -997,6 +1001,18 @@ class AiAssistController {
 		this.panelWindow = this.createPanelWindow();
 	}
 
+	private restoreMessengerFocus(conversationId?: string): void {
+		if (this.messengerWindow.isDestroyed()) {
+			return;
+		}
+
+		this.messengerWindow.show();
+		this.messengerWindow.focus();
+		if (conversationId) {
+			this.notifyMessenger({conversationId, type: 'focus-composer'});
+		}
+	}
+
 	private async acceptComposerCommand(value: Readonly<AiComposerCommandRequest>): Promise<boolean> {
 		if (!config.get('aiAssistEnabled')) {
 			return false;
@@ -1021,6 +1037,7 @@ class AiAssistController {
 			prompt: value.prompt,
 			sequence: ++this.invocationSequence,
 		};
+		this.panelFocusReturnSnapshot = snapshot;
 		this.anchor = undefined;
 		this.notice = value.prompt
 			? 'The /ai question moved here without being sent to Messenger.'
@@ -1060,6 +1077,7 @@ class AiAssistController {
 				loadedIndex: value.loadedIndex,
 			}, snapshot),
 		};
+		this.panelFocusReturnSnapshot = snapshot;
 		this.invocation = {
 			prompt: '',
 			sequence: ++this.invocationSequence,
@@ -1445,6 +1463,7 @@ class AiAssistController {
 	}
 
 	private createPanelWindow(): BrowserWindow {
+		this.restoreFocusAfterPanelClose = true;
 		const panelHtmlPath = path.join(__dirname, '..', 'static', 'ai-assist', 'index.html');
 		const panelUrl = pathToFileURL(panelHtmlPath).toString();
 		this.panelUrl = panelUrl;
@@ -1493,6 +1512,7 @@ class AiAssistController {
 			if (url === panelUrl && !panel.isDestroyed()) {
 				console.error(`AI Assist panel failed to load (${errorCode})`);
 				this.invalidate('panel-failed');
+				this.restoreFocusAfterPanelClose = false;
 				panel.destroy();
 			}
 		});
@@ -1505,6 +1525,11 @@ class AiAssistController {
 		});
 		panel.on('closed', () => {
 			if (this.panelWindow === panel) {
+				const returnConversationId = this.panelFocusReturnSnapshot
+					&& this.isRequestSnapshotCurrent(this.panelFocusReturnSnapshot)
+					? this.panelFocusReturnSnapshot.conversationId
+					: undefined;
+				const shouldRestoreFocus = this.restoreFocusAfterPanelClose;
 				this.advanceConversationLifecycle();
 				this.clearConversationBoundRequestState();
 				this.clearMediaState();
@@ -1514,9 +1539,13 @@ class AiAssistController {
 				}
 
 				this.panelWindow = undefined;
+				this.panelFocusReturnSnapshot = undefined;
 				this.panelLoaded = false;
 				this.panelReady = undefined;
 				this.panelUrl = undefined;
+				if (shouldRestoreFocus) {
+					this.restoreMessengerFocus(returnConversationId);
+				}
 			}
 		});
 
@@ -1527,6 +1556,7 @@ class AiAssistController {
 
 			console.error('AI Assist panel failed to load');
 			this.invalidate('panel-failed');
+			this.restoreFocusAfterPanelClose = false;
 			panel.destroy();
 			return false;
 		});
@@ -2254,6 +2284,10 @@ class AiAssistController {
 			} catch {
 				this.notice = 'Answer inserted into the Messenger draft, but Caprine could not update its local history status.';
 			}
+		}
+
+		if (result.status === 'inserted') {
+			this.restoreMessengerFocus(authorization.conversationId);
 		}
 
 		this.broadcastState();
