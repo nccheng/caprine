@@ -440,6 +440,39 @@ function textFromElements(elements: readonly Element[], excludedSelector?: strin
 	return fragments.length > 0 ? fragments.join('\n') : undefined;
 }
 
+function singleVisibleLeafText(element: Element, excludedSelector: string): string | undefined {
+	const pending = [...element.children];
+	const candidates: string[] = [];
+	let visited = 0;
+	while (pending.length > 0) {
+		const current = pending.pop()!;
+		visited += 1;
+		if (visited > maximumMessengerTailTraversalElements) {
+			return;
+		}
+
+		if (!visibleElement(current) || current.closest(excludedSelector)) {
+			continue;
+		}
+
+		const children = [...current.children];
+		if (children.length > 0) {
+			pending.push(...children);
+			continue;
+		}
+
+		const text = normalizedMultiline(current.textContent, maximumStringLengths.text);
+		if (text && !candidates.includes(text)) {
+			candidates.push(text);
+			if (candidates.length > 1) {
+				return;
+			}
+		}
+	}
+
+	return candidates.length === 1 ? candidates[0] : undefined;
+}
+
 function stableIdFromElement(element: Element): string | undefined {
 	let stableId: string | undefined;
 	for (const candidate of [
@@ -611,20 +644,33 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 		messengerContextSelectors.reply,
 		messengerContextSelectors.timestamp,
 		'a[href]',
+		'button',
 		'[role="button"]',
+		'input',
+		'label',
+		'option',
+		'select',
+		'textarea',
+		'form',
+		'[contenteditable="true"]',
+		'[role="textbox"]',
+		messengerContextSelectors.nonMessageUi,
+		messengerContextSelectors.placeholder,
 	].join(',');
 	const primaryMessageText = [...element.querySelectorAll(messengerContextSelectors.messageText)];
-	const messageText = primaryMessageText.length > 0
-		? primaryMessageText
-		: [...element.querySelectorAll(messengerContextSelectors.messageTextFallback)]
-			.filter(candidate => !candidate.querySelector(messengerContextSelectors.messageTextFallback));
+	const fallbackMessageText = [...element.querySelectorAll(messengerContextSelectors.messageTextFallback)]
+		.filter(candidate => !candidate.querySelector(messengerContextSelectors.messageTextFallback));
+	const stableId = stableIdFromElement(element);
+	const supportedText = textFromElements(primaryMessageText, excludedText)
+		?? textFromElements(fallbackMessageText, excludedText);
 	const candidate: MessengerContextCandidate = {
 		attachments: attachmentsFromElement(element),
 		domOrder,
 		linkPreview,
 		reactions: reactionFromElement(element),
-		stableId: stableIdFromElement(element),
-		text: textFromElements(messageText, excludedText),
+		stableId,
+		text: supportedText
+			?? (stableId && sender.confident ? singleVisibleLeafText(element, excludedText) : undefined),
 		timestamp: timestampFromElement(element),
 		senderDisplayName: sender.senderDisplayName,
 		senderRole: sender.senderRole,
