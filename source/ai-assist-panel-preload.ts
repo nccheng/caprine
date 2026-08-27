@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('caprineAiAssist', {
 	cancelHistoryDeletion: async (authorizationToken: string) => sendCommand({authorizationToken, type: 'cancel-history-deletion'}),
 	close: async () => sendCommand({type: 'close'}),
 	confirmHistoryDeletion: async (authorizationToken: string) => sendCommand({authorizationToken, type: 'confirm-history-deletion'}),
+	copyDiagnostics: async (copySequence: number) => sendCommand({copySequence, type: 'copy-diagnostics'}),
 	deleteApiKey: async () => sendCommand({type: 'delete-api-key'}),
 	editContextItem: async (reviewSequence: number, itemId: string, editedExcerpt: string) => sendCommand({
 		editedExcerpt,

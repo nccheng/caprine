@@ -77,6 +77,11 @@ type FindMacVideoToolsOptions = {
 	pathValue?: string;
 };
 
+export type MacVideoToolAvailability = {
+	ffmpeg: boolean;
+	ffprobe: boolean;
+};
+
 type BoundedProcessRunnerOptions = {
 	maximumOutputBytes?: number;
 	spawnImplementation?: typeof spawn;
@@ -141,6 +146,17 @@ export async function findMacVideoTools(options: FindMacVideoToolsOptions = {}):
 		'tools-unavailable',
 		'Install ffmpeg with Homebrew (`brew install ffmpeg`) and try again.',
 	);
+}
+
+export async function inspectMacVideoToolAvailability(options: FindMacVideoToolsOptions = {}): Promise<MacVideoToolAvailability> {
+	const accessImplementation = options.accessImplementation ?? access;
+	const pathValue = options.pathValue ?? process.env.PATH ?? '';
+	const directories = uniqueAbsoluteDirectories(pathValue);
+	const [ffmpeg, ffprobe] = await Promise.all([
+		findExecutable('ffmpeg', directories, accessImplementation),
+		findExecutable('ffprobe', directories, accessImplementation),
+	]);
+	return {ffmpeg: Boolean(ffmpeg), ffprobe: Boolean(ffprobe)};
 }
 
 export class BoundedProcessRunner implements ProcessRunner {
