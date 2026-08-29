@@ -413,22 +413,69 @@ export function captureMessengerMessageAnchor(
 	};
 }
 
-function visibleElement(element: Element): boolean {
-	if (element.closest('[aria-hidden="true"], [hidden]')) {
+type MessengerTraversalBudget = {
+	exhausted: boolean;
+	remainingNodes: number;
+	remainingTextLength: number;
+};
+
+function messengerTraversalBudget(): MessengerTraversalBudget {
+	return {
+		exhausted: false,
+		remainingNodes: maximumMessengerTailTraversalElements,
+		remainingTextLength: maximumStringLengths.text,
+	};
+}
+
+function consumeMessengerNode(budget: MessengerTraversalBudget): boolean {
+	if (budget.remainingNodes <= 0) {
+		budget.exhausted = true;
 		return false;
 	}
 
-	for (let current: Element | undefined = element; current; current = current.parentElement ?? undefined) {
-		let style: CSSStyleDeclaration | undefined;
-		try {
-			style = current.ownerDocument.defaultView?.getComputedStyle(current);
-		} catch {}
+	budget.remainingNodes -= 1;
+	return true;
+}
 
+function consumeMessengerText(budget: MessengerTraversalBudget, value: string): boolean {
+	if (value.length > budget.remainingTextLength) {
+		budget.exhausted = true;
+		return false;
+	}
+
+	budget.remainingTextLength -= value.length;
+	return true;
+}
+
+function visibleElementSelf(element: Element): boolean {
+	if (element.matches('[aria-hidden="true"], [hidden]')) {
+		return false;
+	}
+
+	let style: CSSStyleDeclaration | undefined;
+	try {
+		style = element.ownerDocument.defaultView?.getComputedStyle(element);
+	} catch {}
+
+	return style?.display !== 'none'
+		&& !['collapse', 'hidden'].includes(style?.visibility ?? '')
+		&& style?.opacity !== '0'
+		&& style?.getPropertyValue('content-visibility') !== 'hidden';
+}
+
+function visibleElement(element: Element, budget?: MessengerTraversalBudget): boolean {
+	if (!childNodesFromElement(element) && element.closest('[aria-hidden="true"], [hidden]')) {
+		return false;
+	}
+
+	let visited = 0;
+	for (let current: Element | undefined = element; current; current = current.parentElement ?? undefined) {
+		visited += 1;
+		const exhaustedBudget = budget ? !consumeMessengerNode(budget) : false;
 		if (
-			style?.display === 'none'
-			|| ['collapse', 'hidden'].includes(style?.visibility ?? '')
-			|| style?.opacity === '0'
-			|| style?.getPropertyValue('content-visibility') === 'hidden'
+			visited > maximumMessengerTailTraversalElements
+			|| exhaustedBudget
+			|| !visibleElementSelf(current)
 		) {
 			return false;
 		}
@@ -439,21 +486,30 @@ function visibleElement(element: Element): boolean {
 
 function textFromElements(elements: readonly Element[], excludedSelector?: string): string | undefined {
 	const fragments: string[] = [];
+	const budget = excludedSelector ? messengerTraversalBudget() : undefined;
 	for (const element of elements) {
 		const isExcluded = excludedSelector
 			? Boolean(element.closest(excludedSelector))
 			: false;
 		if (
-			!visibleElement(element)
+			!visibleElement(element, budget)
 			|| Boolean(element.querySelector(messengerContextSelectors.messageText))
 			|| isExcluded
 		) {
+			if (budget?.exhausted) {
+				return;
+			}
+
 			continue;
 		}
 
 		const text = excludedSelector
-			? visibleSubtreeText(element, excludedSelector)
+			? visibleSubtreeText(element, excludedSelector, budget!)
 			: normalizedMultiline(element.textContent, maximumStringLengths.text);
+		if (budget?.exhausted) {
+			return;
+		}
+
 		if (text && !fragments.includes(text)) {
 			fragments.push(text);
 		}
@@ -466,40 +522,66 @@ type MessageBodyTextResult =
 	| {status: 'ambiguous' | 'empty'}
 	| {status: 'found'; text: string};
 
-function childNodesFromElement(element: Element): readonly Node[] | undefined {
+type ChildNodeCollection = ArrayLike<Node> & Iterable<Node>;
+
+function childNodesFromElement(element: Element): ChildNodeCollection | undefined {
 	const {childNodes} = element as Element & {childNodes?: NodeListOf<ChildNode>};
-	return childNodes ? [...childNodes] : undefined;
+	return childNodes as ChildNodeCollection | undefined;
 }
 
-function directTextNodes(element: Element): readonly Node[] {
-	return (childNodesFromElement(element) ?? []).filter(node => node.nodeType === 3);
+function enterVisibleSubtree(
+	element: Element,
+	excludedSelector: string,
+	budget: MessengerTraversalBudget,
+	rootAlreadyConsumed: boolean,
+): boolean {
+	if (!rootAlreadyConsumed && !consumeMessengerNode(budget)) {
+		return false;
+	}
+
+	return visibleElementSelf(element) && !element.matches(excludedSelector);
 }
 
-function visibleSubtreeText(element: Element, excludedSelector: string): string | undefined {
+function visibleSubtreeText(
+	element: Element,
+	excludedSelector: string,
+	budget: MessengerTraversalBudget,
+	rootAlreadyConsumed = false,
+): string | undefined {
+	if (!enterVisibleSubtree(element, excludedSelector, budget, rootAlreadyConsumed)) {
+		return;
+	}
+
 	const childNodes = childNodesFromElement(element);
 	if (!childNodes) {
 		if (element.querySelector(excludedSelector)) {
 			return;
 		}
 
-		return normalizedMultiline(element.textContent, maximumStringLengths.text);
+		const value = element.textContent ?? '';
+		return consumeMessengerText(budget, value)
+			? normalizedMultiline(value, maximumStringLengths.text)
+			: undefined;
 	}
 
-	const pending: Node[] = [...childNodes].reverse();
+	const pending: Array<{index: number; nodes: ArrayLike<Node>}> = [{index: 0, nodes: childNodes}];
 	const fragments: string[] = [];
-	let rawLength = 0;
-	let visited = 0;
 	while (pending.length > 0) {
-		const current = pending.pop()!;
-		visited += 1;
-		if (visited > maximumMessengerTailTraversalElements) {
+		const frame = pending.at(-1)!;
+		if (frame.index >= frame.nodes.length) {
+			pending.pop();
+			continue;
+		}
+
+		const current = frame.nodes[frame.index];
+		frame.index += 1;
+		if (!consumeMessengerNode(budget)) {
 			return;
 		}
 
 		if (current.nodeType === 3) {
 			const value = current.textContent ?? '';
-			rawLength += value.length;
-			if (rawLength > maximumStringLengths.text) {
+			if (!consumeMessengerText(budget, value)) {
 				return;
 			}
 
@@ -512,17 +594,21 @@ function visibleSubtreeText(element: Element, excludedSelector: string): string 
 		}
 
 		const currentElement = current as Element;
-		if (!visibleElement(currentElement) || currentElement.closest(excludedSelector)) {
+		if (!visibleElementSelf(currentElement) || currentElement.matches(excludedSelector)) {
 			continue;
 		}
 
 		if (currentElement.localName === 'br') {
+			if (!consumeMessengerText(budget, '\n')) {
+				return;
+			}
+
 			fragments.push('\n');
 		}
 
 		const currentChildNodes = childNodesFromElement(currentElement);
 		if (currentChildNodes) {
-			pending.push(...[...currentChildNodes].reverse());
+			pending.push({index: 0, nodes: currentChildNodes});
 		}
 	}
 
@@ -536,7 +622,23 @@ function visibleSubtreeText(element: Element, excludedSelector: string): string 
 		: normalizedMultiline(fragments.join(''), maximumStringLengths.text);
 }
 
-function singleVisibleBodyText(element: Element, excludedSelector: string): MessageBodyTextResult {
+function singleVisibleBodyText(
+	element: Element,
+	excludedSelector: string,
+	budget: MessengerTraversalBudget,
+): MessageBodyTextResult {
+	if (!visibleElement(element, budget)) {
+		return {status: budget.exhausted ? 'ambiguous' : 'empty'};
+	}
+
+	const childNodes = childNodesFromElement(element);
+	if (!childNodes) {
+		const text = visibleSubtreeText(element, excludedSelector, budget, true);
+		return budget.exhausted
+			? {status: 'ambiguous'}
+			: (text ? {status: 'found', text} : {status: 'empty'});
+	}
+
 	const candidates: string[] = [];
 	const addCandidate = (text: string | undefined): boolean => {
 		if (text && !candidates.includes(text)) {
@@ -546,22 +648,49 @@ function singleVisibleBodyText(element: Element, excludedSelector: string): Mess
 		return candidates.length <= 1;
 	};
 
-	const directText = normalizedMultiline(
-		directTextNodes(element).map(node => node.textContent ?? '').join(''),
-		maximumStringLengths.text,
-	);
-	if (!addCandidate(directText)) {
-		return {status: 'ambiguous'};
-	}
+	const directFragments: string[] = [];
+	for (const child of childNodes) {
+		if (!consumeMessengerNode(budget)) {
+			return {status: 'ambiguous'};
+		}
 
-	for (const child of element.children) {
-		if (!visibleElement(child) || child.closest(excludedSelector)) {
+		if (child.nodeType === 3) {
+			const value = child.textContent ?? '';
+			if (!consumeMessengerText(budget, value)) {
+				return {status: 'ambiguous'};
+			}
+
+			directFragments.push(value);
 			continue;
 		}
 
-		if (!addCandidate(visibleSubtreeText(child, excludedSelector))) {
+		if (child.nodeType !== 1) {
+			continue;
+		}
+
+		const childElement = child as Element;
+		if (!visibleElementSelf(childElement) || childElement.matches(excludedSelector)) {
+			continue;
+		}
+
+		if (childElement.localName === 'br') {
+			if (!consumeMessengerText(budget, '\n')) {
+				return {status: 'ambiguous'};
+			}
+
+			directFragments.push('\n');
+			continue;
+		}
+
+		const text = visibleSubtreeText(childElement, excludedSelector, budget, true);
+		if (budget.exhausted || !addCandidate(text)) {
 			return {status: 'ambiguous'};
 		}
+	}
+
+	const directText = normalizedMultiline(directFragments.join(''), maximumStringLengths.text);
+	if (!addCandidate(directText)) {
+		return {status: 'ambiguous'};
 	}
 
 	return candidates.length === 1
@@ -576,27 +705,135 @@ function isMessageEvidenceElement(element: Element): boolean {
 		|| dataset.messageid !== undefined;
 }
 
-function messageEvidenceElements(element: Element): Element[] {
+function stableIdOwnedByElement(element: Element): string | undefined {
+	return normalizedMessageId(
+		(element as HTMLElement).dataset.messageId
+			?? (element as HTMLElement).dataset.messageid,
+	);
+}
+
+function stableIdFromElement(element: Element): string | undefined {
+	for (const candidate of [
+		element,
+		element.closest(messengerContextSelectors.messageIdentity),
+		element.querySelector(messengerContextSelectors.messageIdentity),
+	]) {
+		const identifier = candidate ? stableIdOwnedByElement(candidate) : undefined;
+		if (identifier) {
+			return identifier;
+		}
+	}
+
+	return undefined;
+}
+
+function subtreeContainsMessageElement(
+	element: Element,
+	budget: MessengerTraversalBudget,
+): boolean | undefined {
+	const pending: Array<{element: Element; index: number}> = [{element, index: 0}];
+	while (pending.length > 0) {
+		const frame = pending.at(-1)!;
+		if (frame.index === 0) {
+			if (!consumeMessengerNode(budget)) {
+				return;
+			}
+
+			if (frame.element.matches(messengerContextSelectors.message)) {
+				return true;
+			}
+		}
+
+		if (frame.index >= frame.element.children.length) {
+			pending.pop();
+			continue;
+		}
+
+		const child = frame.element.children[frame.index];
+		frame.index += 1;
+		pending.push({element: child, index: 0});
+	}
+
+	return false;
+}
+
+function hasForeignMessageSibling(
+	parent: Element,
+	branch: Element,
+	budget: MessengerTraversalBudget,
+): boolean | undefined {
+	for (const sibling of parent.children) {
+		if (sibling === branch) {
+			continue;
+		}
+
+		const containsMessage = subtreeContainsMessageElement(sibling, budget);
+		if (containsMessage === true || budget.exhausted) {
+			return containsMessage;
+		}
+	}
+
+	return false;
+}
+
+function messageEvidenceElements(element: Element, canonicalStableId?: string): Element[] | undefined {
+	if (!canonicalStableId || !childNodesFromElement(element)) {
+		return [element];
+	}
+
 	const elements = [element];
+	if (element.getAttribute('role') === 'row') {
+		return elements;
+	}
+
+	const budget = messengerTraversalBudget();
+	if (!consumeMessengerNode(budget)) {
+		return;
+	}
+
+	let branch = element;
 	let current = element.parentElement;
 	for (let visited = 0; current && visited < 16; visited += 1) {
 		if (current.getAttribute('role') === 'main') {
 			break;
 		}
 
+		if (!consumeMessengerNode(budget)) {
+			return;
+		}
+
+		const currentStableId = stableIdOwnedByElement(current);
+		if (currentStableId !== undefined && currentStableId !== canonicalStableId) {
+			return;
+		}
+
+		const hasForeignMessage = hasForeignMessageSibling(current, branch, budget);
+		if (hasForeignMessage === true || budget.exhausted) {
+			return;
+		}
+
 		if (isMessageEvidenceElement(current)) {
 			elements.push(current);
 		}
 
+		if (current.getAttribute('role') === 'row') {
+			break;
+		}
+
+		branch = current;
 		current = current.parentElement;
 	}
 
 	return elements;
 }
 
-function textFromMessageEvidence(element: Element, excludedSelector: string): string | undefined {
-	for (const evidence of messageEvidenceElements(element)) {
-		const result = singleVisibleBodyText(evidence, excludedSelector);
+function textFromMessageEvidence(
+	elements: readonly Element[],
+	excludedSelector: string,
+): string | undefined {
+	const budget = messengerTraversalBudget();
+	for (const evidence of elements) {
+		const result = singleVisibleBodyText(evidence, excludedSelector, budget);
 		if (result.status === 'found') {
 			return result.text;
 		}
@@ -609,28 +846,6 @@ function textFromMessageEvidence(element: Element, excludedSelector: string): st
 	return undefined;
 }
 
-function stableIdFromElement(element: Element): string | undefined {
-	let stableId: string | undefined;
-	for (const candidate of [
-		element,
-		element.closest(messengerContextSelectors.messageIdentity),
-		element.querySelector(messengerContextSelectors.messageIdentity),
-	]) {
-		const identifier = candidate
-			? normalizedMessageId(
-				(candidate as HTMLElement).dataset.messageId
-					?? (candidate as HTMLElement).dataset.messageid,
-			)
-			: undefined;
-		if (identifier) {
-			stableId = identifier;
-			break;
-		}
-	}
-
-	return stableId;
-}
-
 type SenderEvidence = Pick<MessengerContextCandidate, 'senderDisplayName' | 'senderRole'> & {
 	confident: boolean;
 };
@@ -640,14 +855,18 @@ type SemanticMessageLabel = SenderEvidence & {
 	timestamp?: string;
 };
 
-function semanticMessageLabelFromElement(element: Element): SemanticMessageLabel | undefined {
-	const stableId = normalizedMessageId(
-		(element as HTMLElement).dataset.messageId
-			?? (element as HTMLElement).dataset.messageid,
-	);
+function semanticMessageLabelFromElement(
+	element: Element,
+	canonicalStableId?: string,
+): SemanticMessageLabel | undefined {
+	const stableId = stableIdOwnedByElement(element);
 	const hasSemanticMessageRole = (element as HTMLElement).dataset.scope === 'messages_table'
 		|| element.getAttribute('aria-roledescription') === 'message';
-	if (!stableId || !hasSemanticMessageRole) {
+	if (
+		!stableId
+		|| (canonicalStableId !== undefined && stableId !== canonicalStableId)
+		|| !hasSemanticMessageRole
+	) {
 		return;
 	}
 
@@ -670,8 +889,8 @@ function semanticMessageLabelFromElement(element: Element): SemanticMessageLabel
 	};
 }
 
-function senderFromElement(element: Element): SenderEvidence {
-	const semanticMessage = semanticMessageLabelFromElement(element);
+function senderFromElement(element: Element, canonicalStableId?: string): SenderEvidence {
+	const semanticMessage = semanticMessageLabelFromElement(element, canonicalStableId);
 	if (semanticMessage) {
 		return semanticMessage;
 	}
@@ -694,10 +913,13 @@ function senderFromElement(element: Element): SenderEvidence {
 		: {confident: false};
 }
 
-function senderFromMessageEvidence(element: Element): SenderEvidence {
+function senderFromMessageEvidence(
+	elements: readonly Element[],
+	canonicalStableId?: string,
+): SenderEvidence {
 	let resolved: SenderEvidence | undefined;
-	for (const evidence of messageEvidenceElements(element)) {
-		const sender = senderFromElement(evidence);
+	for (const evidence of elements) {
+		const sender = senderFromElement(evidence, canonicalStableId);
 		if (!sender.confident || !sender.senderRole) {
 			continue;
 		}
@@ -718,10 +940,17 @@ function senderFromMessageEvidence(element: Element): SenderEvidence {
 	return resolved ?? {confident: false};
 }
 
-function semanticMessageLabelFromEvidence(element: Element): SemanticMessageLabel | undefined {
+function semanticMessageLabelFromEvidence(
+	elements: readonly Element[],
+	canonicalStableId?: string,
+): SemanticMessageLabel | undefined {
+	if (!canonicalStableId) {
+		return;
+	}
+
 	let resolved: SemanticMessageLabel | undefined;
-	for (const evidence of messageEvidenceElements(element)) {
-		const semanticMessage = semanticMessageLabelFromElement(evidence);
+	for (const evidence of elements) {
+		const semanticMessage = semanticMessageLabelFromElement(evidence, canonicalStableId);
 		if (!semanticMessage) {
 			continue;
 		}
@@ -746,7 +975,13 @@ function semanticMessageLabelFromEvidence(element: Element): SemanticMessageLabe
 
 export function extractNativeMessengerSender(element: Element): ConversationContextItem['sender'] | undefined {
 	try {
-		const sender = senderFromMessageEvidence(element);
+		const stableId = stableIdFromElement(element);
+		const evidence = messageEvidenceElements(element, stableId);
+		if (!evidence) {
+			return;
+		}
+
+		const sender = senderFromMessageEvidence(evidence, stableId);
 		if (!sender.confident || !sender.senderRole) {
 			return;
 		}
@@ -862,10 +1097,16 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 		return {domOrder, omittedReason: 'virtualized-placeholder'};
 	}
 
+	const stableId = stableIdFromElement(element);
+	const evidence = messageEvidenceElements(element, stableId);
+	if (!evidence) {
+		return {domOrder, omittedReason: 'ambiguous-message', stableId};
+	}
+
 	const replyElement = element.querySelector(messengerContextSelectors.reply);
 	const linkPreview = linkPreviewFromElement(element);
-	const semanticMessage = semanticMessageLabelFromEvidence(element);
-	const sender = senderFromMessageEvidence(element);
+	const semanticMessage = semanticMessageLabelFromEvidence(evidence, stableId);
+	const sender = senderFromMessageEvidence(evidence, stableId);
 	const excludedText = [
 		messengerContextSelectors.reaction,
 		messengerContextSelectors.reply,
@@ -890,7 +1131,6 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 	const primaryMessageText = [...element.querySelectorAll(messengerContextSelectors.messageText)];
 	const fallbackMessageText = [...element.querySelectorAll(messengerContextSelectors.messageTextFallback)]
 		.filter(candidate => !candidate.querySelector(messengerContextSelectors.messageTextFallback));
-	const stableId = stableIdFromElement(element);
 	const supportedText = textFromElements(primaryMessageText, excludedText)
 		?? textFromElements(fallbackMessageText, excludedText);
 	const candidate: MessengerContextCandidate = {
@@ -902,7 +1142,7 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 		text: supportedText
 			?? (sender.confident ? semanticMessage?.text : undefined)
 			?? (stableId && sender.confident && !linkPreview
-				? textFromMessageEvidence(element, fallbackExcludedText)
+				? textFromMessageEvidence(evidence, fallbackExcludedText)
 				: undefined),
 		timestamp: timestampFromElement(element) ?? semanticMessage?.timestamp,
 		senderDisplayName: sender.senderDisplayName,

@@ -223,6 +223,98 @@ test('semantic labels and ancestry evidence fail closed without stable authority
 	assert.deepEqual(inspection.items.map(item => item.omittedReason), ['no-supported-content', 'no-supported-content']);
 });
 
+test('message evidence never crosses sibling or nested stable identities in full, tail, or anchor capture', () => {
+	const siblingRoot = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [
+			{attributes: {'data-message-id': 'empty-target'}},
+			{
+				attributes: {'data-message-id': 'sibling-message'},
+				children: [{children: [{text: 'Sibling private body'}]}],
+			},
+		],
+	}]);
+	const emptyTarget = siblingRoot.querySelector('[data-message-id="empty-target"]');
+	const siblingInspection = inspectLoadedMessengerConversationContext(siblingRoot);
+
+	assert.equal(siblingInspection.reason, 'ambiguous-messages');
+	assert.deepEqual(siblingInspection.items.map(item => item.text), [undefined, undefined]);
+	assert.deepEqual(siblingInspection.items.map(item => item.omittedReason), ['ambiguous-message', 'ambiguous-message']);
+	assert.notEqual(extractLoadedMessengerConversationTail(siblingRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(emptyTarget, siblingRoot), undefined);
+
+	const nestedRoot = messengerFixtureRoot([{
+		attributes: {
+			'aria-label': 'At 10:18 AM, River: Ancestor private body',
+			'aria-roledescription': 'message',
+			'data-message-id': 'semantic-ancestor',
+			role: 'row',
+		},
+		children: [{
+			attributes: {'data-message-id': 'nested-target'},
+			children: [{text: 'Nested target body'}],
+		}],
+	}]);
+	const nestedTarget = nestedRoot.querySelector('[data-message-id="nested-target"]');
+	const nestedInspection = inspectLoadedMessengerConversationContext(nestedRoot);
+
+	assert.equal(nestedInspection.reason, 'ambiguous-messages');
+	assert.equal(nestedInspection.items[0].text, undefined);
+	assert.equal(nestedInspection.items[0].omittedReason, 'ambiguous-message');
+	assert.notEqual(extractLoadedMessengerConversationTail(nestedRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(nestedTarget, nestedRoot), undefined);
+});
+
+test('body and visibility traversal share fixed fail-closed node bounds', () => {
+	const wideRoot = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', 'data-message-id': 'wide-body', role: 'row'},
+		children: Array.from(
+			{length: maximumMessengerTailTraversalElements + 1},
+			() => ({children: [{text: 'Repeated branch'}]}),
+		),
+	}]);
+	const wideTarget = wideRoot.querySelector('[data-message-id="wide-body"]');
+	const wideInspection = inspectLoadedMessengerConversationContext(wideRoot);
+
+	assert.equal(wideInspection.reason, 'supported-content-missing');
+	assert.equal(wideInspection.items[0].text, undefined);
+	assert.notEqual(extractLoadedMessengerConversationTail(wideRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(wideTarget, wideRoot), undefined);
+
+	const directRoot = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', 'data-message-id': 'direct-overflow', role: 'row'},
+	}]);
+	const directTarget = directRoot.querySelector('[data-message-id="direct-overflow"]');
+	directTarget.childNodes = Array.from(
+		{length: maximumMessengerTailTraversalElements + 1},
+		() => ({nodeType: 3, parentElement: directTarget, textContent: 'x'}),
+	);
+	const directInspection = inspectLoadedMessengerConversationContext(directRoot);
+
+	assert.equal(directInspection.reason, 'supported-content-missing');
+	assert.equal(directInspection.items[0].text, undefined);
+	assert.notEqual(extractLoadedMessengerConversationTail(directRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(directTarget, directRoot), undefined);
+
+	let deepTarget = {
+		attributes: {'data-message-id': 'deep-ancestor'},
+		children: [{text: 'Deep body'}],
+	};
+	for (let index = 0; index <= maximumMessengerTailTraversalElements; index += 1) {
+		deepTarget = {children: [deepTarget]};
+	}
+
+	const deepRoot = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [deepTarget],
+	}]);
+	const deepIdentity = deepRoot.querySelector('[data-message-id="deep-ancestor"]');
+
+	assert.equal(inspectLoadedMessengerConversationContext(deepRoot).reason, 'message-rows-missing');
+	assert.notEqual(extractLoadedMessengerConversationTail(deepRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(deepIdentity, deepRoot), undefined);
+});
+
 test('body-subtree fallback rejects multiple distinct visible branches after ancestry resolution', () => {
 	const root = messengerFixtureRoot([{
 		attributes: {'aria-label': 'River sent a message', role: 'row'},

@@ -86,6 +86,7 @@ class MessengerContextFixtureElement {
 		this.dataset = {
 			messageId: this.attributes['data-message-id'],
 			messageid: this.attributes['data-messageid'],
+			scope: this.attributes['data-scope'],
 		};
 		this.ownerDocument = parentElement?.ownerDocument;
 		this.setChildren((fixture.children ?? []).map(child => new MessengerContextFixtureElement(child, this)));
