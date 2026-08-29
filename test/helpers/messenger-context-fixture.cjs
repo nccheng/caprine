@@ -71,10 +71,12 @@ function matchesSelectorPart(element, selector) {
 class MessengerContextFixtureElement {
 	constructor(fixture = {}, parentElement = null) {
 		this.attributes = fixture.attributes ?? {};
+		this.computedStyle = fixture.computedStyle ?? {};
 		this.hidden = fixture.hidden ?? false;
 		this.href = fixture.href;
 		this.isConnected = fixture.isConnected ?? true;
 		this.localName = fixture.tag ?? 'div';
+		this.nodeType = 1;
 		this.ownText = fixture.text ?? '';
 		this.parentElement = parentElement;
 		this.rectangle = fixture.rectangle ?? {
@@ -116,7 +118,7 @@ class MessengerContextFixtureElement {
 	}
 
 	get textContent() {
-		return this.ownText || this.children.map(child => child.textContent).join('');
+		return this.ownText + this.children.map(child => child.textContent).join('');
 	}
 
 	set textContent(value) {
@@ -126,6 +128,10 @@ class MessengerContextFixtureElement {
 
 	getAttribute(name) {
 		return this.attributes[name] ?? null;
+	}
+
+	hasAttribute(name) {
+		return this.getAttribute(name) !== null;
 	}
 
 	remove() {
@@ -178,6 +184,10 @@ class MessengerContextFixtureElement {
 
 	setChildren(children) {
 		this.children = children;
+		this.childNodes = [
+			...(this.ownText ? [{nodeType: 3, parentElement: this, textContent: this.ownText}] : []),
+			...children,
+		];
 		for (const [index, child] of children.entries()) {
 			child.parentElement = this;
 			child.setOwnerDocument(this.ownerDocument);
@@ -214,6 +224,20 @@ class MessengerContextFixtureShadowRoot {
 
 function fixtureDocument() {
 	const document = {
+		defaultView: {
+			getComputedStyle(element) {
+				return {
+					display: element.computedStyle.display ?? 'block',
+					getPropertyValue(name) {
+						return name === 'content-visibility'
+							? (element.computedStyle.contentVisibility ?? 'visible')
+							: '';
+					},
+					opacity: element.computedStyle.opacity ?? '1',
+					visibility: element.computedStyle.visibility ?? 'visible',
+				};
+			},
+		},
 		createElement(tagName) {
 			const element = new MessengerContextFixtureElement({tag: tagName});
 			element.setOwnerDocument(document);

@@ -20,6 +20,7 @@ const {
 
 const sanitizedFixtureFilenames = [
 	'current-loaded-conversation.json',
+	'current-semantic-structure.json',
 	'edge-cases.json',
 	'prepend-history.json',
 	'stable-leaf-text.json',
@@ -44,7 +45,7 @@ test('fixture selector matching fails closed for syntax outside its supported su
 	assert.equal(row.matches('[role="row"]:last-child'), false);
 });
 
-for (const filename of ['supported-messages.json', 'edge-cases.json', 'current-loaded-conversation.json', 'stable-leaf-text.json']) {
+for (const filename of ['supported-messages.json', 'edge-cases.json', 'current-loaded-conversation.json', 'current-semantic-structure.json', 'stable-leaf-text.json']) {
 	test(`sanitized Messenger context fixture ${filename} produces exact logical items`, () => {
 		const fixture = loadMessengerContextFixture(filename);
 		global.window = {location: {href: fixture.baseUrl}};
@@ -86,7 +87,7 @@ test('context inspection reports bounded adapter stages without message content'
 	});
 });
 
-for (const filename of ['supported-messages.json', 'current-loaded-conversation.json', 'stable-leaf-text.json']) {
+for (const filename of ['supported-messages.json', 'current-loaded-conversation.json', 'current-semantic-structure.json', 'stable-leaf-text.json']) {
 	test(`sanitized newest-tail fixture ${filename} reaches the exact bounded fingerprint item`, () => {
 		const fixture = loadMessengerContextFixture(filename);
 		global.window = {location: {href: fixture.baseUrl}};
@@ -113,6 +114,16 @@ test('stable leaf-text semantics use one logical item for full, tail, and anchor
 	assert.deepEqual(extractLoadedMessengerConversationContext(fixture.root), fixture.expected);
 	assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
 	assert.deepEqual(captureLoadedMessengerMessageAnchor(target, fixture.root)?.item, fixture.expectedTail);
+});
+
+test('current semantic structure combines bounded row evidence for full, tail, and anchor extraction', () => {
+	const fixture = loadMessengerContextFixture('current-semantic-structure.json');
+	global.window = {location: {href: fixture.baseUrl}};
+	const target = fixture.root.querySelector('[data-message-id="split-incoming"]')?.children[0]?.children[0];
+
+	assert.deepEqual(extractLoadedMessengerConversationContext(fixture.root), fixture.expected);
+	assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
+	assert.equal(captureLoadedMessengerMessageAnchor(target, fixture.root)?.item.messageId, 'split-incoming');
 });
 
 function messengerFixtureRoot(rows) {
@@ -180,6 +191,59 @@ test('stable leaf-text fallback excludes message chrome and unrelated UI text', 
 	const [item] = extractLoadedMessengerConversationContext(root);
 	assert.equal(item.text, 'Expected plain text');
 	assert.doesNotMatch(item.text, /reply|reaction|yesterday|button|control|composer|hidden|placeholder|navigation|sidebar/i);
+});
+
+test('semantic labels and ancestry evidence fail closed without stable authority or with conflicting senders', () => {
+	const root = messengerFixtureRoot([
+		{
+			attributes: {role: 'row'},
+			children: [{
+				attributes: {
+					'aria-label': 'At 10:15 AM, River: Missing stable authority',
+					'aria-roledescription': 'message',
+					'data-scope': 'messages_table',
+				},
+			}],
+		},
+		{
+			attributes: {'aria-label': 'River sent a message', role: 'row'},
+			children: [{
+				attributes: {
+					'aria-label': 'At 10:16 AM, You: Conflicting sender evidence',
+					'aria-roledescription': 'message',
+					'data-message-id': 'semantic-conflict',
+				},
+			}],
+		},
+	]);
+
+	const inspection = inspectLoadedMessengerConversationContext(root);
+	assert.equal(inspection.reason, 'supported-content-missing');
+	assert.deepEqual(inspection.items.map(item => item.text), [undefined, undefined]);
+	assert.deepEqual(inspection.items.map(item => item.omittedReason), ['no-supported-content', 'no-supported-content']);
+});
+
+test('body-subtree fallback rejects multiple distinct visible branches after ancestry resolution', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [{
+			attributes: {'data-message-id': 'body-ambiguous'},
+			children: [
+				{children: [{text: 'First visible branch'}]},
+				{children: [{text: 'Second visible branch'}]},
+			],
+		}],
+	}]);
+
+	assert.deepEqual(inspectLoadedMessengerConversationContext(root), {
+		items: [{
+			confidence: 'low',
+			messageId: 'body-ambiguous',
+			omittedReason: 'no-supported-content',
+			sender: {displayName: 'River', role: 'incoming'},
+		}],
+		reason: 'supported-content-missing',
+	});
 });
 
 test('stable leaf-text fallback never promotes recognized link-preview sibling chrome', () => {
