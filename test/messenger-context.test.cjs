@@ -263,6 +263,44 @@ test('message evidence never crosses sibling or nested stable identities in full
 	assert.equal(nestedInspection.items[0].omittedReason, 'ambiguous-message');
 	assert.notEqual(extractLoadedMessengerConversationTail(nestedRoot)?.confidence, 'high');
 	assert.equal(captureLoadedMessengerMessageAnchor(nestedTarget, nestedRoot), undefined);
+
+	const malformedAncestorRoot = messengerFixtureRoot([{
+		attributes: {
+			'aria-label': 'River sent a message',
+			'data-message-id': 'foreign id',
+			role: 'row',
+		},
+		children: [
+			{attributes: {'data-message-id': 'malformed-ancestor-target'}},
+			{children: [{text: 'Malformed ancestor private body'}]},
+		],
+	}]);
+	const malformedAncestorTarget = malformedAncestorRoot.querySelector('[data-message-id="malformed-ancestor-target"]');
+	const malformedAncestorInspection = inspectLoadedMessengerConversationContext(malformedAncestorRoot);
+
+	assert.equal(malformedAncestorInspection.reason, 'ambiguous-messages');
+	assert.equal(malformedAncestorInspection.items[0].text, undefined);
+	assert.equal(malformedAncestorInspection.items[0].omittedReason, 'ambiguous-message');
+	assert.notEqual(extractLoadedMessengerConversationTail(malformedAncestorRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(malformedAncestorTarget, malformedAncestorRoot), undefined);
+
+	const conflictingAliasesRoot = messengerFixtureRoot([{
+		attributes: {
+			'aria-label': 'River sent a message',
+			'data-message-id': 'alias-one',
+			'data-messageid': 'alias-two',
+			role: 'row',
+		},
+		children: [{text: 'Conflicting alias private body'}],
+	}]);
+	const conflictingAliasesTarget = conflictingAliasesRoot.querySelector('[role="row"]')?.children[0];
+	const conflictingAliasesInspection = inspectLoadedMessengerConversationContext(conflictingAliasesRoot);
+
+	assert.equal(conflictingAliasesInspection.reason, 'ambiguous-messages');
+	assert.equal(conflictingAliasesInspection.items[0].text, undefined);
+	assert.equal(conflictingAliasesInspection.items[0].omittedReason, 'ambiguous-message');
+	assert.notEqual(extractLoadedMessengerConversationTail(conflictingAliasesRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(conflictingAliasesTarget, conflictingAliasesRoot), undefined);
 });
 
 test('body and visibility traversal share fixed fail-closed node bounds', () => {

@@ -705,11 +705,32 @@ function isMessageEvidenceElement(element: Element): boolean {
 		|| dataset.messageid !== undefined;
 }
 
+type OwnedMessageIdentity =
+	| {status: 'invalid' | 'none'}
+	| {stableId: string; status: 'valid'};
+
+function messageIdentityOwnedByElement(element: Element): OwnedMessageIdentity {
+	const {dataset} = element as HTMLElement;
+	let stableId: string | undefined;
+	for (const value of [dataset.messageId, dataset.messageid]) {
+		if (value === undefined) {
+			continue;
+		}
+
+		const identifier = normalizedMessageId(value);
+		if (!identifier || (stableId !== undefined && stableId !== identifier)) {
+			return {status: 'invalid'};
+		}
+
+		stableId = identifier;
+	}
+
+	return stableId ? {stableId, status: 'valid'} : {status: 'none'};
+}
+
 function stableIdOwnedByElement(element: Element): string | undefined {
-	return normalizedMessageId(
-		(element as HTMLElement).dataset.messageId
-			?? (element as HTMLElement).dataset.messageid,
-	);
+	const identity = messageIdentityOwnedByElement(element);
+	return identity.status === 'valid' ? identity.stableId : undefined;
 }
 
 function stableIdFromElement(element: Element): string | undefined {
@@ -777,6 +798,14 @@ function hasForeignMessageSibling(
 }
 
 function messageEvidenceElements(element: Element, canonicalStableId?: string): Element[] | undefined {
+	const elementIdentity = messageIdentityOwnedByElement(element);
+	if (
+		elementIdentity.status === 'invalid'
+		|| (elementIdentity.status === 'valid' && elementIdentity.stableId !== canonicalStableId)
+	) {
+		return;
+	}
+
 	if (!canonicalStableId || !childNodesFromElement(element)) {
 		return [element];
 	}
@@ -802,8 +831,11 @@ function messageEvidenceElements(element: Element, canonicalStableId?: string): 
 			return;
 		}
 
-		const currentStableId = stableIdOwnedByElement(current);
-		if (currentStableId !== undefined && currentStableId !== canonicalStableId) {
+		const currentIdentity = messageIdentityOwnedByElement(current);
+		if (
+			currentIdentity.status === 'invalid'
+			|| (currentIdentity.status === 'valid' && currentIdentity.stableId !== canonicalStableId)
+		) {
 			return;
 		}
 
