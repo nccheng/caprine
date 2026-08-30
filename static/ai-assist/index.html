@@ -58,7 +58,7 @@
 			</section>
 			<section aria-labelledby="context-heading">
 				<h2 id="context-heading">Context review</h2>
-				<p>Review the exact Messenger excerpts below. Nothing is sent to OpenAI until you select Ask.</p>
+				<p>Review the exact Messenger excerpts when needed. Nothing is sent to OpenAI until you select Ask.</p>
 				<p id="context-source-disclosure" class="context-availability">No context source selected.</p>
 				<label for="context-window">Message window</label>
 				<select id="context-window" name="context-window">
@@ -76,7 +76,10 @@
 				<p id="context-availability" class="context-availability">No context captured.</p>
 				<p id="new-messages" class="new-messages" role="status" hidden>New messages available. This frozen review has not changed.</p>
 				<button id="refresh-context-button" class="secondary" type="button">Refresh context</button>
-				<div id="context-items" class="context-items" aria-label="Reviewed Messenger context" aria-live="polite"></div>
+				<details id="context-message-details">
+					<summary id="context-message-summary">Context messages (0)</summary>
+					<div id="context-items" class="context-items" aria-label="Reviewed Messenger context" aria-live="polite"></div>
+				</details>
 				<div class="reviewed-images-heading">
 					<h3>Reviewed images</h3>
 					<p id="image-selection-summary">No processed images in this review.</p>

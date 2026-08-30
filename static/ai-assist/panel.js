@@ -22,6 +22,8 @@ const contextWindow = document.querySelector('#context-window');
 const webSearchMode = document.querySelector('#web-search-mode');
 const contextSourceDisclosure = document.querySelector('#context-source-disclosure');
 const contextAvailability = document.querySelector('#context-availability');
+const contextMessageDetails = document.querySelector('#context-message-details');
+const contextMessageSummary = document.querySelector('#context-message-summary');
 const contextItems = document.querySelector('#context-items');
 const imageSelectionSummary = document.querySelector('#image-selection-summary');
 const imageSelectionNotice = document.querySelector('#image-selection-notice');
@@ -69,6 +71,7 @@ const closeButton = document.querySelector('#close-button');
 let renderedCaptureGeneration;
 let renderedInvocationSequence;
 let renderedOriginalReplaySequence;
+let renderedContextReviewSequence;
 let promptCaptureGeneration;
 let renderedInsertion;
 let renderedAnswerSignature;
@@ -687,6 +690,9 @@ function renderContextReview(review, isRequesting, credentialsConfigured) {
 	if (!review) {
 		contextSourceDisclosure.textContent = 'No context source selected.';
 		contextAvailability.textContent = 'No context captured.';
+		contextMessageDetails.open = false;
+		contextMessageSummary.textContent = 'Context messages (0)';
+		renderedContextReviewSequence = undefined;
 		for (const row of contextReviewRows.values()) {
 			row.article.remove();
 		}
@@ -709,6 +715,12 @@ function renderContextReview(review, isRequesting, credentialsConfigured) {
 		? `${sendableCount} selected in the locked Ask snapshot. Use Refresh context to make changes.`
 		: `${sendableCount} will be sent to OpenAI.`;
 	contextAvailability.textContent = `${review.actualCount} of ${review.requestedCount} messages available; ${review.items.length} selected; ${sendableSummary}`;
+	contextMessageSummary.textContent = `Context messages (${review.items.length}) · Show to review or redact`;
+	if (renderedContextReviewSequence !== review.sequence) {
+		contextMessageDetails.open = false;
+		renderedContextReviewSequence = review.sequence;
+	}
+
 	const presentIds = new Set();
 	for (const [index, reviewed] of review.items.entries()) {
 		presentIds.add(reviewed.id);
