@@ -83,7 +83,7 @@ const targetTokens = new WeakMap<Element, {signature: string; token: string}>();
 let targetTokenCounter = 0;
 
 function normalizedMessageId(value: string): string | undefined {
-	return value.length > 0 && value.length <= 200 && /^[\w.:-]+$/.test(value)
+	return /^[^\s\p{C}]{1,200}$/u.test(value)
 		? value
 		: undefined;
 }

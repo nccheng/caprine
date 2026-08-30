@@ -223,6 +223,26 @@ test('semantic labels and ancestry evidence fail closed without stable authority
 	assert.deepEqual(inspection.items.map(item => item.omittedReason), ['no-supported-content', 'no-supported-content']);
 });
 
+test('opaque Messenger message identities stay stable across context and anchor extraction', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {
+			'aria-label': 'At 10:18 AM, River: Synthetic message body',
+			'aria-roledescription': 'message',
+			'data-message-id': 'synthetic@$+/=_message-1',
+			role: 'row',
+		},
+	}]);
+	const row = root.querySelector('[role="row"]');
+	const [item] = extractLoadedMessengerConversationContext(root);
+	const tail = extractLoadedMessengerConversationTail(root);
+	const anchor = captureLoadedMessengerMessageAnchor(row, root);
+
+	assert.equal(item.messageId, 'synthetic@$+/=_message-1');
+	assert.equal(item.text, 'Synthetic message body');
+	assert.equal(tail.messageId, 'synthetic@$+/=_message-1');
+	assert.equal(anchor.item.messageId, 'synthetic@$+/=_message-1');
+});
+
 test('message evidence never crosses sibling or nested stable identities in full, tail, or anchor capture', () => {
 	const siblingRoot = messengerFixtureRoot([{
 		attributes: {'aria-label': 'River sent a message', role: 'row'},
@@ -301,6 +321,72 @@ test('message evidence never crosses sibling or nested stable identities in full
 	assert.equal(conflictingAliasesInspection.items[0].omittedReason, 'ambiguous-message');
 	assert.notEqual(extractLoadedMessengerConversationTail(conflictingAliasesRoot)?.confidence, 'high');
 	assert.equal(captureLoadedMessengerMessageAnchor(conflictingAliasesTarget, conflictingAliasesRoot), undefined);
+});
+
+test('message evidence ignores non-message layout rows beside the current identity branch', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [{
+			children: [
+				{
+					attributes: {'data-message-id': 'current-message'},
+					children: [{text: 'Current private body'}],
+				},
+				{
+					attributes: {'aria-label': 'Message actions', role: 'row'},
+					children: [{attributes: {role: 'button'}}],
+				},
+			],
+		}],
+	}]);
+
+	const [item] = extractLoadedMessengerConversationContext(root);
+	assert.equal(item.confidence, 'high');
+	assert.equal(item.messageId, 'current-message');
+	assert.equal(item.text, 'Current private body');
+});
+
+test('semantic identity branches stay independent inside a shared layout row', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {role: 'row'},
+		children: [
+			{
+				attributes: {
+					'aria-label': 'At 10:18 AM, River: First private body',
+					'aria-roledescription': 'message',
+					'data-message-id': 'first-message',
+				},
+			},
+			{
+				attributes: {
+					'aria-label': 'At 10:19 AM, You: Second private body',
+					'aria-roledescription': 'message',
+					'data-message-id': 'second-message',
+				},
+			},
+		],
+	}]);
+
+	const items = extractLoadedMessengerConversationContext(root);
+	assert.deepEqual(items.map(item => ({
+		confidence: item.confidence,
+		messageId: item.messageId,
+		senderRole: item.sender.role,
+		text: item.text,
+	})), [
+		{
+			confidence: 'high',
+			messageId: 'first-message',
+			senderRole: 'incoming',
+			text: 'First private body',
+		},
+		{
+			confidence: 'high',
+			messageId: 'second-message',
+			senderRole: 'outgoing',
+			text: 'Second private body',
+		},
+	]);
 });
 
 test('body and visibility traversal share fixed fail-closed node bounds', () => {

@@ -1594,7 +1594,7 @@ function isMediaRequestId(value: unknown): value is string {
 }
 
 function isMessageId(value: unknown): value is string {
-	return typeof value === 'string' && value.length <= 200 && /^[\w.:-]+$/.test(value);
+	return typeof value === 'string' && /^[^\s\p{C}]{1,200}$/u.test(value);
 }
 
 function isMediaHandleId(value: unknown): value is string {

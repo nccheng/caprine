@@ -33,7 +33,7 @@ function stableMessageId(element: Element): string | undefined {
 		: element.closest(messengerMediaSelectors.identity);
 	const messageId = identity?.getAttribute('data-message-id')
 		?? identity?.getAttribute('data-messageid');
-	return messageId && messageId.length <= 200 && /^[\w.:-]+$/.test(messageId)
+	return messageId && /^[^\s\p{C}]{1,200}$/u.test(messageId)
 		? messageId
 		: undefined;
 }

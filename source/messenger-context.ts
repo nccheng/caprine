@@ -147,7 +147,7 @@ function normalizedMultiline(value: unknown, maximumLength: number): string | un
 
 function normalizedMessageId(value: unknown): string | undefined {
 	const normalized = normalizedInline(value, maximumStringLengths.messageId);
-	return normalized && /^[\w.:-]+$/.test(normalized) ? normalized : undefined;
+	return normalized && /^[^\s\p{C}]{1,200}$/u.test(normalized) ? normalized : undefined;
 }
 
 function normalizedLinkPreview(value: MessengerContextCandidate['linkPreview']): ConversationContextItem['linkPreview'] {
@@ -748,8 +748,16 @@ function stableIdFromElement(element: Element): string | undefined {
 	return undefined;
 }
 
-function subtreeContainsMessageElement(
+function hasSemanticMessageEvidence(element: Element): boolean {
+	const label = normalizedInline(element.getAttribute('aria-label'), 500);
+	return (element as HTMLElement).dataset.scope === 'messages_table'
+		|| element.getAttribute('aria-roledescription') === 'message'
+		|| /^(?:at\s+.+?,\s+.+?|you sent\b|.+? sent a message\b)/i.test(label ?? '');
+}
+
+function subtreeContainsForeignMessageElement(
 	element: Element,
+	canonicalStableId: string,
 	budget: MessengerTraversalBudget,
 ): boolean | undefined {
 	const pending: Array<{element: Element; index: number}> = [{element, index: 0}];
@@ -760,7 +768,16 @@ function subtreeContainsMessageElement(
 				return;
 			}
 
-			if (frame.element.matches(messengerContextSelectors.message)) {
+			const identity = messageIdentityOwnedByElement(frame.element);
+			if (identity.status === 'invalid' || (identity.status === 'valid' && identity.stableId !== canonicalStableId)) {
+				return true;
+			}
+
+			if (
+				identity.status === 'none'
+				&& frame.element.getAttribute('role') === 'row'
+				&& hasSemanticMessageEvidence(frame.element)
+			) {
 				return true;
 			}
 		}
@@ -781,6 +798,7 @@ function subtreeContainsMessageElement(
 function hasForeignMessageSibling(
 	parent: Element,
 	branch: Element,
+	canonicalStableId: string,
 	budget: MessengerTraversalBudget,
 ): boolean | undefined {
 	for (const sibling of parent.children) {
@@ -788,7 +806,7 @@ function hasForeignMessageSibling(
 			continue;
 		}
 
-		const containsMessage = subtreeContainsMessageElement(sibling, budget);
+		const containsMessage = subtreeContainsForeignMessageElement(sibling, canonicalStableId, budget);
 		if (containsMessage === true || budget.exhausted) {
 			return containsMessage;
 		}
@@ -839,8 +857,16 @@ function messageEvidenceElements(element: Element, canonicalStableId?: string): 
 			return;
 		}
 
-		const hasForeignMessage = hasForeignMessageSibling(current, branch, budget);
-		if (hasForeignMessage === true || budget.exhausted) {
+		const hasForeignMessage = hasForeignMessageSibling(current, branch, canonicalStableId, budget);
+		if (budget.exhausted) {
+			return;
+		}
+
+		if (hasForeignMessage === true) {
+			if (elements.length === 1 && hasSemanticMessageEvidence(element)) {
+				break;
+			}
+
 			return;
 		}
 
