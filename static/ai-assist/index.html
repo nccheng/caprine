@@ -65,60 +65,64 @@
 				</details>
 			</section>
 			<section aria-labelledby="context-heading">
-				<h2 id="context-heading">Context review</h2>
-				<p>Review the exact Messenger excerpts when needed. Nothing is sent to OpenAI until you select Ask.</p>
-				<p id="context-source-disclosure" class="context-availability">No context source selected.</p>
-				<label for="context-window">Message window</label>
-				<select id="context-window" name="context-window">
-					<option value="10">10 messages</option>
-					<option value="20">20 messages</option>
-					<option value="50">50 messages</option>
-				</select>
-				<label for="web-search-mode">Web search</label>
-				<select id="web-search-mode" name="web-search-mode">
-					<option value="always">Always — require a search</option>
-					<option value="auto">Auto — let OpenAI decide</option>
-					<option value="off">Off — never search</option>
-				</select>
-				<p id="web-search-disclosure">Your exact question and selected Messenger excerpts may be used to formulate web searches when Always or Auto is selected.</p>
-				<p id="context-availability" class="context-availability">No context captured.</p>
-				<p id="new-messages" class="new-messages" role="status" hidden>New messages available. This frozen review has not changed.</p>
-				<button id="refresh-context-button" class="secondary" type="button">Refresh context</button>
-				<details id="context-message-details">
-					<summary id="context-message-summary">Context messages (0)</summary>
-					<div id="context-items" class="context-items" aria-label="Reviewed Messenger context" aria-live="polite"></div>
-				</details>
-				<div class="reviewed-images-heading">
-					<h3>Reviewed images</h3>
-					<p id="image-selection-summary">No processed images in this review.</p>
-				</div>
-				<p id="image-selection-notice" class="request-message error" role="status"></p>
-				<div id="reviewed-images" class="reviewed-images" aria-label="Reviewed images" aria-live="polite"></div>
-				<div class="reviewed-images-heading">
-					<h3>Reviewed voice transcripts</h3>
-					<p>Prepare a selected voice message locally, then explicitly consent before transcription.</p>
-				</div>
-				<div id="reviewed-transcripts" class="reviewed-transcripts" aria-label="Reviewed transcripts" aria-live="polite"></div>
-				<article id="message-anchor" class="message-anchor" aria-labelledby="message-anchor-heading" hidden>
-					<h3 id="message-anchor-heading">Ask AI anchor</h3>
-					<p id="message-anchor-position"></p>
-					<p id="message-anchor-sender"></p>
-					<pre id="message-anchor-content" tabindex="0"></pre>
-				</article>
-				<button id="refresh-conversation-button" class="secondary" type="button">Refresh conversation</button>
-				<p id="media-candidates" class="media-summary">No loaded voice or video messages detected.</p>
-				<form id="media-form">
-					<label for="media-message-id">Logical message ID</label>
-					<div class="field-row media-fields">
-						<input id="media-message-id" name="media-message-id" maxlength="200" pattern="[A-Za-z0-9_.:-]+" required>
-						<select id="media-kind" name="media-kind" aria-label="Media kind">
-							<option value="audio">Voice</option>
-							<option value="video">Video</option>
+				<details id="context-review-details" class="optional-section">
+					<summary><h2 id="context-heading">Context review</h2></summary>
+					<div class="optional-section-content">
+						<p>Review the exact Messenger excerpts when needed. Nothing is sent to OpenAI until you select Ask.</p>
+						<p id="context-source-disclosure" class="context-availability">No context source selected.</p>
+						<label for="context-window">Message window</label>
+						<select id="context-window" name="context-window">
+							<option value="10">10 messages</option>
+							<option value="20">20 messages</option>
+							<option value="50">50 messages</option>
 						</select>
-						<button id="resolve-media-button" type="submit">Resolve bytes</button>
+						<label for="web-search-mode">Web search</label>
+						<select id="web-search-mode" name="web-search-mode">
+							<option value="always">Always — require a search</option>
+							<option value="auto">Auto — let OpenAI decide</option>
+							<option value="off">Off — never search</option>
+						</select>
+						<p id="web-search-disclosure">Your exact question and selected Messenger excerpts may be used to formulate web searches when Always or Auto is selected.</p>
+						<p id="context-availability" class="context-availability">No context captured.</p>
+						<p id="new-messages" class="new-messages" role="status" hidden>New messages available. This frozen review has not changed.</p>
+						<button id="refresh-context-button" class="secondary" type="button">Refresh context</button>
+						<details id="context-message-details">
+							<summary id="context-message-summary">Context messages (0)</summary>
+							<div id="context-items" class="context-items" aria-label="Reviewed Messenger context" aria-live="polite"></div>
+						</details>
+						<div class="reviewed-images-heading">
+							<h3>Reviewed images</h3>
+							<p id="image-selection-summary">No processed images in this review.</p>
+						</div>
+						<p id="image-selection-notice" class="request-message error" role="status"></p>
+						<div id="reviewed-images" class="reviewed-images" aria-label="Reviewed images" aria-live="polite"></div>
+						<div class="reviewed-images-heading">
+							<h3>Reviewed voice transcripts</h3>
+							<p>Prepare a selected voice message locally, then explicitly consent before transcription.</p>
+						</div>
+						<div id="reviewed-transcripts" class="reviewed-transcripts" aria-label="Reviewed transcripts" aria-live="polite"></div>
+						<article id="message-anchor" class="message-anchor" aria-labelledby="message-anchor-heading" hidden>
+							<h3 id="message-anchor-heading">Ask AI anchor</h3>
+							<p id="message-anchor-position"></p>
+							<p id="message-anchor-sender"></p>
+							<pre id="message-anchor-content" tabindex="0"></pre>
+						</article>
+						<button id="refresh-conversation-button" class="secondary" type="button">Refresh conversation</button>
+						<p id="media-candidates" class="media-summary">No loaded voice or video messages detected.</p>
+						<form id="media-form">
+							<label for="media-message-id">Logical message ID</label>
+							<div class="field-row media-fields">
+								<input id="media-message-id" name="media-message-id" maxlength="200" pattern="[A-Za-z0-9_.:-]+" required>
+								<select id="media-kind" name="media-kind" aria-label="Media kind">
+									<option value="audio">Voice</option>
+									<option value="video">Video</option>
+								</select>
+								<button id="resolve-media-button" type="submit">Resolve bytes</button>
+							</div>
+						</form>
+						<p id="media-status" class="request-message" role="status">Media bytes have not been requested.</p>
 					</div>
-				</form>
-				<p id="media-status" class="request-message" role="status">Media bytes have not been requested.</p>
+				</details>
 			</section>
 			<section aria-labelledby="progress-heading">
 				<h2 id="progress-heading">Private prompt</h2>
