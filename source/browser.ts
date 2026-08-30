@@ -34,6 +34,7 @@ import {
 import {
 	executeDraftInsertion,
 	InsertedDraftProvenanceState,
+	messengerComposerText,
 } from './draft-insertion';
 import {maximumMediaBytes, MediaKind} from './media-contract';
 import {
@@ -111,7 +112,8 @@ const selectedThreadSelectors = [
 const messengerComposerSelector = '[role="main"] [role="textbox"][contenteditable="true"]';
 
 function composerText(composer: HTMLElement): string {
-	return composer.innerText; // eslint-disable-line unicorn/prefer-dom-node-text-content
+	const {innerText} = composer; // eslint-disable-line unicorn/prefer-dom-node-text-content
+	return messengerComposerText(innerText, composer.textContent ?? '');
 }
 
 function currentConversationId(): string | undefined {

@@ -9,6 +9,7 @@ const {
 	ConversationBoundAnswer,
 	ConversationLifecycle,
 	ConversationReportGate,
+	isCurrentConversationRequestSnapshot,
 } = require('../dist-js/ai-assist-state.js');
 const {maximumHistoryTranscriptDtoCharacters} = require('../dist-js/ai-history-workspace.js');
 const {
@@ -772,6 +773,55 @@ test('conversation snapshots never revive after rapid thread switches', () => {
 	assert.equal(binding.panelState.status, 'unavailable');
 });
 
+test('panel refocus preserves request state only for the exact current snapshot', () => {
+	const binding = new AiConversationBinding();
+	binding.reportAvailable('messenger-thread:111', 'Alex');
+	const snapshot = binding.bind('ai-session-1', 7);
+
+	assert.equal(binding.reportAvailable('messenger-thread:111', 'Alex updated'), false);
+	assert.equal(isCurrentConversationRequestSnapshot(
+		snapshot,
+		binding.currentSnapshot,
+		7,
+		'ai-session-1',
+	), true);
+	for (const changedSnapshot of [
+		undefined,
+		{...snapshot, captureGeneration: snapshot.captureGeneration + 1},
+		{...snapshot, conversationId: 'messenger-thread:222'},
+		{...snapshot, messengerWebContentsId: 8},
+		{...snapshot, sessionId: 'ai-session-2'},
+	]) {
+		assert.equal(isCurrentConversationRequestSnapshot(
+			snapshot,
+			changedSnapshot,
+			7,
+			'ai-session-1',
+		), false);
+	}
+
+	assert.equal(isCurrentConversationRequestSnapshot(
+		snapshot,
+		binding.currentSnapshot,
+		8,
+		'ai-session-1',
+	), false);
+	assert.equal(isCurrentConversationRequestSnapshot(
+		snapshot,
+		binding.currentSnapshot,
+		7,
+		'ai-session-2',
+	), false);
+
+	binding.reportAvailable('messenger-thread:222', 'Sam');
+	assert.equal(isCurrentConversationRequestSnapshot(
+		snapshot,
+		binding.currentSnapshot,
+		7,
+		'ai-session-1',
+	), false);
+});
+
 test('stale conversation reports cannot cross reload or panel lifecycle boundaries', () => {
 	const lifecycle = new ConversationLifecycle();
 	const reportStartedBeforeReload = lifecycle.snapshot;
@@ -1524,13 +1574,33 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('ask-button').disabled, true);
 	assert.equal(element('insert-answer-button').disabled, false);
-	commandState.current = completedState;
+	const retryState = {
+		...completedState,
+		request: {
+			...completedState.request,
+			insertion: {
+				...completedState.request.insertion,
+				authorizationToken: 'draft-insertion-token:00000000-0000-4000-8000-000000000002',
+			},
+			notice: 'Messenger already contains draft text. It was preserved. Clear it, then try again.',
+		},
+	};
+	commandState.current = retryState;
 	await element('insert-answer-button').listeners.get('click')();
-	assert.deepEqual(insertCommands, [[
-		3,
-		'draft-insertion-token:00000000-0000-4000-8000-000000000001',
-		'messenger-thread:alpha',
-	]]);
+	assert.equal(element('insert-answer-button').disabled, false);
+	await element('insert-answer-button').listeners.get('click')();
+	assert.deepEqual(insertCommands, [
+		[
+			3,
+			'draft-insertion-token:00000000-0000-4000-8000-000000000001',
+			'messenger-thread:alpha',
+		],
+		[
+			3,
+			'draft-insertion-token:00000000-0000-4000-8000-000000000002',
+			'messenger-thread:alpha',
+		],
+	]);
 	renderState({
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},

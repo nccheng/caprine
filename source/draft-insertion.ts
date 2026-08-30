@@ -47,6 +47,28 @@ export type DraftInsertionResult =
 	| {status: 'inserted'}
 	| {reason: DraftInsertionFailureReason; status: 'blocked'};
 
+export function messengerComposerText(
+	innerText: string,
+	textContent: string,
+): string {
+	// Messenger renders an untouched empty composer as a single visual line break.
+	// Preserve every other value so user-authored whitespace is never overwritten.
+	return innerText === '\n' && textContent === ''
+		? ''
+		: innerText;
+}
+
+export function isRetryableDraftInsertionFailure(reason: DraftInsertionFailureReason): boolean {
+	return [
+		'attachment-present',
+		'composer-ambiguous',
+		'composer-changed',
+		'composer-not-editable',
+		'draft-present',
+		'focus-failed',
+	].includes(reason);
+}
+
 export const draftInsertionTimeoutResult: DraftInsertionResult = {
 	reason: 'partial-insertion',
 	status: 'blocked',
@@ -104,6 +126,18 @@ export class DraftInsertionAuthorizationState {
 			snapshot: {...authorization.snapshot},
 		};
 		return this.read(authorization.snapshot)!;
+	}
+
+	reissueAfterSafeFailure(
+		previous: Readonly<DraftInsertionAuthorization>,
+		currentSnapshot: Readonly<ConversationSnapshot> | undefined,
+		authorizationToken: string,
+	): Readonly<DraftInsertionAuthorizationView> | undefined {
+		if (this.authorization !== undefined || !sameSnapshot(previous.snapshot, currentSnapshot)) {
+			return;
+		}
+
+		return this.issue({...previous, authorizationToken});
 	}
 
 	read(currentSnapshot: Readonly<ConversationSnapshot> | undefined): Readonly<DraftInsertionAuthorizationView> | undefined {
