@@ -1200,7 +1200,7 @@ function candidateFromElement(element: Element, domOrder: number): MessengerCont
 		text: supportedText
 			?? (sender.confident ? semanticMessage?.text : undefined)
 			?? (stableId && sender.confident && !linkPreview
-				? textFromMessageEvidence(evidence, fallbackExcludedText)
+				? textFromMessageEvidence([evidence[0]], fallbackExcludedText)
 				: undefined),
 		timestamp: timestampFromElement(element) ?? semanticMessage?.timestamp,
 		senderDisplayName: sender.senderDisplayName,

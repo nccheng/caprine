@@ -346,6 +346,21 @@ test('message evidence ignores non-message layout rows beside the current identi
 	assert.equal(item.text, 'Current private body');
 });
 
+test('message fallback never promotes sibling participant chrome from an ancestor row', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [
+			{attributes: {'data-message-id': 'empty-target'}},
+			{children: [{text: 'River'}]},
+		],
+	}]);
+
+	const inspection = inspectLoadedMessengerConversationContext(root);
+	assert.equal(inspection.reason, 'supported-content-missing');
+	assert.equal(inspection.items[0].text, undefined);
+	assert.equal(inspection.items[0].omittedReason, 'no-supported-content');
+});
+
 test('semantic identity branches stay independent inside a shared layout row', () => {
 	const root = messengerFixtureRoot([{
 		attributes: {role: 'row'},
