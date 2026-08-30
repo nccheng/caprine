@@ -1725,6 +1725,33 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	prompt.listeners.get('input')();
 	renderState(state('ready', 4));
 	assert.equal(prompt.value, '');
+	const quickRun = {
+		id: 'synthetic-run', createdAt: 1000, appVersion: 'test', model: 'test', browsingMode: 'off', contextCount: 10,
+		question: '<script>untrusted question</script>', prompt: 'Frozen synthetic input', answer: 'Saved synthetic answer',
+		outcome: 'send-uncertain', contextJson: '{}',
+		events: [{
+			at: 1100, stage: 'answer-send', status: 'unknown', code: 'send-result-unknown',
+		}],
+	};
+	const quickState = {
+		...state('ready', 5), quickMode: true,
+		history: {
+			status: 'ready', query: '', selectedChatId: 'quick-chat',
+			chats: [{
+				id: 'quick-chat', title: 'Quick run', preview: '', badges: [], contextCount: 0, lastActivityAt: 1100, interactionCount: 0, interactions: [], quickRuns: [quickRun],
+			}],
+		},
+	};
+	renderState(quickState);
+	assert.equal(element('quick-mode').checked, true);
+	assert.equal([...elements.values()].some(node => node.textContent === quickRun.question), true);
+	assert.equal([...elements.values()].some(node => node.textContent === 'Open for manual review (no resend)'), true);
+	assert.equal([...elements.values()].some(node => node.textContent === '+100 ms · answer-send: unknown (send-result-unknown)'), true);
+	assert.equal([...elements.values()].some(node => node.textContent === 'No completed model interaction. Inspect the quick-run stages above.'), true);
+	quickRun.outcome = 'running';
+	renderState(quickState);
+	assert.equal(element('ask-button').disabled, true);
+	assert.equal(element('cancel-button').disabled, false);
 });
 
 test('panel discloses web-search inputs and defaults the selector to Always', () => {

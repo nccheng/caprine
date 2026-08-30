@@ -59,6 +59,8 @@ export type AiQuickRun = {
 
 export const maximumQuickRunsPerChat = 25;
 export const maximumQuickRunEvents = 24;
+// A rejected provider input still needs a valid local diagnostic record.
+export const maximumQuickRunInputCharacters = 2_000_000;
 
 export function advanceQuickRun(
 	run: Readonly<AiQuickRun>,
@@ -105,8 +107,9 @@ export function isAiQuickRun(value: unknown): value is AiQuickRun {
 	return Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key))
 		&& ['id', 'chatId', 'conversationId', 'appVersion', 'model'].every(key => text(key, 512) && (value[key] as string).length > 0)
 		&& ['questionMessageId', 'answerMessageId', 'interactionId'].every(key => value[key] === undefined || (text(key, 512) && (value[key] as string).length > 0))
-		&& ['question', 'prompt', 'answer'].every(key => text(key, 20_000))
-		&& (value.contextJson === undefined || text('contextJson', 2_000_000))
+		&& ['question', 'answer'].every(key => text(key, 20_000))
+		&& text('prompt', maximumQuickRunInputCharacters)
+		&& (value.contextJson === undefined || text('contextJson', maximumQuickRunInputCharacters))
 		&& Number.isSafeInteger(value.createdAt) && (value.createdAt as number) >= 0
 		&& Number.isSafeInteger(value.updatedAt) && (value.updatedAt as number) >= (value.createdAt as number)
 		&& [10, 20, 50].includes(value.contextCount as number)

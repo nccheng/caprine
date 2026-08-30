@@ -12,6 +12,12 @@ are retained alongside completed runs. Clipboard diagnostics exclude private
 content, account/message identities and credentials. Existing local history
 deletion removes these records. Run detail is bounded to the most recent 25 per
 AI chat; events are bounded per run.
+Rejected model input and saved context each have a two-million-character local
+diagnostic ceiling. The provider limit stays at 20,000 characters. Inputs beyond
+the diagnostic ceiling retain the question and terminal failure, without the
+oversized context. Opening the inspection panel preserves an active quick run;
+explicit Cancel, closing the panel, disabling AI or losing its conversation
+authority still stops it.
 
 An observed outgoing Messenger row proves UI observation, not recipient delivery.
 Sending is attempted at most once per question/answer. A timeout, crash or loss
@@ -31,3 +37,19 @@ posting must use an owner-designated safe conversation and synthetic content.
 
 Tracking publication is pending explicit authorization: the Linear issue-create
 attempt was rejected by the external-write review. No issue was created.
+
+Local validation: 339 automated tests, build/type checks, XO/stylelint and
+`git diff --check` passed. The native Traditional Chinese Reply/quote structure
+was inspected without sending a message. New-panel visual inspection was
+blocked by the browser's unavailable admin-policy verification; no alternative
+access was attempted. Installed-build and real question/model/quoted-answer
+acceptance remain manual-only and are not proven by these tests.
+
+Discovery reviewed `c40f0d5` and produced this bounded Closure Set:
+
+- C1: rejected oversized input must persist a terminal failure plus bounded
+  frozen context, without leaving the panel busy. Covered with the real
+  controller and SQLite store, asserting zero provider calls and sends.
+- C2: opening the inspection panel must preserve the active quick run. Covered
+  through the real open/refresh/request path; explicit Cancel still aborts and
+  rejects the deliberately late provider response.

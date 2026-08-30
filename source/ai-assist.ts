@@ -14,7 +14,7 @@ import {
 } from 'electron';
 import config from './config';
 import {
-	advanceQuickRun, AiQuickRun, formatQuickRunDiagnostics, QuickRunErrorCode, QuickRunEvent, QuickRunOutcome,
+	advanceQuickRun, AiQuickRun, formatQuickRunDiagnostics, maximumQuickRunInputCharacters, QuickRunErrorCode, QuickRunEvent, QuickRunOutcome,
 } from './ai-quick-run';
 import {isQuickMessengerAction, QuickMessengerAction, QuickMessengerResult} from './ai-quick-messenger';
 import {
@@ -596,9 +596,9 @@ class AiAssistController {
 			return;
 		}
 
-		const refocusSnapshot = this.panelWindow && !this.panelWindow.isDestroyed()
-			? this.conversationBinding.currentSnapshot
-			: undefined;
+		const refocusSnapshot = this.quickRun?.run.outcome === 'running'
+			? this.quickRun.snapshot
+			: (this.panelWindow && !this.panelWindow.isDestroyed() ? this.conversationBinding.currentSnapshot : undefined);
 		this.panelFocusReturnSnapshot = undefined;
 		this.showPanelWindow();
 		void this.refreshConversation(refocusSnapshot);
@@ -3597,12 +3597,18 @@ class AiAssistController {
 			}
 
 			const frozenReview = this.review.snapshot;
-			this.quickRun.run.contextJson = JSON.stringify({
+			const contextJson = JSON.stringify({
 				actualCount: frozenReview.actualCount, contextVersion: frozenReview.contextVersion,
 				items: frozenReview.items, question: frozenReview.question, requestedCount: frozenReview.requestedCount,
 			});
-			this.quickRun.run.prompt = buildReviewedPrompt(frozenReview);
-			if (this.quickRun.run.prompt.length > openAiPromptCharacterLimit) {
+			const prompt = buildReviewedPrompt(frozenReview);
+			if (prompt.length > maximumQuickRunInputCharacters || contextJson.length > maximumQuickRunInputCharacters) {
+				throw new QuickRunFailure('input-too-large');
+			}
+
+			this.quickRun.run.contextJson = contextJson;
+			this.quickRun.run.prompt = prompt;
+			if (prompt.length > openAiPromptCharacterLimit) {
 				throw new QuickRunFailure('input-too-large');
 			}
 

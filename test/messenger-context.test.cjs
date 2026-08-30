@@ -87,6 +87,20 @@ test('context inspection reports bounded adapter stages without message content'
 	});
 });
 
+test('Traditional Chinese semantic labels retain outgoing authority and bounded message content', () => {
+	const fixture = loadMessengerContextFixture('current-semantic-structure.json');
+	global.window = {location: {href: fixture.baseUrl}};
+	const row = fixture.root.querySelector('[data-message-id="semantic-outgoing"]');
+	row.setAttribute('aria-label', '上午10:15，你：合成問題');
+	row.setAttribute('aria-roledescription', '訊息');
+	const item = extractLoadedMessengerConversationContext(fixture.root)[0];
+	assert.equal(item.text, '合成問題');
+	assert.equal(item.sender.role, 'outgoing');
+	assert.equal(item.messageId, 'semantic-outgoing');
+	row.setAttribute('aria-label', '上午10:15，合成收件者：合成訊息');
+	assert.equal(extractLoadedMessengerConversationContext(fixture.root)[0].sender.role, 'incoming');
+});
+
 for (const filename of ['supported-messages.json', 'current-loaded-conversation.json', 'current-semantic-structure.json', 'stable-leaf-text.json']) {
 	test(`sanitized newest-tail fixture ${filename} reaches the exact bounded fingerprint item`, () => {
 		const fixture = loadMessengerContextFixture(filename);

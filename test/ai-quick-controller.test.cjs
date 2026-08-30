@@ -5,13 +5,16 @@ const vm = require('node:vm');
 const {createRequire} = require('node:module');
 const test = require('node:test');
 const {restoreContextReviewSnapshot, buildReviewedPrompt} = require('../dist-js/context-review.js');
+const {AiHistoryStore} = require('../dist-js/ai-history-store.js');
 
 // Exercise the real controller methods without constructing windows, opening a
 // real database, loading Electron, reading a key, or contacting a provider.
 function loadController() {
 	const modulePath = path.resolve('dist-js/ai-assist.js');
 	const localRequire = createRequire(modulePath);
-	const settings = {aiAssistEnabled: true, aiAssistQuickMode: true, aiAssistWebSearchMode: 'off'};
+	const settings = {
+		aiAssistEnabled: true, aiAssistQuickMode: true, aiAssistWebSearchMode: 'off', aiAssistContextWindowSize: 10,
+	};
 	const mocks = {
 		electron: {app: {getVersion: () => 'test'}},
 		'./config': {
@@ -191,4 +194,74 @@ test('quick invocation can bind a conversation without opening the manual panel'
 	assert.equal(opened, 1);
 	assert.equal(bound, 1);
 	assert.equal(f.controller.panelWindow, undefined);
+});
+
+test('oversized provider input remains a terminal inspectable failure with frozen context', async () => {
+	const f = fixture();
+	const store = new AiHistoryStore({databasePath: ':memory:'});
+	const question = 'Summarize the discussion';
+	const frozen = restoreContextReviewSnapshot({
+		actualCount: 1, contextVersion: 'fixture', images: [], newMessagesAvailable: false, question,
+		requestedCount: 10, snapshot: f.snapshot, transcripts: [],
+		items: [{
+			id: 'context-1', item: {
+				confidence: 'high', messageId: 'message-1', sender: {role: 'incoming'}, text: 'x'.repeat(19_990),
+			},
+		}],
+	});
+	const prompt = buildReviewedPrompt(frozen);
+	assert.ok(prompt.length > 20_000);
+	f.controller.quickRun = undefined;
+	f.controller.historyStore = store;
+	f.controller.requestContextReview = async () => {
+		f.controller.review = {snapshot: frozen};
+	};
+
+	f.controller.showPanelWindow = () => {};
+	let sends = 0;
+	f.controller.quickMessengerAction = async () => {
+		sends++;
+	};
+
+	try {
+		await f.controller.startQuickRun(question, f.snapshot);
+		const chat = store.loadConversationSummaries(f.snapshot.conversationId)[0];
+		const saved = store.loadQuickRuns(f.snapshot.conversationId, chat.id)[0];
+		assert.equal(saved.outcome, 'failed');
+		assert.equal(saved.events.at(-1).code, 'input-too-large');
+		assert.equal(saved.prompt, prompt);
+		assert.equal(JSON.parse(saved.contextJson).items[0].item.text.length, 19_990);
+		assert.equal(f.counts.provider, 0);
+		assert.equal(sends, 0);
+		assert.equal(f.controller.quickRun, undefined);
+	} finally {
+		store.close();
+	}
+});
+
+test('opening the inspection panel preserves the active quick run; explicit cancellation still aborts', async () => {
+	const f = fixture();
+	const pending = f.controller.runOpenAiRequest('fixture prompt', options);
+	f.report.resolve(1);
+	await new Promise(resolve => {
+		setImmediate(resolve);
+	});
+	f.controller.clearMediaState = () => {};
+	f.controller.clearConversationBoundRequestState = () => f.controller.cancelActiveRequest();
+	f.controller.showPanelWindow = () => {
+		f.controller.panelWindow = {isDestroyed: () => false};
+	};
+
+	f.controller.open();
+	await new Promise(resolve => {
+		setImmediate(resolve);
+	});
+	assert.equal(f.controller.quickRun.run.outcome, 'running');
+	assert.equal(f.counts.signal.aborted, false);
+	f.controller.cancelQuickRun('cancelled');
+	assert.equal(f.controller.quickRun.run.outcome, 'cancelled');
+	assert.equal(f.counts.signal.aborted, true);
+	f.response.resolve(answer);
+	await pending;
+	assert.equal(f.counts.persisted, 0);
 });
