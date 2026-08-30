@@ -1200,6 +1200,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		},
 	});
 	assert.equal(context.document.activeElement, element('ask-button'));
+	assert.equal(element('context-message-summary').textContent, 'Context messages (0) · Show review details');
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('context-window').disabled, true);
 	assert.equal(element('web-search-mode').disabled, true);
@@ -1282,6 +1283,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		...state('ready', 3),
 		review: {
 			actualCount: 1,
+			editable: true,
 			imageSelection: {aggregateBytes: 0, selectedCount: 0},
 			images: [{
 				byteLength: 4,
@@ -1326,6 +1328,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		...state('ready', 3, {notice: 'Unrelated state update'}),
 		review: {
 			actualCount: 1,
+			editable: true,
 			imageSelection: {aggregateBytes: 4, selectedCount: 1},
 			images: [{
 				byteLength: 4,
@@ -1394,6 +1397,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		review: {...unrelatedReviewState.review, locked: true},
 	});
 	assert.equal(element('context-message-details').open, true);
+	assert.equal(element('context-message-summary').textContent, 'Context messages (1) · Show review details');
 	assert.equal(removeButton.disabled, true);
 	assert.equal(saveButton.disabled, true);
 	assert.equal(editor.disabled, true);

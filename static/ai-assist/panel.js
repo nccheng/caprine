@@ -93,6 +93,11 @@ function focusFirstAvailable(...elements) {
 			&& !element.hidden
 			&& (typeof document.contains !== 'function' || document.contains(element))
 		) {
+			const containingDetails = element.closest?.('details');
+			if (containingDetails) {
+				containingDetails.open = true;
+			}
+
 			element.focus?.();
 			return true;
 		}
@@ -715,7 +720,9 @@ function renderContextReview(review, isRequesting, credentialsConfigured) {
 		? `${sendableCount} selected in the locked Ask snapshot. Use Refresh context to make changes.`
 		: `${sendableCount} will be sent to OpenAI.`;
 	contextAvailability.textContent = `${review.actualCount} of ${review.requestedCount} messages available; ${review.items.length} selected; ${sendableSummary}`;
-	contextMessageSummary.textContent = `Context messages (${review.items.length}) · Show to review or redact`;
+	contextMessageSummary.textContent = locked
+		? `Context messages (${review.items.length}) · Show review details`
+		: `Context messages (${review.items.length}) · Show to review or redact`;
 	if (renderedContextReviewSequence !== review.sequence) {
 		contextMessageDetails.open = false;
 		renderedContextReviewSequence = review.sequence;
