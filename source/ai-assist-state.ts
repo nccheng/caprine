@@ -81,6 +81,17 @@ function isSameConversationSnapshot(
 		&& left.sessionId === right.sessionId;
 }
 
+export function isCurrentConversationRequestSnapshot(
+	requestSnapshot: Readonly<ConversationSnapshot> | undefined,
+	currentSnapshot: Readonly<ConversationSnapshot> | undefined,
+	messengerWebContentsId: number,
+	currentSessionId: string | undefined,
+): boolean {
+	return isSameConversationSnapshot(requestSnapshot, currentSnapshot)
+		&& requestSnapshot!.messengerWebContentsId === messengerWebContentsId
+		&& requestSnapshot!.sessionId === currentSessionId;
+}
+
 export class ConversationBoundAnswer<Answer = string> {
 	private stored?: {
 		answer: Answer;

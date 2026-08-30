@@ -5,6 +5,8 @@ const {
 	DraftInsertionAuthorizationState,
 	executeDraftInsertion,
 	InsertedDraftProvenanceState,
+	isRetryableDraftInsertionFailure,
+	messengerComposerText,
 } = require('../dist-js/draft-insertion.js');
 
 test('draft insertion timeout is conservatively reported as possible partial insertion', () => {
@@ -12,6 +14,34 @@ test('draft insertion timeout is conservatively reported as possible partial ins
 		reason: 'partial-insertion',
 		status: 'blocked',
 	});
+});
+
+test('Messenger untouched empty-composer sentinel is empty without discarding authored whitespace', () => {
+	assert.equal(messengerComposerText('\n', ''), '');
+	assert.equal(messengerComposerText('', ''), '');
+	assert.equal(messengerComposerText(' ', ' '), ' ');
+	assert.equal(messengerComposerText('\u00A0', '\u00A0'), '\u00A0');
+	assert.equal(messengerComposerText('\u200B', '\u200B'), '\u200B');
+	assert.equal(messengerComposerText('\n', '\n'), '\n');
+	assert.equal(messengerComposerText('\n\n', ''), '\n\n');
+	assert.equal(messengerComposerText('Line one\nLine two', 'Line oneLine two'), 'Line one\nLine two');
+});
+
+test('only pre-mutation draft insertion failures are retryable', () => {
+	for (const reason of [
+		'attachment-present',
+		'composer-ambiguous',
+		'composer-changed',
+		'composer-not-editable',
+		'draft-present',
+		'focus-failed',
+	]) {
+		assert.equal(isRetryableDraftInsertionFailure(reason), true, reason);
+	}
+
+	for (const reason of ['conversation-changed', 'partial-insertion', 'stale-authorization']) {
+		assert.equal(isRetryableDraftInsertionFailure(reason), false, reason);
+	}
 });
 
 const snapshot = (overrides = {}) => ({
@@ -112,6 +142,34 @@ test('stale snapshot invalidates a draft insertion authorization', () => {
 	state.issue(issued);
 	assert.equal(state.consume(issued, snapshot({conversationId: 'messenger-thread:beta'})), undefined);
 	assert.equal(state.read(snapshot()), undefined);
+});
+
+test('safe insertion failure gets a fresh one-shot token without replacing newer authority', () => {
+	const state = new DraftInsertionAuthorizationState();
+	const first = authorization();
+	state.issue(first);
+	const attempt = state.consume(first, snapshot());
+	assert.ok(attempt);
+	const nextToken = 'draft-insertion-token:00000000-0000-4000-8000-000000000002';
+	assert.deepEqual(state.reissueAfterSafeFailure(attempt, snapshot(), nextToken), {
+		answerGeneration: first.answerGeneration,
+		authorizationToken: nextToken,
+		conversationId: first.conversationId,
+	});
+	assert.equal(state.consume(first, snapshot()), undefined);
+	assert.equal(state.read(snapshot()).authorizationToken, nextToken);
+	assert.equal(state.consume({...first, authorizationToken: nextToken}, snapshot()).authorizationToken, nextToken);
+	assert.equal(state.consume({...first, authorizationToken: nextToken}, snapshot()), undefined);
+
+	const newer = authorization({answerGeneration: 5, authorizationToken: 'draft-insertion-token:newer'});
+	state.issue(newer);
+	assert.equal(state.reissueAfterSafeFailure(first, snapshot(), 'draft-insertion-token:old-retry'), undefined);
+	assert.deepEqual(state.read(snapshot()), {
+		answerGeneration: newer.answerGeneration,
+		authorizationToken: newer.authorizationToken,
+		conversationId: newer.conversationId,
+	});
+	assert.equal(state.reissueAfterSafeFailure(first, snapshot({captureGeneration: 4}), nextToken), undefined);
 });
 
 test('inserted draft provenance bypasses one exact send and invalidates on edits or mismatch', () => {

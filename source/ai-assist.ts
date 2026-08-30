@@ -39,6 +39,7 @@ import {
 	ConversationReportGate,
 	ConversationSnapshot,
 	captureMessageAnchorSnapshot,
+	isCurrentConversationRequestSnapshot,
 	MessageAnchorSnapshot,
 } from './ai-assist-state';
 import {isExpectedAiInboundSender} from './ai-renderer-trust';
@@ -113,6 +114,7 @@ import {
 	DraftInsertionAuthorizationState,
 	DraftInsertionFailureReason,
 	DraftInsertionResult,
+	isRetryableDraftInsertionFailure,
 } from './draft-insertion';
 import {
 	inspectAudioDuration,
@@ -563,9 +565,12 @@ class AiAssistController {
 			return;
 		}
 
+		const refocusSnapshot = this.panelWindow && !this.panelWindow.isDestroyed()
+			? this.conversationBinding.currentSnapshot
+			: undefined;
 		this.panelFocusReturnSnapshot = undefined;
 		this.showPanelWindow();
-		void this.refreshConversation();
+		void this.refreshConversation(refocusSnapshot);
 		this.broadcastState();
 	}
 
@@ -1601,8 +1606,13 @@ class AiAssistController {
 		}
 	}
 
-	private async refreshConversation(): Promise<void> {
-		this.clearMediaState();
+	private async refreshConversation(
+		refocusSnapshot?: Readonly<ConversationSnapshot>,
+	): Promise<void> {
+		if (!refocusSnapshot) {
+			this.clearMediaState();
+		}
+
 		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
 		const reportedGeneration = await this.requestConversationState();
 		if (reportedGeneration === undefined) {
@@ -1622,6 +1632,12 @@ class AiAssistController {
 			return;
 		}
 
+		if (refocusSnapshot && this.isRequestSnapshotCurrent(refocusSnapshot)) {
+			this.broadcastState();
+			return;
+		}
+
+		this.clearMediaState();
 		this.clearConversationBoundRequestState();
 		this.sessionState.open();
 		this.bindCurrentConversation();
@@ -2272,6 +2288,14 @@ class AiAssistController {
 			return;
 		}
 
+		if (result.status === 'blocked' && isRetryableDraftInsertionFailure(result.reason)) {
+			this.draftInsertionAuthorization.reissueAfterSafeFailure(
+				authorization,
+				this.conversationBinding.currentSnapshot,
+				`draft-insertion-token:${randomUUID()}`,
+			);
+		}
+
 		this.notice = result.status === 'inserted'
 			? 'Answer inserted into the Messenger draft. Review it there and press Send yourself.'
 			: this.draftInsertionFailureMessage(result.reason);
@@ -2338,7 +2362,7 @@ class AiAssistController {
 			}
 
 			case 'draft-present': {
-				return 'Messenger already contains draft text. It was preserved and nothing was inserted.';
+				return 'Messenger already contains draft text. It was preserved. Clear it, then try again.';
 			}
 
 			case 'partial-insertion': {
@@ -3193,9 +3217,12 @@ class AiAssistController {
 	}
 
 	private isRequestSnapshotCurrent(snapshot: Readonly<ConversationSnapshot>): boolean {
-		return this.conversationBinding.isCurrent(snapshot)
-			&& snapshot.messengerWebContentsId === this.messengerWindow.webContents.id
-			&& snapshot.sessionId === this.sessionState.snapshot.sessionId;
+		return isCurrentConversationRequestSnapshot(
+			snapshot,
+			this.conversationBinding.currentSnapshot,
+			this.messengerWindow.webContents.id,
+			this.sessionState.snapshot.sessionId,
+		);
 	}
 
 	private clearConversationBoundRequestState(): void {
