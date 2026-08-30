@@ -39,6 +39,9 @@ test('local panel uses native keyboard controls and non-duplicating answer citat
 
 	assert.match(html, /<a class="skip-link" href="#main-content">/);
 	assert.match(html, /<main id="main-content" tabindex="-1">/);
+	assert.match(html, /<details id="settings-details" class="optional-section">\s*<summary><h2 id="settings-heading">Settings<\/h2><\/summary>/);
+	assert.match(html, /<details id="diagnostics-details" class="optional-section">\s*<summary><h2 id="diagnostics-heading">Diagnostics<\/h2><\/summary>/);
+	assert.match(html, /<details id="history-details" class="optional-section">\s*<summary><h2 id="history-heading">History<\/h2><\/summary>/);
 	assert.match(html, /<pre id="answer-output" role="document" aria-label="Private AI answer" tabindex="0">/);
 	assert.match(html, /<details id="answer-sources" class="answer-sources" hidden>\s*<summary id="answer-sources-heading">Cited sources<\/summary>/);
 	assert.equal(html.includes('role="button"'), false);
