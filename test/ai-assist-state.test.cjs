@@ -1055,6 +1055,8 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	const prompt = element('prompt');
 	assert.equal(element('context-window').value, '20');
 	assert.equal(element('web-search-mode').value, 'always');
+	assert.equal(element('context-message-details').open, false);
+	assert.equal(element('context-message-summary').textContent, 'Context messages (0)');
 	const confirmationState = {
 		...state('ready', 1),
 		history: {
@@ -1198,6 +1200,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		},
 	});
 	assert.equal(context.document.activeElement, element('ask-button'));
+	assert.equal(element('context-message-summary').textContent, 'Context messages (0) · Show review details');
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('context-window').disabled, true);
 	assert.equal(element('web-search-mode').disabled, true);
@@ -1280,6 +1283,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		...state('ready', 3),
 		review: {
 			actualCount: 1,
+			editable: true,
 			imageSelection: {aggregateBytes: 0, selectedCount: 0},
 			images: [{
 				byteLength: 4,
@@ -1310,6 +1314,9 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 			sequence: 1,
 		},
 	});
+	assert.equal(element('context-message-details').open, false);
+	assert.equal(element('context-message-summary').textContent, 'Context messages (1) · Show to review or redact');
+	element('context-message-details').open = true;
 	assert.equal(element('ask-button').disabled, false);
 	const editor = [...elements.entries()].find(([id]) => id.startsWith('textarea-'))[1];
 	const elementCountAfterReview = createdElements;
@@ -1321,6 +1328,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		...state('ready', 3, {notice: 'Unrelated state update'}),
 		review: {
 			actualCount: 1,
+			editable: true,
 			imageSelection: {aggregateBytes: 4, selectedCount: 1},
 			images: [{
 				byteLength: 4,
@@ -1352,6 +1360,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		},
 	};
 	renderState(unrelatedReviewState);
+	assert.equal(element('context-message-details').open, true);
 	assert.equal(createdElements, elementCountAfterReview);
 	assert.equal(editor.value, 'Unsaved local redaction');
 	assert.equal(editor.selectionStart, 8);
@@ -1387,6 +1396,8 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		...unrelatedReviewState,
 		review: {...unrelatedReviewState.review, locked: true},
 	});
+	assert.equal(element('context-message-details').open, true);
+	assert.equal(element('context-message-summary').textContent, 'Context messages (1) · Show review details');
 	assert.equal(removeButton.disabled, true);
 	assert.equal(saveButton.disabled, true);
 	assert.equal(editor.disabled, true);
@@ -1434,6 +1445,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	};
 	commandState.current = transcriptReviewState;
 	renderState(transcriptReviewState);
+	assert.equal(element('context-message-details').open, false);
 	const transcribeButton = [...elements.values()].find(node => node.textContent === 'Transcribe and review');
 	assert.ok(transcribeButton);
 	assert.equal(transcribeButton.disabled, false);
