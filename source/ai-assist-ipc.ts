@@ -61,9 +61,12 @@ import {
 	validateMessengerImageCaptureRectangle,
 } from './messenger-image-capture';
 import {AiAssistDiagnostics, isAiAssistDiagnostics} from './ai-assist-diagnostics';
+import {isAiQuickRun, maximumQuickRunsPerChat, quickRunErrorCodes} from './ai-quick-run';
+import {isQuickMessengerAction, QuickMessengerAction, QuickMessengerResult} from './ai-quick-messenger';
 
 export const aiAssistIpcChannels = {
 	composerCommand: 'ai-assist:composer-command',
+	quickSendAuthorization: 'ai-assist:quick-send-authorization',
 	draftInsertionAuthorization: 'ai-assist:draft-insertion-authorization',
 	messageAnchor: 'ai-assist:message-anchor',
 	panelCommand: 'ai-assist:panel-command',
@@ -80,6 +83,7 @@ export type DraftInsertionAuthorizationCheck = {
 };
 
 export type AiAssistPanelState = {
+	quickMode?: boolean;
 	anchor?: MessageAnchorData & {sequence: number};
 	conversation: ConversationBindingState;
 	contextCapturePending: boolean;
@@ -155,6 +159,9 @@ export type AiMessageAnchorRequest = MessageAnchorData & {
 };
 
 export type AiAssistPanelCommand =
+	| {enabled: boolean; type: 'set-quick-mode'}
+	| {chatId: string; runId: string; type: 'copy-quick-diagnostics'}
+	| {chatId: string; runId: string; type: 'recover-quick-run'}
 	| {type: 'cancel'}
 	| {authorizationToken: string; type: 'cancel-history-deletion'}
 	| {type: 'close'}
@@ -188,6 +195,9 @@ export type AiAssistPanelCommand =
 	| {reviewSequence: number; transcriptId: string; type: 'transcribe-reviewed-media'};
 
 export type AiAssistMessengerCommand =
+	| {action: QuickMessengerAction; type: 'quick-action'}
+	| {runId: string; type: 'cancel-quick-action'}
+	| {enabled: boolean; type: 'set-quick-mode'}
 	| {requestId: string; type: 'cancel-context-capture'}
 	| {requestId: string; type: 'cancel-draft-insertion'}
 	| {
@@ -226,6 +236,7 @@ export type MessengerMediaResolution = MessengerMediaCandidate & {
 };
 
 export type AiAssistMessengerEvent =
+	| {type: 'quick-action'; runId: string; token: string; result: QuickMessengerResult}
 	| {
 		answerGeneration: number;
 		authorizationToken: string;
@@ -669,6 +680,14 @@ export function isAiAssistPanelCommand(value: unknown): value is AiAssistPanelCo
 			&& contextWindowSizes.includes(value.requestedCount as never);
 	}
 
+	if (value.type === 'set-quick-mode') {
+		return hasExactKeys(value, ['enabled', 'type']) && typeof value.enabled === 'boolean';
+	}
+
+	if (value.type === 'copy-quick-diagnostics' || value.type === 'recover-quick-run') {
+		return hasExactKeys(value, ['chatId', 'runId', 'type']) && isBoundedString(value.chatId, 512) && isBoundedString(value.runId, 512);
+	}
+
 	if (value.type === 'set-web-search-mode') {
 		return hasExactKeys(value, ['mode', 'type'])
 			&& webSearchModes.includes(value.mode as never);
@@ -820,6 +839,17 @@ function isReviewedContextItem(value: unknown): boolean {
 		&& isBoundedString(value.id, 200)
 		&& isContextItem(value.item)
 		&& (value.editedExcerpt === undefined || isBoundedString(value.editedExcerpt, 20_000));
+}
+
+export function isQuickSavedContext(value: unknown): value is {
+	actualCount: number; contextVersion: string; items: Array<import('./context-review').ReviewedContextItem>;
+	question: string; requestedCount: ContextWindowSize;
+} {
+	return isRecord(value) && hasExactKeys(value, ['actualCount', 'contextVersion', 'items', 'question', 'requestedCount'])
+		&& Number.isSafeInteger(value.actualCount) && (value.actualCount as number) >= 0 && (value.actualCount as number) <= 50
+		&& isBoundedString(value.contextVersion, 200) && isBoundedString(value.question, openAiPromptCharacterLimit)
+		&& contextWindowSizes.includes(value.requestedCount as never)
+		&& Array.isArray(value.items) && value.items.length <= (value.actualCount as number) && value.items.every(item => isReviewedContextItem(item));
 }
 
 function isReviewedImageItem(value: unknown): boolean {
@@ -1309,7 +1339,8 @@ function isHistoryState(value: unknown): boolean {
 		&& Array.isArray(value.chats)
 		&& value.chats.length <= maximumHistoryChats
 		&& value.chats.every(chat => isRecord(chat)
-			&& hasExactKeys(chat, ['badges', 'contextCount', 'createdAt', 'id', 'interactionCount', 'interactions', 'lastActivityAt', 'preview', 'title'])
+			&& hasExactKeys(chat, ['badges', 'contextCount', 'createdAt', 'id', 'interactionCount', 'interactions', 'lastActivityAt', 'preview', 'title', ...(chat.quickRuns === undefined ? [] : ['quickRuns'])])
+			&& (chat.quickRuns === undefined || (Array.isArray(chat.quickRuns) && chat.quickRuns.length <= maximumQuickRunsPerChat && chat.quickRuns.every(run => isAiQuickRun(run) && run.chatId === chat.id)))
 			&& Array.isArray(chat.badges)
 			&& chat.badges.length <= 4
 			&& chat.badges.every(badge => ['Audio', 'Image', 'Video', 'Web'].includes(badge as string))
@@ -1343,6 +1374,10 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 	}
 
 	const keys = ['contextCapturePending', 'contextWindowSize', 'conversation', 'credentials', 'diagnostics', 'enabled', 'history', 'media', 'request', 'session', 'webSearchMode'];
+	if (value.quickMode !== undefined) {
+		keys.push('quickMode');
+	}
+
 	if (value.anchor !== undefined) {
 		keys.push('anchor');
 	}
@@ -1360,6 +1395,7 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 	}
 
 	return hasExactKeys(value, keys)
+		&& (value.quickMode === undefined || typeof value.quickMode === 'boolean')
 		&& typeof value.contextCapturePending === 'boolean'
 		&& contextWindowSizes.includes(value.contextWindowSize as never)
 		&& webSearchModes.includes(value.webSearchMode as never)
@@ -1413,6 +1449,18 @@ export function isAiAssistPanelState(value: unknown): value is AiAssistPanelStat
 export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMessengerCommand {
 	if (!isRecord(value) || typeof value.type !== 'string') {
 		return false;
+	}
+
+	if (value.type === 'quick-action') {
+		return hasExactKeys(value, ['action', 'type']) && isQuickMessengerAction(value.action);
+	}
+
+	if (value.type === 'cancel-quick-action') {
+		return hasExactKeys(value, ['runId', 'type']) && isBoundedString(value.runId, 512);
+	}
+
+	if (value.type === 'set-quick-mode') {
+		return hasExactKeys(value, ['enabled', 'type']) && typeof value.enabled === 'boolean';
 	}
 
 	if (value.type === 'capture-context') {
@@ -1485,6 +1533,16 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 export function isAiAssistMessengerEvent(value: unknown): value is AiAssistMessengerEvent {
 	if (!isRecord(value)) {
 		return false;
+	}
+
+	if (value.type === 'quick-action') {
+		if (!hasExactKeys(value, ['type', 'runId', 'token', 'result']) || !isBoundedString(value.runId, 512) || !isBoundedString(value.token, 512) || !isRecord(value.result)) {
+			return false;
+		}
+
+		return value.result.status === 'observed'
+			? hasExactKeys(value.result, ['status', 'messageId']) && isMessageId(value.result.messageId)
+			: hasExactKeys(value.result, ['status', 'code']) && ['blocked', 'uncertain'].includes(value.result.status as string) && quickRunErrorCodes.includes(value.result.code as never);
 	}
 
 	if (value.type === 'context-capture') {

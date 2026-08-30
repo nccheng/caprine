@@ -7,8 +7,12 @@
 - Messenger is an untrusted remote renderer. Keep secrets, provider requests,
   private AI output, persistence, and media processing in Caprine-owned local
   surfaces or the Electron main process.
-- AI answers remain private until Derek explicitly inserts one into the current
-  Messenger draft. Caprine must never press Send.
+- Manual AI Assist answers remain private until Derek explicitly inserts one
+  into the current Messenger draft; manual mode must never press Send. The
+  owner-authorized Quick mode is off by default: an explicit /ai question may
+  publish that question and automatically send one native quoted answer under
+  the owner's account. Persist each attempted send first, stop on lost authority,
+  retain failed/cancelled/uncertain runs, and never automatically retry a send.
 - Preserve normal Messenger behavior when AI Assist is disabled or a DOM
   adapter fails.
 - Use the smallest direct macOS-specific solution. Do not add multi-user,

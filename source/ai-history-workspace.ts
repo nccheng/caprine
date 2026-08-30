@@ -6,6 +6,7 @@ import {
 import {originalHistoryReplayAvailability} from './ai-history-replay';
 import {openAiResponseModel} from './openai-client';
 import {maximumHistoryReviewedTranscriptCharacters} from './reviewed-transcripts';
+import {AiQuickRun} from './ai-quick-run';
 
 export const maximumHistoryChats = 100;
 export const maximumHistoryInteractionsPerChat = 25;
@@ -60,6 +61,7 @@ export type AiHistoryInteractionView = {
 };
 
 export type AiHistoryChatView = {
+	quickRuns?: AiQuickRun[];
 	badges: AiHistoryBadge[];
 	contextCount: number;
 	createdAt: number;

@@ -20,6 +20,7 @@ const diagnosticMediaError = document.querySelector('#diagnostic-media-error');
 const refreshConversationButton = document.querySelector('#refresh-conversation-button');
 const contextWindow = document.querySelector('#context-window');
 const webSearchMode = document.querySelector('#web-search-mode');
+const quickMode = document.querySelector('#quick-mode');
 const contextSourceDisclosure = document.querySelector('#context-source-disclosure');
 const contextAvailability = document.querySelector('#context-availability');
 const contextMessageDetails = document.querySelector('#context-message-details');
@@ -916,6 +917,54 @@ function appendHistoryDetail(chat, isRequesting) {
 	});
 	deleteActions.append(deleteButton);
 	historyDetail.append(deleteActions);
+	for (const run of chat.quickRuns ?? []) {
+		const details = document.createElement('details');
+		const summary = document.createElement('summary');
+		summary.textContent = `Quick run · ${run.outcome} · ${historyTime(run.createdAt)}`;
+		details.append(summary);
+		const metadata = document.createElement('p');
+		metadata.textContent = `Run ${run.id} · Caprine ${run.appVersion} · ${run.model} · Web ${run.browsingMode} · ${run.contextCount} messages. An observed message is not proof of recipient delivery.`;
+		const events = document.createElement('ol');
+		for (const event of run.events) {
+			const item = document.createElement('li');
+			item.textContent = `+${event.at - run.createdAt} ms · ${event.stage}: ${event.status}${event.code ? ` (${event.code})` : ''}`;
+			events.append(item);
+		}
+
+		details.append(metadata, events);
+		for (const [label, text] of [['Original question', run.question], ['Frozen model input', run.prompt], ['AI answer', run.answer], ['Original Messenger message', run.questionMessageId], ['Answer Messenger message', run.answerMessageId]]) {
+			if (!text) {
+				continue;
+			}
+
+			const heading = document.createElement('h4');
+			heading.textContent = label;
+			const content = document.createElement('pre');
+			content.tabIndex = 0;
+			content.textContent = text;
+			details.append(heading, content);
+		}
+
+		const copy = document.createElement('button');
+		copy.type = 'button';
+		copy.textContent = 'Copy redacted run diagnostics';
+		copy.addEventListener('click', async () => {
+			render(await window.caprineAiAssist.copyQuickDiagnostics(chat.id, run.id));
+		});
+		details.append(copy);
+		if (run.outcome !== 'running' && run.contextJson) {
+			const recover = document.createElement('button');
+			recover.type = 'button';
+			recover.textContent = 'Open for manual review (no resend)';
+			recover.addEventListener('click', async () => {
+				render(await window.caprineAiAssist.recoverQuickRun(chat.id, run.id));
+			});
+			details.append(recover);
+		}
+
+		historyDetail.append(details);
+	}
+
 	if (chat.interactions.length < chat.interactionCount) {
 		const boundedNotice = document.createElement('p');
 		boundedNotice.textContent = `Showing the ${chat.interactions.length} most recent of ${chat.interactionCount} interactions to keep the local panel responsive.`;
@@ -924,7 +973,7 @@ function appendHistoryDetail(chat, isRequesting) {
 
 	if (chat.interactions.length === 0) {
 		const empty = document.createElement('p');
-		empty.textContent = 'This new AI chat has no questions yet.';
+		empty.textContent = chat.quickRuns?.length ? 'No completed model interaction. Inspect the quick-run stages above.' : 'This new AI chat has no questions yet.';
 		historyDetail.append(empty);
 		return;
 	}
@@ -1174,7 +1223,7 @@ function renderHistoryDeletionConfirmation(confirmation) {
 }
 
 function render(state) {
-	const isRequesting = state.session.status === 'requesting';
+	const isRequesting = state.session.status === 'requesting' || state.history.chats.some(chat => chat.quickRuns?.some(run => run.outcome === 'running'));
 	const isReviewLocked = Boolean(state.review?.locked);
 	const isConversationReady = state.conversation.status === 'ready';
 	const isMediaResolving = state.media.resolution?.status === 'resolving';
@@ -1192,6 +1241,7 @@ function render(state) {
 	renderMessageAnchor(state.anchor);
 	contextWindow.value = String(state.contextWindowSize);
 	webSearchMode.value = state.review?.browsingMode ?? state.webSearchMode;
+	quickMode.checked = state.quickMode === true;
 	renderContextReview(state.review, isRequesting, state.credentials.configured);
 	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
 		promptInput.value = state.invocation.prompt;
@@ -1202,6 +1252,8 @@ function render(state) {
 
 	if (state.conversation.status === 'changed') {
 		statusElement.textContent = 'Conversation changed — refresh context.';
+	} else if (isConversationReady && state.quickMode) {
+		statusElement.textContent = 'Quick mode enabled: /ai questions and replies are public. This panel remains available for manual review and run inspection.';
 	} else if (isConversationReady) {
 		statusElement.textContent = state.conversation.displayName
 			? `Ready for ${state.conversation.displayName}. Nothing has left Messenger.`
@@ -1392,6 +1444,10 @@ historyDeletionDialog.addEventListener('cancel', async event => {
 	if (token) {
 		render(await window.caprineAiAssist.cancelHistoryDeletion(token));
 	}
+});
+
+quickMode.addEventListener('change', async () => {
+	render(await window.caprineAiAssist.setQuickMode(quickMode.checked));
 });
 
 copyDiagnosticsButton.addEventListener('click', async () => {

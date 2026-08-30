@@ -5,6 +5,7 @@ import {WebSearchMode} from './openai-client';
 
 export type StoreType = {
 	aiAssistEnabled: boolean;
+	aiAssistQuickMode: boolean;
 	aiAssistContextWindowSize: 10 | 20 | 50;
 	aiAssistOpenAiKeyCiphertext: string;
 	aiAssistWebSearchMode: WebSearchMode;
@@ -53,6 +54,10 @@ export type StoreType = {
 };
 
 const schema: Store.Schema<StoreType> = {
+	aiAssistQuickMode: {
+		type: 'boolean',
+		default: false,
+	},
 	aiAssistContextWindowSize: {
 		type: 'number',
 		enum: [10, 20, 50],

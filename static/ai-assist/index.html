@@ -25,6 +25,8 @@
 				<details id="settings-details" class="optional-section">
 					<summary><h2 id="settings-heading">Settings</h2></summary>
 					<div class="optional-section-content">
+						<label><input id="quick-mode" type="checkbox" aria-describedby="quick-mode-disclosure"> Quick mode for /ai questions</label>
+						<p id="quick-mode-disclosure">Off by default. When enabled, /ai followed by a question posts your question and automatically sends the AI answer as a native reply under your account. Uses the selected 10/20/50-message text window and web-search setting without a review pause. Images, audio and video still require manual preparation. The panel's Ask button stays manual. Inspect every run in History; uncertain sends are never retried automatically.</p>
 						<p id="key-status">No OpenAI API key is configured.</p>
 						<form id="key-form">
 							<label for="api-key">OpenAI API key</label>
@@ -68,7 +70,7 @@
 				<details id="context-review-details" class="optional-section">
 					<summary><h2 id="context-heading">Context review</h2></summary>
 					<div class="optional-section-content">
-						<p>Review the exact Messenger excerpts when needed. Nothing is sent to OpenAI until you select Ask.</p>
+						<p>In manual mode, review these excerpts before selecting Ask. Quick mode captures and submits its text context automatically; inspect that frozen input in History.</p>
 						<p id="context-source-disclosure" class="context-availability">No context source selected.</p>
 						<label for="context-window">Message window</label>
 						<select id="context-window" name="context-window">
@@ -140,7 +142,7 @@
 			</section>
 			<section aria-labelledby="answer-heading">
 				<h2 id="answer-heading">Answer preview</h2>
-				<p>Answers stay private in this Caprine-owned panel until you insert one into the current Messenger draft. Caprine never presses Send.</p>
+				<p>Manual answers stay private until you insert a draft and send it yourself. Opt-in Quick mode publishes its question and automatically sends the answer as a native reply under your account.</p>
 				<p id="answer-search-status" class="answer-search-status" role="status">No answer yet.</p>
 				<pre id="answer-output" role="document" aria-label="Private AI answer" tabindex="0">No answer yet.</pre>
 				<details id="answer-sources" class="answer-sources" hidden>
@@ -155,7 +157,7 @@
 					<summary><h2 id="history-heading">History</h2></summary>
 					<div class="optional-section-content">
 						<p>Completed AI chats are stored only in Caprine's local macOS app data. They rely on your macOS account and FileVault for disk protection; Caprine does not add separate database encryption.</p>
-						<p>API keys, authentication data, raw Messenger page data, provider payloads, and raw media are never stored in history.</p>
+						<p>Quick-run history stores the question, frozen text input, answer and execution stages locally. API keys, authentication data, raw Messenger page data, provider wire payloads, and raw media are never stored in history.</p>
 						<p>Deleting a Messenger thread does not delete Caprine AI history. This history remains local to this Mac until you delete it here.</p>
 						<div class="history-actions">
 							<form id="history-search-form" role="search">

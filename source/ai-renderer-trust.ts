@@ -29,6 +29,7 @@ type AiRendererContext = {
 
 const messengerInboundChannels = new Set<string>([
 	aiAssistIpcChannels.composerCommand,
+	aiAssistIpcChannels.quickSendAuthorization,
 	aiAssistIpcChannels.draftInsertionAuthorization,
 	aiAssistIpcChannels.messageAnchor,
 	aiAssistIpcChannels.messengerEvent,
