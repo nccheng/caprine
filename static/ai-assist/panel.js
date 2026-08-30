@@ -1258,7 +1258,7 @@ function render(state) {
 			const replayFocusTarget = askButton.disabled
 				? (apiKeyInput.disabled ? closeButton : apiKeyInput)
 				: askButton;
-			replayFocusTarget.focus?.();
+			focusFirstAvailable(replayFocusTarget, closeButton);
 		}
 	} else {
 		renderedOriginalReplaySequence = undefined;
