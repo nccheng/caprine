@@ -907,6 +907,11 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 				close() {
 					this.open = false;
 				},
+				closest(selector) {
+					return selector === 'details' && id === 'api-key'
+						? element('settings-details')
+						: undefined;
+				},
 				children,
 				dataset: {},
 				disabled: false,
@@ -1250,6 +1255,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		},
 	});
 	assert.equal(element('ask-button').disabled, true);
+	assert.equal(element('settings-details').open, true);
 	assert.equal(context.document.activeElement, element('api-key'));
 	renderState({
 		...state('ready', 3),

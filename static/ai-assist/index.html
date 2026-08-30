@@ -22,39 +22,47 @@
 
 		<main id="main-content" tabindex="-1">
 			<section aria-labelledby="settings-heading">
-				<h2 id="settings-heading">Settings</h2>
-				<p id="key-status">No OpenAI API key is configured.</p>
-				<form id="key-form">
-					<label for="api-key">OpenAI API key</label>
-					<div class="field-row">
-						<input id="api-key" name="api-key" type="password" autocomplete="off" minlength="10" maxlength="512" required>
-						<button id="save-key-button" type="submit">Save key</button>
+				<details id="settings-details" class="optional-section">
+					<summary><h2 id="settings-heading">Settings</h2></summary>
+					<div class="optional-section-content">
+						<p id="key-status">No OpenAI API key is configured.</p>
+						<form id="key-form">
+							<label for="api-key">OpenAI API key</label>
+							<div class="field-row">
+								<input id="api-key" name="api-key" type="password" autocomplete="off" minlength="10" maxlength="512" required>
+								<button id="save-key-button" type="submit">Save key</button>
+							</div>
+						</form>
+						<div class="button-row">
+							<button id="test-key-button" class="secondary" type="button">Test saved key</button>
+							<button id="delete-key-button" class="danger" type="button">Delete key</button>
+						</div>
 					</div>
-				</form>
-				<div class="button-row">
-					<button id="test-key-button" class="secondary" type="button">Test saved key</button>
-					<button id="delete-key-button" class="danger" type="button">Delete key</button>
-				</div>
+				</details>
 			</section>
 			<section aria-labelledby="diagnostics-heading">
-				<h2 id="diagnostics-heading">Diagnostics</h2>
-				<p>Bounded local status only. No Messenger content, AI text, secrets, URLs, or file paths are included.</p>
-				<dl id="diagnostics-list" class="diagnostics-list">
-					<div><dt>AI enabled</dt><dd id="diagnostic-ai-enabled"></dd></div>
-					<div><dt>OpenAI key</dt><dd id="diagnostic-openai-key"></dd></div>
-					<div><dt>Local panel</dt><dd id="diagnostic-panel"></dd></div>
-					<div><dt>Messenger conversation</dt><dd id="diagnostic-conversation"></dd></div>
-					<div><dt>Context adapter</dt><dd id="diagnostic-context-adapter"></dd></div>
-					<div><dt>ffmpeg</dt><dd id="diagnostic-ffmpeg"></dd></div>
-					<div><dt>ffprobe</dt><dd id="diagnostic-ffprobe"></dd></div>
-					<div><dt>History database</dt><dd id="diagnostic-history"></dd></div>
-					<div><dt>Last provider error</dt><dd id="diagnostic-provider-error"></dd></div>
-					<div><dt>Last media error</dt><dd id="diagnostic-media-error"></dd></div>
-				</dl>
-				<div class="button-row">
-					<button id="copy-diagnostics-button" class="secondary" type="button">Copy redacted summary</button>
-				</div>
-				<p id="diagnostics-copy-status" class="request-message" role="status"></p>
+				<details id="diagnostics-details" class="optional-section">
+					<summary><h2 id="diagnostics-heading">Diagnostics</h2></summary>
+					<div class="optional-section-content">
+						<p>Bounded local status only. No Messenger content, AI text, secrets, URLs, or file paths are included.</p>
+						<dl id="diagnostics-list" class="diagnostics-list">
+							<div><dt>AI enabled</dt><dd id="diagnostic-ai-enabled"></dd></div>
+							<div><dt>OpenAI key</dt><dd id="diagnostic-openai-key"></dd></div>
+							<div><dt>Local panel</dt><dd id="diagnostic-panel"></dd></div>
+							<div><dt>Messenger conversation</dt><dd id="diagnostic-conversation"></dd></div>
+							<div><dt>Context adapter</dt><dd id="diagnostic-context-adapter"></dd></div>
+							<div><dt>ffmpeg</dt><dd id="diagnostic-ffmpeg"></dd></div>
+							<div><dt>ffprobe</dt><dd id="diagnostic-ffprobe"></dd></div>
+							<div><dt>History database</dt><dd id="diagnostic-history"></dd></div>
+							<div><dt>Last provider error</dt><dd id="diagnostic-provider-error"></dd></div>
+							<div><dt>Last media error</dt><dd id="diagnostic-media-error"></dd></div>
+						</dl>
+						<div class="button-row">
+							<button id="copy-diagnostics-button" class="secondary" type="button">Copy redacted summary</button>
+						</div>
+						<p id="diagnostics-copy-status" class="request-message" role="status"></p>
+					</div>
+				</details>
 			</section>
 			<section aria-labelledby="context-heading">
 				<h2 id="context-heading">Context review</h2>
@@ -139,29 +147,33 @@
 				<button id="insert-answer-button" type="button" disabled>Insert into Messenger draft</button>
 			</section>
 			<section aria-labelledby="history-heading">
-				<h2 id="history-heading">History</h2>
-				<p>Completed AI chats are stored only in Caprine's local macOS app data. They rely on your macOS account and FileVault for disk protection; Caprine does not add separate database encryption.</p>
-				<p>API keys, authentication data, raw Messenger page data, provider payloads, and raw media are never stored in history.</p>
-				<p>Deleting a Messenger thread does not delete Caprine AI history. This history remains local to this Mac until you delete it here.</p>
-				<div class="history-actions">
-					<form id="history-search-form" role="search">
-						<label for="history-search">Search this Messenger conversation</label>
-						<div class="field-row">
-							<input id="history-search" type="search" maxlength="200" autocomplete="off">
-							<button id="history-search-button" type="submit">Search</button>
+				<details id="history-details" class="optional-section">
+					<summary><h2 id="history-heading">History</h2></summary>
+					<div class="optional-section-content">
+						<p>Completed AI chats are stored only in Caprine's local macOS app data. They rely on your macOS account and FileVault for disk protection; Caprine does not add separate database encryption.</p>
+						<p>API keys, authentication data, raw Messenger page data, provider payloads, and raw media are never stored in history.</p>
+						<p>Deleting a Messenger thread does not delete Caprine AI history. This history remains local to this Mac until you delete it here.</p>
+						<div class="history-actions">
+							<form id="history-search-form" role="search">
+								<label for="history-search">Search this Messenger conversation</label>
+								<div class="field-row">
+									<input id="history-search" type="search" maxlength="200" autocomplete="off">
+									<button id="history-search-button" type="submit">Search</button>
+								</div>
+							</form>
+							<button id="new-history-chat-button" class="secondary" type="button">New AI chat</button>
 						</div>
-					</form>
-					<button id="new-history-chat-button" class="secondary" type="button">New AI chat</button>
-				</div>
-				<div class="button-row history-delete-actions">
-					<button id="clear-conversation-history-button" class="danger" type="button">Clear this conversation’s AI history</button>
-					<button id="clear-all-history-button" class="danger" type="button">Clear all AI history</button>
-				</div>
-				<p id="history-status" class="request-message" role="status">Open a Messenger conversation to view its local AI history.</p>
-				<div class="history-workspace">
-					<nav id="history-list" class="history-list" aria-label="AI chat history"></nav>
-					<div id="history-detail" class="history-detail" aria-label="Selected AI chat" aria-live="polite"></div>
-				</div>
+						<div class="button-row history-delete-actions">
+							<button id="clear-conversation-history-button" class="danger" type="button">Clear this conversation’s AI history</button>
+							<button id="clear-all-history-button" class="danger" type="button">Clear all AI history</button>
+						</div>
+						<p id="history-status" class="request-message" role="status">Open a Messenger conversation to view its local AI history.</p>
+						<div class="history-workspace">
+							<nav id="history-list" class="history-list" aria-label="AI chat history"></nav>
+							<div id="history-detail" class="history-detail" aria-label="Selected AI chat" aria-live="polite"></div>
+						</div>
+					</div>
+				</details>
 			</section>
 		</main>
 		<dialog id="history-deletion-dialog" aria-labelledby="history-deletion-title" aria-describedby="history-deletion-message">

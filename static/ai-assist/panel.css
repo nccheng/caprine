@@ -399,6 +399,19 @@ summary:focus-visible {
 	outline-offset: 3px;
 }
 
+.optional-section {
+	margin-top: 0;
+}
+
+.optional-section > summary h2 {
+	display: inline;
+	margin: 0;
+}
+
+.optional-section-content {
+	margin-top: 12px;
+}
+
 .context-item {
 	padding: 12px;
 	border: 1px solid #3c4250;
