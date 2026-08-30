@@ -1,0 +1,99 @@
+{
+  "baseUrl": "https://messenger.invalid/thread/synthetic-current-semantic",
+  "dom": {
+    "tag": "document",
+    "children": [
+      {
+        "attributes": {"role": "main"},
+        "children": [
+          {
+            "attributes": {"role": "grid"},
+            "children": [
+              {
+                "attributes": {"role": "row"},
+                "children": [
+                  {
+                    "attributes": {
+                      "aria-label": "At 10:15 AM, You: Synthetic semantic outgoing",
+                      "data-message-id": "semantic-outgoing",
+                      "data-scope": "messages_table",
+                      "aria-roledescription": "message"
+                    }
+                  }
+                ]
+              },
+              {
+                "attributes": {
+                  "aria-label": "River sent a message",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "attributes": {"data-message-id": "split-incoming"},
+                    "children": [
+                      {
+                        "children": [
+                          {"text": "Synthetic "},
+                          {"text": "split body"}
+                        ]
+                      },
+                      {
+                        "computedStyle": {"display": "none"},
+                        "text": "CSS-hidden delivery chrome"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "attributes": {
+                  "aria-label": "You sent a message",
+                  "role": "row"
+                },
+                "children": [
+                  {
+                    "attributes": {"data-message-id": "direct-outgoing"},
+                    "text": "Synthetic direct text",
+                    "children": [
+                      {
+                        "attributes": {"aria-hidden": "true"},
+                        "text": "Hidden decoration"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "confidence": "high",
+      "messageId": "semantic-outgoing",
+      "sender": {"displayName": "You", "role": "outgoing"},
+      "text": "Synthetic semantic outgoing",
+      "timestamp": "10:15 AM"
+    },
+    {
+      "confidence": "high",
+      "messageId": "split-incoming",
+      "sender": {"displayName": "River", "role": "incoming"},
+      "text": "Synthetic split body"
+    },
+    {
+      "confidence": "high",
+      "messageId": "direct-outgoing",
+      "sender": {"displayName": "You", "role": "outgoing"},
+      "text": "Synthetic direct text"
+    }
+  ],
+  "expectedTail": {
+    "confidence": "high",
+    "messageId": "direct-outgoing",
+    "sender": {"displayName": "You", "role": "outgoing"},
+    "text": "Synthetic direct text"
+  }
+}

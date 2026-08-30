@@ -38,8 +38,7 @@ export function isMessengerMediaResolverRequest(value: unknown): value is Messen
 	if (!isRecord(value)
 		|| !mediaKinds.includes(value.kind as never)
 		|| typeof value.messageId !== 'string'
-		|| value.messageId.length > 200
-		|| !/^[\w.:-]+$/.test(value.messageId)
+		|| !/^[^\s\p{C}]{1,200}$/u.test(value.messageId)
 		|| typeof value.requestId !== 'string'
 		|| !/^media-request-\d{1,12}$/.test(value.requestId)) {
 		return false;

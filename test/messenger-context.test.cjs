@@ -20,6 +20,7 @@ const {
 
 const sanitizedFixtureFilenames = [
 	'current-loaded-conversation.json',
+	'current-semantic-structure.json',
 	'edge-cases.json',
 	'prepend-history.json',
 	'stable-leaf-text.json',
@@ -44,7 +45,7 @@ test('fixture selector matching fails closed for syntax outside its supported su
 	assert.equal(row.matches('[role="row"]:last-child'), false);
 });
 
-for (const filename of ['supported-messages.json', 'edge-cases.json', 'current-loaded-conversation.json', 'stable-leaf-text.json']) {
+for (const filename of ['supported-messages.json', 'edge-cases.json', 'current-loaded-conversation.json', 'current-semantic-structure.json', 'stable-leaf-text.json']) {
 	test(`sanitized Messenger context fixture ${filename} produces exact logical items`, () => {
 		const fixture = loadMessengerContextFixture(filename);
 		global.window = {location: {href: fixture.baseUrl}};
@@ -86,7 +87,7 @@ test('context inspection reports bounded adapter stages without message content'
 	});
 });
 
-for (const filename of ['supported-messages.json', 'current-loaded-conversation.json', 'stable-leaf-text.json']) {
+for (const filename of ['supported-messages.json', 'current-loaded-conversation.json', 'current-semantic-structure.json', 'stable-leaf-text.json']) {
 	test(`sanitized newest-tail fixture ${filename} reaches the exact bounded fingerprint item`, () => {
 		const fixture = loadMessengerContextFixture(filename);
 		global.window = {location: {href: fixture.baseUrl}};
@@ -113,6 +114,16 @@ test('stable leaf-text semantics use one logical item for full, tail, and anchor
 	assert.deepEqual(extractLoadedMessengerConversationContext(fixture.root), fixture.expected);
 	assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
 	assert.deepEqual(captureLoadedMessengerMessageAnchor(target, fixture.root)?.item, fixture.expectedTail);
+});
+
+test('current semantic structure combines bounded row evidence for full, tail, and anchor extraction', () => {
+	const fixture = loadMessengerContextFixture('current-semantic-structure.json');
+	global.window = {location: {href: fixture.baseUrl}};
+	const target = fixture.root.querySelector('[data-message-id="split-incoming"]')?.children[0]?.children[0];
+
+	assert.deepEqual(extractLoadedMessengerConversationContext(fixture.root), fixture.expected);
+	assert.deepEqual(extractLoadedMessengerConversationTail(fixture.root), fixture.expectedTail);
+	assert.equal(captureLoadedMessengerMessageAnchor(target, fixture.root)?.item.messageId, 'split-incoming');
 });
 
 function messengerFixtureRoot(rows) {
@@ -180,6 +191,290 @@ test('stable leaf-text fallback excludes message chrome and unrelated UI text', 
 	const [item] = extractLoadedMessengerConversationContext(root);
 	assert.equal(item.text, 'Expected plain text');
 	assert.doesNotMatch(item.text, /reply|reaction|yesterday|button|control|composer|hidden|placeholder|navigation|sidebar/i);
+});
+
+test('semantic labels and ancestry evidence fail closed without stable authority or with conflicting senders', () => {
+	const root = messengerFixtureRoot([
+		{
+			attributes: {role: 'row'},
+			children: [{
+				attributes: {
+					'aria-label': 'At 10:15 AM, River: Missing stable authority',
+					'aria-roledescription': 'message',
+					'data-scope': 'messages_table',
+				},
+			}],
+		},
+		{
+			attributes: {'aria-label': 'River sent a message', role: 'row'},
+			children: [{
+				attributes: {
+					'aria-label': 'At 10:16 AM, You: Conflicting sender evidence',
+					'aria-roledescription': 'message',
+					'data-message-id': 'semantic-conflict',
+				},
+			}],
+		},
+	]);
+
+	const inspection = inspectLoadedMessengerConversationContext(root);
+	assert.equal(inspection.reason, 'supported-content-missing');
+	assert.deepEqual(inspection.items.map(item => item.text), [undefined, undefined]);
+	assert.deepEqual(inspection.items.map(item => item.omittedReason), ['no-supported-content', 'no-supported-content']);
+});
+
+test('opaque Messenger message identities stay stable across context and anchor extraction', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {
+			'aria-label': 'At 10:18 AM, River: Synthetic message body',
+			'aria-roledescription': 'message',
+			'data-message-id': 'synthetic@$+/=_message-1',
+			role: 'row',
+		},
+	}]);
+	const row = root.querySelector('[role="row"]');
+	const [item] = extractLoadedMessengerConversationContext(root);
+	const tail = extractLoadedMessengerConversationTail(root);
+	const anchor = captureLoadedMessengerMessageAnchor(row, root);
+
+	assert.equal(item.messageId, 'synthetic@$+/=_message-1');
+	assert.equal(item.text, 'Synthetic message body');
+	assert.equal(tail.messageId, 'synthetic@$+/=_message-1');
+	assert.equal(anchor.item.messageId, 'synthetic@$+/=_message-1');
+});
+
+test('message evidence never crosses sibling or nested stable identities in full, tail, or anchor capture', () => {
+	const siblingRoot = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [
+			{attributes: {'data-message-id': 'empty-target'}},
+			{
+				attributes: {'data-message-id': 'sibling-message'},
+				children: [{children: [{text: 'Sibling private body'}]}],
+			},
+		],
+	}]);
+	const emptyTarget = siblingRoot.querySelector('[data-message-id="empty-target"]');
+	const siblingInspection = inspectLoadedMessengerConversationContext(siblingRoot);
+
+	assert.equal(siblingInspection.reason, 'ambiguous-messages');
+	assert.deepEqual(siblingInspection.items.map(item => item.text), [undefined, undefined]);
+	assert.deepEqual(siblingInspection.items.map(item => item.omittedReason), ['ambiguous-message', 'ambiguous-message']);
+	assert.notEqual(extractLoadedMessengerConversationTail(siblingRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(emptyTarget, siblingRoot), undefined);
+
+	const nestedRoot = messengerFixtureRoot([{
+		attributes: {
+			'aria-label': 'At 10:18 AM, River: Ancestor private body',
+			'aria-roledescription': 'message',
+			'data-message-id': 'semantic-ancestor',
+			role: 'row',
+		},
+		children: [{
+			attributes: {'data-message-id': 'nested-target'},
+			children: [{text: 'Nested target body'}],
+		}],
+	}]);
+	const nestedTarget = nestedRoot.querySelector('[data-message-id="nested-target"]');
+	const nestedInspection = inspectLoadedMessengerConversationContext(nestedRoot);
+
+	assert.equal(nestedInspection.reason, 'ambiguous-messages');
+	assert.equal(nestedInspection.items[0].text, undefined);
+	assert.equal(nestedInspection.items[0].omittedReason, 'ambiguous-message');
+	assert.notEqual(extractLoadedMessengerConversationTail(nestedRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(nestedTarget, nestedRoot), undefined);
+
+	const malformedAncestorRoot = messengerFixtureRoot([{
+		attributes: {
+			'aria-label': 'River sent a message',
+			'data-message-id': 'foreign id',
+			role: 'row',
+		},
+		children: [
+			{attributes: {'data-message-id': 'malformed-ancestor-target'}},
+			{children: [{text: 'Malformed ancestor private body'}]},
+		],
+	}]);
+	const malformedAncestorTarget = malformedAncestorRoot.querySelector('[data-message-id="malformed-ancestor-target"]');
+	const malformedAncestorInspection = inspectLoadedMessengerConversationContext(malformedAncestorRoot);
+
+	assert.equal(malformedAncestorInspection.reason, 'ambiguous-messages');
+	assert.equal(malformedAncestorInspection.items[0].text, undefined);
+	assert.equal(malformedAncestorInspection.items[0].omittedReason, 'ambiguous-message');
+	assert.notEqual(extractLoadedMessengerConversationTail(malformedAncestorRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(malformedAncestorTarget, malformedAncestorRoot), undefined);
+
+	const conflictingAliasesRoot = messengerFixtureRoot([{
+		attributes: {
+			'aria-label': 'River sent a message',
+			'data-message-id': 'alias-one',
+			'data-messageid': 'alias-two',
+			role: 'row',
+		},
+		children: [{text: 'Conflicting alias private body'}],
+	}]);
+	const conflictingAliasesTarget = conflictingAliasesRoot.querySelector('[role="row"]')?.children[0];
+	const conflictingAliasesInspection = inspectLoadedMessengerConversationContext(conflictingAliasesRoot);
+
+	assert.equal(conflictingAliasesInspection.reason, 'ambiguous-messages');
+	assert.equal(conflictingAliasesInspection.items[0].text, undefined);
+	assert.equal(conflictingAliasesInspection.items[0].omittedReason, 'ambiguous-message');
+	assert.notEqual(extractLoadedMessengerConversationTail(conflictingAliasesRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(conflictingAliasesTarget, conflictingAliasesRoot), undefined);
+});
+
+test('message evidence ignores non-message layout rows beside the current identity branch', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [{
+			children: [
+				{
+					attributes: {'data-message-id': 'current-message'},
+					children: [{text: 'Current private body'}],
+				},
+				{
+					attributes: {'aria-label': 'Message actions', role: 'row'},
+					children: [{attributes: {role: 'button'}}],
+				},
+			],
+		}],
+	}]);
+
+	const [item] = extractLoadedMessengerConversationContext(root);
+	assert.equal(item.confidence, 'high');
+	assert.equal(item.messageId, 'current-message');
+	assert.equal(item.text, 'Current private body');
+});
+
+test('message fallback never promotes sibling participant chrome from an ancestor row', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [
+			{attributes: {'data-message-id': 'empty-target'}},
+			{children: [{text: 'River'}]},
+		],
+	}]);
+
+	const inspection = inspectLoadedMessengerConversationContext(root);
+	assert.equal(inspection.reason, 'supported-content-missing');
+	assert.equal(inspection.items[0].text, undefined);
+	assert.equal(inspection.items[0].omittedReason, 'no-supported-content');
+});
+
+test('semantic identity branches stay independent inside a shared layout row', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {role: 'row'},
+		children: [
+			{
+				attributes: {
+					'aria-label': 'At 10:18 AM, River: First private body',
+					'aria-roledescription': 'message',
+					'data-message-id': 'first-message',
+				},
+			},
+			{
+				attributes: {
+					'aria-label': 'At 10:19 AM, You: Second private body',
+					'aria-roledescription': 'message',
+					'data-message-id': 'second-message',
+				},
+			},
+		],
+	}]);
+
+	const items = extractLoadedMessengerConversationContext(root);
+	assert.deepEqual(items.map(item => ({
+		confidence: item.confidence,
+		messageId: item.messageId,
+		senderRole: item.sender.role,
+		text: item.text,
+	})), [
+		{
+			confidence: 'high',
+			messageId: 'first-message',
+			senderRole: 'incoming',
+			text: 'First private body',
+		},
+		{
+			confidence: 'high',
+			messageId: 'second-message',
+			senderRole: 'outgoing',
+			text: 'Second private body',
+		},
+	]);
+});
+
+test('body and visibility traversal share fixed fail-closed node bounds', () => {
+	const wideRoot = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', 'data-message-id': 'wide-body', role: 'row'},
+		children: Array.from(
+			{length: maximumMessengerTailTraversalElements + 1},
+			() => ({children: [{text: 'Repeated branch'}]}),
+		),
+	}]);
+	const wideTarget = wideRoot.querySelector('[data-message-id="wide-body"]');
+	const wideInspection = inspectLoadedMessengerConversationContext(wideRoot);
+
+	assert.equal(wideInspection.reason, 'supported-content-missing');
+	assert.equal(wideInspection.items[0].text, undefined);
+	assert.notEqual(extractLoadedMessengerConversationTail(wideRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(wideTarget, wideRoot), undefined);
+
+	const directRoot = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', 'data-message-id': 'direct-overflow', role: 'row'},
+	}]);
+	const directTarget = directRoot.querySelector('[data-message-id="direct-overflow"]');
+	directTarget.childNodes = Array.from(
+		{length: maximumMessengerTailTraversalElements + 1},
+		() => ({nodeType: 3, parentElement: directTarget, textContent: 'x'}),
+	);
+	const directInspection = inspectLoadedMessengerConversationContext(directRoot);
+
+	assert.equal(directInspection.reason, 'supported-content-missing');
+	assert.equal(directInspection.items[0].text, undefined);
+	assert.notEqual(extractLoadedMessengerConversationTail(directRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(directTarget, directRoot), undefined);
+
+	let deepTarget = {
+		attributes: {'data-message-id': 'deep-ancestor'},
+		children: [{text: 'Deep body'}],
+	};
+	for (let index = 0; index <= maximumMessengerTailTraversalElements; index += 1) {
+		deepTarget = {children: [deepTarget]};
+	}
+
+	const deepRoot = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [deepTarget],
+	}]);
+	const deepIdentity = deepRoot.querySelector('[data-message-id="deep-ancestor"]');
+
+	assert.equal(inspectLoadedMessengerConversationContext(deepRoot).reason, 'message-rows-missing');
+	assert.notEqual(extractLoadedMessengerConversationTail(deepRoot)?.confidence, 'high');
+	assert.equal(captureLoadedMessengerMessageAnchor(deepIdentity, deepRoot), undefined);
+});
+
+test('body-subtree fallback rejects multiple distinct visible branches after ancestry resolution', () => {
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'River sent a message', role: 'row'},
+		children: [{
+			attributes: {'data-message-id': 'body-ambiguous'},
+			children: [
+				{children: [{text: 'First visible branch'}]},
+				{children: [{text: 'Second visible branch'}]},
+			],
+		}],
+	}]);
+
+	assert.deepEqual(inspectLoadedMessengerConversationContext(root), {
+		items: [{
+			confidence: 'low',
+			messageId: 'body-ambiguous',
+			omittedReason: 'no-supported-content',
+			sender: {displayName: 'River', role: 'incoming'},
+		}],
+		reason: 'supported-content-missing',
+	});
 });
 
 test('stable leaf-text fallback never promotes recognized link-preview sibling chrome', () => {

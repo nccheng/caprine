@@ -221,7 +221,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistMessengerCommand({requestId: 'context-capture-1', type: 'cancel-context-capture'}), true);
 	assert.equal(isAiAssistMessengerCommand({
 		conversationId: 'messenger-thread:123',
-		messageId: 'message-1',
+		messageId: 'synthetic@$+/=_message-1',
 		requestId: 'image-target-request-1',
 		type: 'resolve-image-target',
 	}), true);
@@ -298,7 +298,7 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 	assert.equal(isAiAssistPanelCommand({itemId: 'context-capture-1:0', reviewSequence: 0, type: 'remove-context-item'}), false);
 	assert.equal(isAiAssistMessengerCommand({
 		kind: 'video',
-		messageId: 'message-1',
+		messageId: 'synthetic@$+/=_message-1',
 		requestId: 'media-request-1',
 		type: 'resolve-media',
 	}), true);
