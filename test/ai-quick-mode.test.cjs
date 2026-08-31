@@ -7,7 +7,7 @@ const {AiHistoryStore} = require('../dist-js/ai-history-store.js');
 const {advanceQuickRun, formatQuickRunDiagnostics, isAiQuickRun} = require('../dist-js/ai-quick-run.js');
 const {executeQuickMessengerAction, isQuickMessengerAction} = require('../dist-js/ai-quick-messenger.js');
 const {isAiAssistMessengerEvent, isAiAssistMessengerCommand, isAiAssistPanelCommand} = require('../dist-js/ai-assist-ipc.js');
-const {quickOutgoingMessages, quickComposerSurface, quickQuotePreview, hasQuickQuote, quickHasAttachment, quickQuoteTextMatches, quickMessageHasQuote, resolveQuickReplyTarget} = require('../dist-js/ai-quick-dom.js');
+const {quickOutgoingMessages, quickObservedMessageIds, quickComposerSurface, quickQuotePreview, hasQuickQuote, quickHasAttachment, quickQuoteTextMatches, quickMessageHasQuote, resolveQuickReplyTarget} = require('../dist-js/ai-quick-dom.js');
 const {formatCaprineAiSharedAnswer, caprineAiSharedAnswerCharacterLimit} = require('../dist-js/share-text-protocol.js');
 const {MessengerContextFixtureElement: Element} = require('./helpers/messenger-context-fixture.cjs');
 
@@ -231,6 +231,117 @@ function fixture(overrides = {}) {
 		action, adapter, composer, state,
 	};
 }
+
+function nativeArticle(id, text, question) {
+	return new Element({
+		attributes: {role: 'article'}, children: [
+			{attributes: {'data-message-id': id, 'data-scope': 'messages_table', 'aria-label': `10:00，你：${text}`}},
+			...(question === undefined ? [] : [{attributes: {role: 'button', 'aria-label': '前往已回覆的訊息'}, children: [{attributes: {dir: 'auto'}, text: question}]}]),
+		],
+	});
+}
+
+test('question and answer observations wait through numeric-to-native ID replacement without resending', async () => {
+	for (const phase of ['question', 'answer']) {
+		const f = fixture();
+		const question = 'Repeated question';
+		const quoted = phase === 'answer' ? question : undefined;
+		f.action.phase = phase;
+		if (phase === 'question') {
+			delete f.action.replyToMessageId;
+		}
+
+		const root = new Element({attributes: {role: 'main'}});
+		root.append(nativeArticle('mid.older', f.action.text, quoted));
+		let observations = 0;
+		let optimistic;
+		f.adapter.messageIds = () => new Set(quickOutgoingMessages(root).map(message => message.id));
+		f.adapter.observe = (before, text, replyTo) => quickObservedMessageIds(quickOutgoingMessages(root), before, text, replyTo ? question : undefined);
+		const {send} = f.adapter;
+		f.adapter.send = composer => {
+			send(composer);
+			optimistic = nativeArticle('1234567890123456789', f.action.text, quoted);
+			root.append(optimistic);
+		};
+
+		f.adapter.settle = async () => {
+			if (f.state.sends && ++observations === 3) {
+				optimistic.remove();
+				root.append(nativeArticle('1000000000@msgr.1234567890123456789', f.action.text, quoted));
+			}
+		};
+
+		// eslint-disable-next-line no-await-in-loop
+		assert.deepEqual(await executeQuickMessengerAction(f.action, f.adapter), {status: 'observed', messageId: '1000000000@msgr.1234567890123456789'});
+		assert.equal(observations, 3, 'the optimistic row must never complete the action');
+		assert.equal(f.state.sends, 1);
+		assert.equal(f.state.auths, 1);
+	}
+});
+
+test('older optimistic IDs and renamed native IDs are not newly sent messages', () => {
+	const root = new Element({attributes: {role: 'main'}});
+	root.append(nativeArticle('100@msgr.111', 'Same'), nativeArticle('100@msgr.222', 'Same'));
+	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['111']), 'Same'), ['100@msgr.222']);
+	root.append(nativeArticle('mid.unrelated', 'Same'));
+	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['111']), 'Same'), [], 'a mid ID cannot resolve an older pending alias');
+	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['99@msgr.111', 'mid.unrelated']), 'Same'), ['100@msgr.222']);
+	root.append(nativeArticle('100@msgr.333', 'Same'));
+	assert.equal(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['111', 'mid.unrelated']), 'Same').length, 2, 'ambiguous new identities must reach the executor ambiguity guard');
+});
+
+test('a different native message cannot hide this send while its numeric or unknown identity is unresolved', async () => {
+	for (const phase of ['question', 'answer']) {
+		for (const pendingId of ['111', 'unknown-id']) {
+			const f = fixture();
+			f.action.phase = phase;
+			if (phase === 'question') {
+				delete f.action.replyToMessageId;
+			}
+
+			const quoted = phase === 'answer' ? 'Original' : undefined;
+			const root = new Element({attributes: {role: 'main'}});
+			const {send} = f.adapter;
+			f.adapter.send = composer => {
+				send(composer);
+				// This send is still optimistic; a different client's matching
+				// native message arrives. The pending quote is not hydrated yet.
+				root.append(nativeArticle(pendingId, f.action.text), nativeArticle('100@msgr.222', f.action.text, quoted));
+			};
+
+			f.adapter.observe = (before, text) => quickObservedMessageIds(quickOutgoingMessages(root), before, text, quoted);
+			// eslint-disable-next-line no-await-in-loop
+			assert.deepEqual(await executeQuickMessengerAction(f.action, f.adapter), {status: 'uncertain', code: 'send-result-unknown'});
+			assert.equal(f.state.sends, 1);
+			assert.equal(f.state.auths, 1);
+		}
+	}
+});
+
+test('coexisting optimistic and native aliases are one resolved identity, but different native IDs remain ambiguous', () => {
+	const root = new Element({attributes: {role: 'main'}});
+	root.append(nativeArticle('111', 'Same'), nativeArticle('100@msgr.111', 'Same'));
+	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(), 'Same'), ['100@msgr.111']);
+	root.append(nativeArticle('100@msgr.222', 'Same'));
+	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(), 'Same'), ['100@msgr.111', '100@msgr.222']);
+});
+
+test('unacknowledged or unknown IDs remain uncertain after one send', async () => {
+	for (const id of ['1234567890123456789', 'unknown-format']) {
+		const f = fixture();
+		const root = new Element({attributes: {role: 'main'}});
+		const {send} = f.adapter;
+		f.adapter.send = composer => {
+			send(composer);
+			root.append(nativeArticle(id, f.action.text, 'Question'));
+		};
+
+		f.adapter.observe = (before, text) => quickObservedMessageIds(quickOutgoingMessages(root), before, text, 'Question');
+		// eslint-disable-next-line no-await-in-loop
+		assert.deepEqual(await executeQuickMessengerAction(f.action, f.adapter), {status: 'uncertain', code: 'send-result-unknown'});
+		assert.equal(f.state.sends, 1);
+	}
+});
 
 test('native reply sends once only after quote, exact draft and authorization checks', async () => {
 	const f = fixture();

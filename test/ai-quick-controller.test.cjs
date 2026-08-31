@@ -7,8 +7,9 @@ const test = require('node:test');
 const {restoreContextReviewSnapshot, buildReviewedPrompt} = require('../dist-js/context-review.js');
 const {AiHistoryStore} = require('../dist-js/ai-history-store.js');
 const {executeQuickMessengerAction} = require('../dist-js/ai-quick-messenger.js');
-const {resolveQuickReplyTarget} = require('../dist-js/ai-quick-dom.js');
+const {resolveQuickReplyTarget, quickObservedMessageIds} = require('../dist-js/ai-quick-dom.js');
 const {parseAiComposerCommand} = require('../dist-js/ai-composer-command.js');
+const {MessengerContextFixtureElement: Element} = require('./helpers/messenger-context-fixture.cjs');
 
 // Exercise the real controller methods without constructing windows, opening a
 // real database, loading Electron, reading a key, or contacting a provider.
@@ -270,15 +271,16 @@ test('opening the inspection panel preserves the active quick run; explicit canc
 	assert.equal(f.counts.persisted, 0);
 });
 
-test('two identical slash questions complete separate quoted, attributed replies without manual review', async () => {
+test('two identical slash questions wait for native IDs and complete quoted, attributed replies without manual review', async () => {
 	const f = fixture();
 	const store = new AiHistoryStore({databasePath: ':memory:'});
 	const question = '再次測試';
 	const messages = [{
-		id: 'older-question', text: question, element: {}, article: {},
+		id: 'mid.older-question', text: question, element: {}, article: new Element(),
 	}];
 	const sent = [];
 	const composer = {text: '', quote: undefined};
+	let pendingAcknowledgement;
 	f.controller.quickRun = undefined;
 	f.controller.historyStore = store;
 	f.controller.refreshConversation = async () => {};
@@ -324,16 +326,33 @@ test('two identical slash questions complete separate quoted, attributed replies
 			canSend: () => true, authorizeSend: async () => true,
 			send(c) {
 				const message = {
-					id: `sent-${sent.length + 1}`, text: c.text, replyTo: c.quote, element: {}, article: {},
+					id: String(sent.length + 1), text: c.text, replyTo: c.quote, element: {},
+					article: new Element({
+						children: c.quote === undefined ? [] : [
+							{attributes: {role: 'button', 'aria-label': '前往已回覆的訊息'}, children: [{attributes: {dir: 'auto'}, text: question}]},
+						],
+					}),
 				};
 				messages.push(message);
 				sent.push(message);
+				pendingAcknowledgement = {message, ticks: 0};
 				c.text = '';
 				c.quote = undefined;
 			},
 			messageIds: () => new Set(messages.map(message => message.id)),
-			observe: (before, value, replyTo) => messages.filter(message => !before.has(message.id) && message.text === value && message.replyTo === replyTo).map(message => message.id),
-			async settle() {},
+			observe: (before, value, replyTo) => quickObservedMessageIds(messages, before, value, replyTo ? question : undefined),
+			async settle() {
+				if (pendingAcknowledgement) {
+					if (pendingAcknowledgement.message.replyTo === undefined) {
+						assert.equal(f.counts.provider, Math.floor(sent.length / 2), 'model must wait for a native question ID');
+					}
+
+					if (++pendingAcknowledgement.ticks === 3) {
+						pendingAcknowledgement.message.id = `1000@msgr.${pendingAcknowledgement.message.id}`;
+						pendingAcknowledgement = undefined;
+					}
+				}
+			},
 		});
 	};
 
@@ -356,6 +375,7 @@ test('two identical slash questions complete separate quoted, attributed replies
 
 		assert.equal(f.counts.provider, 2);
 		assert.equal(sent.length, 4);
+		assert.equal(sent.every(message => message.id.startsWith('1000@msgr.')), true);
 		assert.equal(sent[0].text, question);
 		assert.equal(sent[2].text, question);
 		assert.equal(sent[1].replyTo, sent[0].id);

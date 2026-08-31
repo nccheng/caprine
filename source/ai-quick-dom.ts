@@ -81,3 +81,32 @@ export function quickMessageHasQuote(message: QuickDomMessage, question?: string
 	return question === undefined ? quotes.length === 0
 		: quotes.length === 1 && quickQuoteTextMatches(quotes[0], question);
 }
+
+export function quickObservedMessageIds(
+	messages: readonly QuickDomMessage[],
+	before: ReadonlySet<string>,
+	text: string,
+	question?: string,
+): string[] {
+	// Messenger replaces a numeric optimistic ID with <timestamp>@msgr.<ID>.
+	// Wait for a replyable ID; do not hand the disappearing optimistic row to
+	// the model/reply phase. Normalize older IDs too, so their acknowledgement
+	// cannot be mistaken for this send when the message text is identical.
+	const offlineId = (id: string) => /^\d+@msgr\.(\d+)$/.exec(id)?.[1];
+	const identity = (id: string) => offlineId(id) ?? id;
+	const previous = new Set([...before].map(id => identity(id)));
+	const hadPending = [...before].some(id => /^\d+$/.test(id));
+	const candidates = messages.filter(message => !previous.has(identity(message.id)) && message.text === text);
+	// Mid.* is the other observed native ID format. If an older optimistic
+	// row exists, we cannot prove that an unrelated mid.* is new.
+	const native = candidates.filter(message => offlineId(message.id) !== undefined || (message.id.startsWith('mid.') && !hadPending));
+	const resolved = new Set(native.map(message => identity(message.id)));
+	// A pending/unknown row may be this send, while a different native row is
+	// syncing from another client. Do not drop that ambiguity. Its quote may
+	// also still be hydrating, so wait before applying the native quote check.
+	if (candidates.some(message => !resolved.has(identity(message.id)))) {
+		return [];
+	}
+
+	return native.filter(message => quickMessageHasQuote(message, question)).map(message => message.id);
+}
