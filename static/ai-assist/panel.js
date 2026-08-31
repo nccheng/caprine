@@ -1251,7 +1251,9 @@ function render(state) {
 		promptInput.focus?.();
 	}
 
-	if (state.conversation.status === 'changed') {
+	if (state.request.notice?.startsWith('Quick mode stopped:')) {
+		statusElement.textContent = state.request.notice;
+	} else if (state.conversation.status === 'changed') {
 		statusElement.textContent = 'Conversation changed — refresh context.';
 	} else if (isConversationReady && state.quickMode) {
 		statusElement.textContent = 'Quick mode enabled: /ai questions and replies are public. This panel remains available for manual review and run inspection.';

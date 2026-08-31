@@ -6,6 +6,7 @@ export const quickEventStatuses = ['started', 'succeeded', 'failed', 'cancelled'
 export const quickRunErrorCodes = [
 	...openAiErrorCodes,
 	'conversation-changed',
+	'user-interrupted',
 	'composer-changed',
 	'draft-present',
 	'attachment-present',

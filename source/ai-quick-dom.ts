@@ -34,7 +34,8 @@ export function quickQuoteTextMatches(element: Element, text: string): boolean {
 
 export function quickHasAttachment(composer: HTMLElement): boolean {
 	const surface = quickComposerSurface(composer);
-	return !surface || Boolean(surface.querySelector([
+	const quotePreview = quickQuotePreview(composer);
+	return !surface || [...surface.querySelectorAll([
 		'[data-testid="attachment-preview"]',
 		'[data-testid="composer-attachment"]',
 		'img',
@@ -44,10 +45,15 @@ export function quickHasAttachment(composer: HTMLElement): boolean {
 		'[aria-label*="remove" i]',
 		'[aria-label*="移除" i]',
 		'[aria-label*="刪除" i]',
-	].join(',')));
+	].join(','))].some(element => !quotePreview?.contains(element));
 }
 
 export type QuickDomMessage = {id: string; text: string; element: HTMLElement; article: Element};
+
+export function resolveQuickReplyTarget(messages: readonly QuickDomMessage[], id: string): QuickDomMessage | undefined {
+	const matches = messages.filter(message => message.id === id);
+	return matches.length === 1 ? matches[0] : undefined;
+}
 
 export function quickOutgoingMessages(root: Element): QuickDomMessage[] {
 	const rows = [...root.querySelectorAll<HTMLElement>('[data-message-id]')];

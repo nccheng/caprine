@@ -6,6 +6,9 @@ const {createRequire} = require('node:module');
 const test = require('node:test');
 const {restoreContextReviewSnapshot, buildReviewedPrompt} = require('../dist-js/context-review.js');
 const {AiHistoryStore} = require('../dist-js/ai-history-store.js');
+const {executeQuickMessengerAction} = require('../dist-js/ai-quick-messenger.js');
+const {resolveQuickReplyTarget} = require('../dist-js/ai-quick-dom.js');
+const {parseAiComposerCommand} = require('../dist-js/ai-composer-command.js');
 
 // Exercise the real controller methods without constructing windows, opening a
 // real database, loading Electron, reading a key, or contacting a provider.
@@ -14,6 +17,7 @@ function loadController() {
 	const localRequire = createRequire(modulePath);
 	const settings = {
 		aiAssistEnabled: true, aiAssistQuickMode: true, aiAssistWebSearchMode: 'off', aiAssistContextWindowSize: 10,
+		aiAssistOpenAiKeyCiphertext: 'fixture-only-ciphertext',
 	};
 	const mocks = {
 		electron: {app: {getVersion: () => 'test'}},
@@ -264,4 +268,131 @@ test('opening the inspection panel preserves the active quick run; explicit canc
 	f.response.resolve(answer);
 	await pending;
 	assert.equal(f.counts.persisted, 0);
+});
+
+test('two identical slash questions complete separate quoted, attributed replies without manual review', async () => {
+	const f = fixture();
+	const store = new AiHistoryStore({databasePath: ':memory:'});
+	const question = '再次測試';
+	const messages = [{
+		id: 'older-question', text: question, element: {}, article: {},
+	}];
+	const sent = [];
+	const composer = {text: '', quote: undefined};
+	f.controller.quickRun = undefined;
+	f.controller.historyStore = store;
+	f.controller.refreshConversation = async () => {};
+	f.controller.showPanelWindow = () => {
+		throw new Error('Quick flow opened manual fallback');
+	};
+
+	f.controller.answer.read = () => answer;
+	f.controller.draftInsertionAuthorization.invalidate = () => {};
+	f.controller.requestContextReview = async prompt => {
+		f.controller.review = {
+			snapshot: restoreContextReviewSnapshot({
+				actualCount: 0, contextVersion: 'fixture', images: [], items: [], newMessagesAvailable: false,
+				question: prompt, requestedCount: 10, snapshot: f.snapshot, transcripts: [],
+			}),
+		};
+	};
+
+	f.report.resolve(1);
+	f.response.resolve(answer);
+	f.controller.quickMessengerAction = async (phase, text) => {
+		const action = {
+			phase, text, runId: f.controller.quickRun.run.id, token: 'fixture-token', conversationId: f.snapshot.conversationId,
+			...(phase === 'answer' ? {replyToMessageId: f.controller.quickRun.run.questionMessageId} : {}),
+		};
+		return executeQuickMessengerAction(action, {
+			currentConversationId: () => f.snapshot.conversationId,
+			isCurrent: () => true, resolveComposer: () => composer, isEditable: () => true,
+			readText: c => c.text, hasAttachment: () => false, hasReply: c => c.quote !== undefined,
+			async prepareReply(id) {
+				const original = resolveQuickReplyTarget(messages, id);
+				if (!original) {
+					return false;
+				}
+
+				composer.quote = original.id;
+				return true;
+			},
+			replyMatches: id => composer.quote === id,
+			insertText(c, value) {
+				c.text = value;
+			},
+			canSend: () => true, authorizeSend: async () => true,
+			send(c) {
+				const message = {
+					id: `sent-${sent.length + 1}`, text: c.text, replyTo: c.quote, element: {}, article: {},
+				};
+				messages.push(message);
+				sent.push(message);
+				c.text = '';
+				c.quote = undefined;
+			},
+			messageIds: () => new Set(messages.map(message => message.id)),
+			observe: (before, value, replyTo) => messages.filter(message => !before.has(message.id) && message.text === value && message.replyTo === replyTo).map(message => message.id),
+			async settle() {},
+		});
+	};
+
+	let pending;
+	const start = f.controller.startQuickRun.bind(f.controller);
+	f.controller.startQuickRun = (...arguments_) => {
+		pending = start(...arguments_);
+		return pending;
+	};
+
+	try {
+		for (let index = 0; index < 2; index++) {
+			const command = parseAiComposerCommand(`/ai ${question}`);
+			// eslint-disable-next-line no-await-in-loop
+			assert.equal(await f.controller.acceptComposerCommand({conversationId: f.snapshot.conversationId, prompt: command.prompt}), true);
+			// eslint-disable-next-line no-await-in-loop
+			await pending;
+			assert.equal(f.controller.quickRun, undefined);
+		}
+
+		assert.equal(f.counts.provider, 2);
+		assert.equal(sent.length, 4);
+		assert.equal(sent[0].text, question);
+		assert.equal(sent[2].text, question);
+		assert.equal(sent[1].replyTo, sent[0].id);
+		assert.equal(sent[3].replyTo, sent[2].id);
+		assert.match(sent[1].text, /^Caprine AI Assist\nAI response shared by Derek\n\nfixture answer$/);
+		assert.equal(sent[3].text, sent[1].text);
+		const runs = store.loadConversationSummaries(f.snapshot.conversationId).flatMap(chat => store.loadQuickRuns(f.snapshot.conversationId, chat.id));
+		assert.equal(runs.length, 2);
+		assert.equal(runs.every(run => run.outcome === 'completed' && run.answer === answer.text), true);
+	} finally {
+		store.close();
+	}
+});
+
+test('manual insertion also shares attribution while authorizing the exact private answer', async () => {
+	const f = fixture();
+	f.report.resolve(1);
+	f.controller.quickRun = undefined;
+	f.controller.draftInsertionGeneration = 0;
+	f.controller.draftInsertionRequestCounter = 0;
+	f.controller.answer.read = () => answer;
+	f.controller.draftInsertionAuthorization.consume = () => ({
+		answerGeneration: 1, authorizationToken: 'fixture-token', conversationId: f.snapshot.conversationId, snapshot: f.snapshot, text: answer.text,
+	});
+	f.controller.restoreMessengerFocus = () => {};
+	let shared;
+	f.controller.notifyMessenger = command => {
+		if (command.type !== 'insert-draft') {
+			return;
+		}
+
+		shared = command.text;
+		const pending = f.controller.pendingDraftInsertion;
+		f.controller.pendingDraftInsertion = undefined;
+		pending.resolve({status: 'inserted'});
+	};
+
+	await f.controller.insertAnswer({answerGeneration: 1, authorizationToken: 'fixture-token', conversationId: f.snapshot.conversationId});
+	assert.equal(shared, 'Caprine AI Assist\nAI response shared by Derek\n\nfixture answer');
 });

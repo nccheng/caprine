@@ -9,6 +9,13 @@ export const caprineAiShareSourceTitleCharacterLimit = 300;
 export const caprineAiShareUrlCharacterLimit = 2048;
 export const caprineAiShareTextCharacterLimit = 50_000;
 
+const sharedAnswerHeading = `${caprineAiShareAssistantLabel}\n${caprineAiShareSharerLabel}\n\n`;
+export const caprineAiSharedAnswerCharacterLimit = caprineAiShareAnswerCharacterLimit + sharedAnswerHeading.length;
+
+export function formatCaprineAiSharedAnswer(answer: string): string {
+	return sharedAnswerHeading + answer;
+}
+
 const startMarker = `<<< ${caprineAiShareProtocolVersion} >>>`;
 const endMarker = `<<< /${caprineAiShareProtocolVersion} >>>`;
 const questionMarker = '--- Question ---';
