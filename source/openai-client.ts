@@ -1,4 +1,4 @@
-export const openAiResponseModel = 'gpt-5.6-luna';
+export const openAiResponseModel = 'gpt-5.6-sol';
 export const openAiPromptCharacterLimit = 20_000;
 export const openAiAnswerCharacterLimit = 20_000;
 export const openAiCitationLimit = 100;
@@ -496,7 +496,7 @@ export class OpenAiClient {
 					input: buildOpenAiInput(prompt, images),
 					max_output_tokens: 1024,
 					model: openAiResponseModel,
-					reasoning: {effort: 'low'},
+					reasoning: {effort: 'medium'},
 					store: false,
 					text: {verbosity: 'low'},
 					...webSearchOptions(mode),
@@ -548,7 +548,7 @@ export class OpenAiClient {
 			input: buildOpenAiVideoInput(prompt, frames),
 			max_output_tokens: 4096,
 			model: openAiResponseModel,
-			reasoning: {effort: 'low'},
+			reasoning: {effort: 'medium'},
 			store: false,
 			text: {
 				format: {
@@ -584,7 +584,7 @@ export class OpenAiClient {
 			input: buildOpenAiVideoInput(prompt, frames),
 			max_output_tokens: 4096,
 			model: openAiResponseModel,
-			reasoning: {effort: 'low'},
+			reasoning: {effort: 'medium'},
 			store: false,
 			text: {verbosity: 'low'},
 			...webSearchOptions(mode),
