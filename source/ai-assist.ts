@@ -13,6 +13,7 @@ import {
 	shell,
 } from 'electron';
 import config from './config';
+import {formatCaprineAiSharedAnswer} from './share-text-protocol';
 import {
 	advanceQuickRun, AiQuickRun, formatQuickRunDiagnostics, maximumQuickRunInputCharacters, QuickRunErrorCode, QuickRunEvent, QuickRunOutcome,
 } from './ai-quick-run';
@@ -2375,7 +2376,7 @@ class AiAssistController {
 				authorizationToken: authorization.authorizationToken,
 				conversationId: authorization.conversationId,
 				requestId,
-				text: authorization.text,
+				text: formatCaprineAiSharedAnswer(authorization.text),
 				type: 'insert-draft',
 			});
 		});
@@ -3649,7 +3650,7 @@ class AiAssistController {
 			this.recordQuickEvent({stage, status: 'succeeded'});
 			stage = 'reply';
 			this.recordQuickEvent({stage, status: 'started'});
-			const reply = await this.quickMessengerAction('answer', answer.text);
+			const reply = await this.quickMessengerAction('answer', formatCaprineAiSharedAnswer(answer.text));
 			if (!this.quickRunIsCurrent(runId)) {
 				return;
 			}
@@ -3673,7 +3674,8 @@ class AiAssistController {
 				}
 			}
 
-			this.notice = `Quick mode stopped: ${failure.code}. No automatic retry. Inspect the original question, answer and run in History before continuing.`;
+			const reason = failure.code === 'user-interrupted' ? 'another keyboard or pointer action interrupted the run' : failure.code;
+			this.notice = `Quick mode stopped: ${reason} (${stage}). The automatic reply did not complete. No automatic retry. Inspect the run in History and check Messenger before starting again.`;
 			this.showPanelWindow();
 		} finally {
 			if (this.quickRun?.run.id === runId) {

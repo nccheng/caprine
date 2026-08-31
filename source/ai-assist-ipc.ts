@@ -29,12 +29,12 @@ import {
 	openAiErrorCodes,
 	isOpenAiAnswer,
 	OpenAiAnswer,
-	openAiAnswerCharacterLimit,
 	OpenAiErrorCode,
 	openAiPromptCharacterLimit,
 	WebSearchMode,
 	webSearchModes,
 } from './openai-client';
+import {caprineAiSharedAnswerCharacterLimit} from './share-text-protocol';
 import {
 	maximumMediaBytes,
 	mediaKinds,
@@ -1522,7 +1522,7 @@ export function isAiAssistMessengerCommand(value: unknown): value is AiAssistMes
 			&& isDraftInsertionToken(value.authorizationToken)
 			&& isConversationId(value.conversationId)
 			&& isDraftInsertionRequestId(value.requestId)
-			&& isBoundedString(value.text, openAiAnswerCharacterLimit);
+			&& isBoundedString(value.text, caprineAiSharedAnswerCharacterLimit);
 	}
 
 	return value.type === 'set-enabled'

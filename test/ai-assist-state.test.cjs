@@ -1874,6 +1874,9 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	};
 	renderState(quickState);
 	assert.equal(element('quick-mode').checked, true);
+	const failedNotice = 'Quick mode stopped: quote-unavailable (reply). No automatic retry.';
+	renderState({...quickState, request: {...quickState.request, notice: failedNotice}});
+	assert.equal(element('session-status').textContent, failedNotice, 'a stopped quick run must not look like normal manual review');
 	assert.equal([...elements.values()].some(node => node.textContent === quickRun.question), true);
 	assert.equal([...elements.values()].some(node => node.textContent === 'Open for manual review (no resend)'), true);
 	assert.equal([...elements.values()].some(node => node.textContent === '+100 ms · answer-send: unknown (send-result-unknown)'), true);

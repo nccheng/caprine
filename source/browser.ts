@@ -15,7 +15,7 @@ import {
 import {restoreMessengerComposerFocus} from './ai-assist-focus';
 import {executeQuickMessengerAction, QuickMessengerAction} from './ai-quick-messenger';
 import {
-	hasQuickQuote, quickComposerSurface, quickHasAttachment, quickMessageHasQuote, quickOutgoingMessages, quickQuotePreview, quickQuoteTextMatches, quickReplySelector,
+	hasQuickQuote, quickComposerSurface, quickHasAttachment, quickMessageHasQuote, quickOutgoingMessages, quickQuotePreview, quickQuoteTextMatches, quickReplySelector, resolveQuickReplyTarget,
 } from './ai-quick-dom';
 import {
 	AiComposerCommandSnapshot,
@@ -59,8 +59,10 @@ import {
 	selectContextWindow,
 } from './context-review';
 import {
-	isMessageAnchorRectangleVisible,
+	isWithinMessageAnchorBridge,
 	isMessageAnchorShortcut,
+	messageAnchorContentRectangle,
+	messageAnchorPosition,
 } from './message-anchor-interaction';
 import {
 	extractLoadedMessengerMediaCandidates,
@@ -143,19 +145,20 @@ function positionMessageAnchorOverlay(): void {
 		return;
 	}
 
-	const rectangle = messageAnchorTarget.row.getBoundingClientRect();
-	if (!isMessageAnchorRectangleVisible(rectangle, window.innerWidth, window.innerHeight)) {
+	const conversation = resolveLoadedMessengerConversationRoot();
+	const rectangle = messageAnchorContentRectangle(messageAnchorTarget.row, messageAnchorTarget.anchor.item.text);
+	const position = conversation ? messageAnchorPosition(
+		rectangle, conversation.getBoundingClientRect(),
+		{width: window.innerWidth, height: window.innerHeight},
+		{width: Math.max(76, messageAnchorHost.offsetWidth), height: Math.max(32, messageAnchorHost.offsetHeight)},
+	) : undefined;
+	if (!position) {
 		removeMessageAnchorOverlay();
 		return;
 	}
 
-	const buttonWidth = 76;
-	const left = rectangle.right + buttonWidth + 16 <= window.innerWidth
-		? rectangle.right + 8
-		: Math.max(8, rectangle.left - buttonWidth - 8);
-	const top = Math.max(8, Math.min(rectangle.top + 4, window.innerHeight - 44));
-	messageAnchorHost.style.left = `${left}px`;
-	messageAnchorHost.style.top = `${top}px`;
+	messageAnchorHost.style.left = `${position.left}px`;
+	messageAnchorHost.style.top = `${position.top}px`;
 }
 
 function messageAnchorForTarget(target: EventTarget | undefined): typeof messageAnchorTarget {
@@ -253,13 +256,23 @@ function revalidateMessageAnchorOverlay(): void {
 }
 
 function handleMessageAnchorPointerOver(event: PointerEvent): void {
-	if (event.isTrusted && event.target !== messageAnchorHost && !showMessageAnchorOverlay(event.target ?? undefined)) {
-		removeMessageAnchorOverlay();
+	if (!event.isTrusted || event.composedPath().includes(messageAnchorHost!) || showMessageAnchorOverlay(event.target ?? undefined)) {
+		return;
 	}
+
+	if (messageAnchorTarget && messageAnchorHost && isWithinMessageAnchorBridge(
+		{x: event.clientX, y: event.clientY},
+		messageAnchorContentRectangle(messageAnchorTarget.row, messageAnchorTarget.anchor.item.text),
+		messageAnchorHost.getBoundingClientRect(),
+	)) {
+		return;
+	}
+
+	removeMessageAnchorOverlay();
 }
 
 function handleMessageAnchorFocusIn(event: FocusEvent): void {
-	if (event.isTrusted && event.target !== messageAnchorHost && !showMessageAnchorOverlay(event.target ?? undefined)) {
+	if (event.isTrusted && !event.composedPath().includes(messageAnchorHost!) && !showMessageAnchorOverlay(event.target ?? undefined)) {
 		removeMessageAnchorOverlay();
 	}
 }
@@ -596,6 +609,11 @@ async function handleQuickMessengerAction(action: QuickMessengerAction): Promise
 		return;
 	}
 
+	if (quickInvocationEpoch !== quickGestureEpoch) {
+		respond({status: 'blocked', code: 'user-interrupted'});
+		return;
+	}
+
 	quickConsumedTokens.add(action.token);
 	const execution = {runId: action.runId, cancelled: false};
 	quickActionInFlight = execution;
@@ -626,9 +644,8 @@ async function handleQuickMessengerAction(action: QuickMessengerAction): Promise
 			hasAttachment: quickHasAttachment,
 			hasReply: hasQuickQuote,
 			async prepareReply(id, composer) {
-				const originals = messages().filter(message => message.id === id);
-				const original = originals[0];
-				if (originals.length !== 1 || !original || messages().filter(message => message.text === original.text).length !== 1) {
+				const original = resolveQuickReplyTarget(messages(), id);
+				if (!original) {
 					return false;
 				}
 
@@ -659,9 +676,12 @@ async function handleQuickMessengerAction(action: QuickMessengerAction): Promise
 				};
 				return true;
 			},
-			replyMatches: (id, composer) => Boolean(quote?.id === id && quote.row.isConnected && quote.row.dataset.messageId === id
-				&& quickQuotePreview(composer) === quote.preview && quickQuoteTextMatches(quote.preview, quote.text)
-				&& messages().filter(message => message.text === quote!.text).length === 1),
+			replyMatches(id, composer) {
+				const original = resolveQuickReplyTarget(messages(), id);
+				return Boolean(quote?.id === id && quote.row.isConnected && quote.row.dataset.messageId === id
+					&& quickQuotePreview(composer) === quote.preview && quickQuoteTextMatches(quote.preview, quote.text)
+					&& original?.element === quote.row && original.text === quote.text);
+			},
 			insertText: setComposerText,
 			canSend: composer => Boolean(sendControl(composer)),
 			authorizeSend: async () => current() && await electronIpcRenderer.invoke(aiAssistIpcChannels.quickSendAuthorization, action) === true,

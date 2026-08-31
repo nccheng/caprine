@@ -1,4 +1,5 @@
 import {QuickRunErrorCode} from './ai-quick-run';
+import {caprineAiSharedAnswerCharacterLimit} from './share-text-protocol';
 
 export type QuickMessengerAction = {
 	runId: string;
@@ -141,7 +142,7 @@ export function isQuickMessengerAction(value: unknown): value is QuickMessengerA
 	const keys = ['runId', 'token', 'conversationId', 'phase', 'text', ...(action.replyToMessageId === undefined ? [] : ['replyToMessageId'])];
 	return Object.keys(action).length === keys.length && keys.every(key => Object.hasOwn(action, key))
 		&& ['runId', 'token', 'conversationId'].every(key => typeof action[key] === 'string' && (action[key] as string).length > 0 && (action[key] as string).length <= 512)
-		&& typeof action.text === 'string' && action.text.length > 0 && action.text.length <= 20_000
+		&& typeof action.text === 'string' && action.text.length > 0 && action.text.length <= (action.phase === 'answer' ? caprineAiSharedAnswerCharacterLimit : 20_000)
 		&& (action.phase === 'question' ? action.replyToMessageId === undefined
 			: action.phase === 'answer' && typeof action.replyToMessageId === 'string' && /^[^\s\p{C}]{1,200}$/u.test(action.replyToMessageId));
 }

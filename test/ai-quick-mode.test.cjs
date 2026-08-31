@@ -7,7 +7,8 @@ const {AiHistoryStore} = require('../dist-js/ai-history-store.js');
 const {advanceQuickRun, formatQuickRunDiagnostics, isAiQuickRun} = require('../dist-js/ai-quick-run.js');
 const {executeQuickMessengerAction, isQuickMessengerAction} = require('../dist-js/ai-quick-messenger.js');
 const {isAiAssistMessengerEvent, isAiAssistMessengerCommand, isAiAssistPanelCommand} = require('../dist-js/ai-assist-ipc.js');
-const {quickOutgoingMessages, quickComposerSurface, quickQuotePreview, hasQuickQuote, quickHasAttachment, quickQuoteTextMatches, quickMessageHasQuote} = require('../dist-js/ai-quick-dom.js');
+const {quickOutgoingMessages, quickComposerSurface, quickQuotePreview, hasQuickQuote, quickHasAttachment, quickQuoteTextMatches, quickMessageHasQuote, resolveQuickReplyTarget} = require('../dist-js/ai-quick-dom.js');
+const {formatCaprineAiSharedAnswer, caprineAiSharedAnswerCharacterLimit} = require('../dist-js/share-text-protocol.js');
 const {MessengerContextFixtureElement: Element} = require('./helpers/messenger-context-fixture.cjs');
 
 function run(chatId, overrides = {}) {
@@ -120,10 +121,37 @@ test('native DOM scope keeps the reply preview outside the composer region and r
 	assert.equal(quickQuoteTextMatches(preview, 'Synthetic question'), true);
 	assert.equal(quickQuoteTextMatches(preview, 'Synthetic question longer'), false);
 	assert.equal(quickHasAttachment(composer), false);
+	preview.append(new Element({tag: 'img'}));
+	assert.equal(quickHasAttachment(composer), false, 'an image in the quoted message is not a new attachment');
 	surface.append(new Element({tag: 'img'}));
 	assert.equal(quickHasAttachment(composer), true);
 	surface.append(new Element({attributes: {contenteditable: 'true'}}));
 	assert.equal(quickComposerSurface(composer), undefined);
+});
+
+test('repeated question text still resolves the exact newly sent message identity', () => {
+	const messages = ['previous-question', 'new-question'].map(id => ({
+		id, text: 'Repeated question', element: {}, article: {},
+	}));
+	assert.equal(resolveQuickReplyTarget(messages, 'new-question'), messages[1]);
+	assert.equal(resolveQuickReplyTarget(messages, 'missing-question'), undefined);
+	assert.equal(resolveQuickReplyTarget([...messages, {...messages[1], element: {}}], 'new-question'), undefined);
+});
+
+test('attributed maximum-size answers fit both sending paths without allowing larger questions', () => {
+	const text = formatCaprineAiSharedAnswer('x'.repeat(20_000));
+	assert.equal(text.length, caprineAiSharedAnswerCharacterLimit);
+	assert.match(text, /^Caprine AI Assist\nAI response shared by Derek\n\n/);
+	assert.equal(isQuickMessengerAction({...fixture().action, text}), true);
+	assert.equal(isQuickMessengerAction({
+		...fixture().action, phase: 'question', replyToMessageId: undefined, text,
+	}), false);
+	const insertion = {
+		type: 'insert-draft', requestId: 'draft-insertion-request-1', conversationId: 'messenger-thread:test',
+		answerGeneration: 1, authorizationToken: 'draft-insertion-token:00000000-0000-4000-8000-000000000001', text,
+	};
+	assert.equal(isAiAssistMessengerCommand(insertion), true);
+	assert.equal(isAiAssistMessengerCommand({...insertion, text: text + 'x'}), false);
 });
 
 test('native observations require outgoing identity, one message per article and exact quoted text', () => {
