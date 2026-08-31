@@ -35,10 +35,8 @@ redaction, stale/duplicate send prevention, native Reply structure and rendered
 panel behavior. Synthetic fixtures are not real Messenger acceptance. Real
 posting must use an owner-designated safe conversation and synthetic content.
 
-Tracking publication is pending explicit authorization: the Linear issue-create
-attempt was rejected by the external-write review. No issue was created.
-
-Local validation: 339 automated tests, build/type checks, XO/stylelint and
+Local validation after integrating the main-branch focus fix: 350 automated
+tests, build/type checks, XO/stylelint and
 `git diff --check` passed. The native Traditional Chinese Reply/quote structure
 was inspected without sending a message. New-panel visual inspection was
 blocked by the browser's unavailable admin-policy verification; no alternative
@@ -53,3 +51,7 @@ Discovery reviewed `c40f0d5` and produced this bounded Closure Set:
 - C2: opening the inspection panel must preserve the active quick run. Covered
   through the real open/refresh/request path; explicit Cancel still aborts and
   rejects the deliberately late provider response.
+
+Both findings were corrected at `71c8557`. Bounded Closure review returned
+PASS, with 78 focused tests independently passing. The later integration of
+main's focus fix and delivery-note update did not change those corrections.
