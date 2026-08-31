@@ -880,7 +880,7 @@ test('conversation reports are rejected until the replacement document is ready'
 	assert.equal(gate.acceptsReports, true);
 });
 
-test('panel clears stale prompts and hides stale answers outside ready state', async () => {
+function createPanelFixture() {
 	const elements = new Map();
 	let activeElement;
 	const reviewCommands = [];
@@ -908,15 +908,25 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 					this.open = false;
 				},
 				closest(selector) {
-					return selector === 'details' && id === 'api-key'
-						? element('settings-details')
-						: undefined;
+					if (selector === 'details') {
+						if (id === 'api-key') {
+							return element('settings-details');
+						}
+
+						if (['refresh-context-button', 'refresh-conversation-button', 'context-review-details > summary'].includes(id)) {
+							return element('context-review-details');
+						}
+					}
+
+					return undefined;
 				},
 				children,
 				dataset: {},
 				disabled: false,
 				focus() {
-					activeElement = elements.get(id);
+					if (!this.disabled) {
+						activeElement = elements.get(id);
+					}
 				},
 				listeners,
 				open: false,
@@ -1056,6 +1066,126 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 		request,
 		session: {generation: 1, sessionId: 'ai-session-1', status: 'open'},
 	});
+	return {
+		citationCommands,
+		commandState,
+		context,
+		get createdElements() {
+			return createdElements;
+		},
+		element,
+		elements,
+		historyDeletionCommands,
+		imageCommands,
+		insertCommands,
+		renderState,
+		reviewCommands,
+		state,
+		transcriptCommands,
+		webSearchModeCommands,
+	};
+}
+
+test('panel initial focus leaves Context review collapsed across initial states', async t => {
+	const review = {
+		actualCount: 0,
+		editable: true,
+		items: [],
+		locked: false,
+		newMessagesAvailable: false,
+		question: '',
+		requestedCount: 10,
+		sequence: 1,
+	};
+	const summary = 'context-review-details > summary';
+	await Promise.all([
+		{name: 'ready without review', status: 'ready', focus: 'prompt'},
+		{name: 'conversation not ready', status: 'unavailable', focus: summary},
+		{
+			name: 'context loading', status: 'ready', update: {contextCapturePending: true}, focus: 'prompt',
+		},
+		{
+			name: 'existing review', status: 'ready', update: {review}, focus: 'prompt',
+		},
+		{
+			name: 'slash ai invocation', status: 'ready', update: {invocation: {sequence: 1, prompt: 'Private question'}}, focus: 'prompt',
+		},
+		{
+			name: 'invocation with review', status: 'ready', update: {review, invocation: {sequence: 1, prompt: 'Private question'}}, focus: 'prompt',
+		},
+		{
+			name: 'locked review', status: 'ready', update: {review: {...review, locked: true}}, focus: summary,
+		},
+		{
+			name: 'request in progress', status: 'ready', update: {session: {status: 'requesting'}}, focus: summary,
+		},
+		{
+			name: 'key not configured', status: 'ready', update: {credentials: {configured: false, secureStorageAvailable: true}}, focus: 'prompt',
+		},
+	].map(scenario => t.test(scenario.name, () => {
+		const {context, element, renderState, state} = createPanelFixture();
+		const initial = {...state(scenario.status, 1), ...scenario.update};
+		renderState(initial);
+		assert.equal(element('context-review-details').open, false);
+		assert.equal(element('context-message-details').open, false);
+		assert.equal(context.document.activeElement, element(scenario.focus));
+		assert.equal(context.document.activeElement.disabled, false);
+		if (initial.invocation) {
+			assert.equal(element('prompt').value, initial.invocation.prompt);
+		}
+
+		// State updates must not override the user's disclosure or focus choice.
+		element('context-review-details').open = true;
+		element('close-button').focus();
+		renderState({...initial, request: {notice: 'Unrelated update'}});
+		assert.equal(element('context-review-details').open, true);
+		assert.equal(context.document.activeElement, element('close-button'));
+		element('context-review-details').open = false;
+		renderState({...initial, conversation: {status: 'ready', captureGeneration: 1}});
+		assert.equal(element('context-review-details').open, false);
+		assert.equal(context.document.activeElement, element('close-button'));
+	})));
+});
+
+test('removing the last reviewed item still reveals and focuses Refresh context', async () => {
+	const {commandState, context, element, elements, renderState, reviewCommands, state} = createPanelFixture();
+	const initial = {
+		...state('ready', 1),
+		review: {
+			actualCount: 1,
+			editable: true,
+			items: [{id: 'review:0', item: {sender: {role: 'incoming'}, text: 'Synthetic excerpt', confidence: 'high'}}],
+			locked: false,
+			question: '',
+			requestedCount: 10,
+			sequence: 1,
+		},
+	};
+	renderState(initial);
+	element('context-review-details').open = true;
+	element('context-message-details').open = true;
+	const remove = [...elements.values()].find(node => node.textContent === 'Remove');
+	remove.focus();
+	commandState.current = {
+		...initial, review: {
+			...initial.review, actualCount: 0, items: [], sequence: 2,
+		},
+	};
+	const removal = remove.listeners.get('click')();
+	// The user can collapse the section while the local command is pending.
+	element('context-review-details').open = false;
+	await removal;
+	assert.deepEqual(reviewCommands, [['remove', 1, 'review:0']]);
+	assert.equal(element('context-review-details').open, true);
+	assert.equal(context.document.activeElement, element('refresh-context-button'));
+});
+
+test('panel clears stale prompts and hides stale answers outside ready state', async () => {
+	const panel = createPanelFixture();
+	const {
+		citationCommands, commandState, context, element, elements, historyDeletionCommands,
+		imageCommands, insertCommands, renderState, reviewCommands, state, transcriptCommands, webSearchModeCommands,
+	} = panel;
 	renderState(state('ready', 1));
 	const prompt = element('prompt');
 	assert.equal(element('context-window').value, '20');
@@ -1325,7 +1455,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	element('context-message-details').open = true;
 	assert.equal(element('ask-button').disabled, false);
 	const editor = [...elements.entries()].find(([id]) => id.startsWith('textarea-'))[1];
-	const elementCountAfterReview = createdElements;
+	const elementCountAfterReview = panel.createdElements;
 	editor.value = 'Unsaved local redaction';
 	editor.selectionStart = 8;
 	editor.selectionEnd = 13;
@@ -1367,7 +1497,7 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	};
 	renderState(unrelatedReviewState);
 	assert.equal(element('context-message-details').open, true);
-	assert.equal(createdElements, elementCountAfterReview);
+	assert.equal(panel.createdElements, elementCountAfterReview);
 	assert.equal(editor.value, 'Unsaved local redaction');
 	assert.equal(editor.selectionStart, 8);
 	assert.equal(editor.selectionEnd, 13);
@@ -1585,9 +1715,9 @@ test('panel clears stale prompts and hides stale answers outside ready state', a
 	await citationMarker.listeners.get('click')();
 	assert.deepEqual(citationCommands, ['https://example.com/cited']);
 	citationMarker.focus();
-	const elementCountAfterAnswer = createdElements;
+	const elementCountAfterAnswer = panel.createdElements;
 	renderState({...completedState, request: {...completedState.request, notice: 'Unrelated update'}});
-	assert.equal(createdElements, elementCountAfterAnswer);
+	assert.equal(panel.createdElements, elementCountAfterAnswer);
 	assert.equal(context.document.activeElement, citationMarker);
 	assert.equal(prompt.disabled, true);
 	assert.equal(element('ask-button').disabled, true);

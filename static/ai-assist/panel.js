@@ -23,6 +23,7 @@ const webSearchMode = document.querySelector('#web-search-mode');
 const quickMode = document.querySelector('#quick-mode');
 const contextSourceDisclosure = document.querySelector('#context-source-disclosure');
 const contextAvailability = document.querySelector('#context-availability');
+const contextReviewSummary = document.querySelector('#context-review-details > summary');
 const contextMessageDetails = document.querySelector('#context-message-details');
 const contextMessageSummary = document.querySelector('#context-message-summary');
 const contextItems = document.querySelector('#context-items');
@@ -1325,12 +1326,9 @@ function render(state) {
 	insertAnswerButton.disabled = !renderedInsertion || !state.request.answer || !isConversationReady;
 	if (!initialFocusApplied) {
 		initialFocusApplied = true;
-		focusFirstAvailable(
-			state.invocation || state.review ? promptInput : undefined,
-			state.credentials.configured ? undefined : apiKeyInput,
-			isConversationReady ? refreshContextButton : refreshConversationButton,
-			closeButton,
-		);
+		// Initial focus must not expand a disclosure just to reach its controls.
+		const initialFocusTarget = promptInput.disabled ? contextReviewSummary : promptInput;
+		initialFocusTarget.focus?.();
 	}
 }
 
