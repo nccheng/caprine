@@ -7,7 +7,8 @@ const {AiHistoryStore} = require('../dist-js/ai-history-store.js');
 const {advanceQuickRun, formatQuickRunDiagnostics, isAiQuickRun} = require('../dist-js/ai-quick-run.js');
 const {executeQuickMessengerAction, isQuickMessengerAction} = require('../dist-js/ai-quick-messenger.js');
 const {isAiAssistMessengerEvent, isAiAssistMessengerCommand, isAiAssistPanelCommand} = require('../dist-js/ai-assist-ipc.js');
-const {quickOutgoingMessages, quickObservedMessageIds, quickComposerSurface, quickQuotePreview, hasQuickQuote, quickHasAttachment, quickQuoteTextMatches, quickMessageHasQuote, resolveQuickReplyTarget} = require('../dist-js/ai-quick-dom.js');
+const {quickOutgoingMessages, quickObservedMessageIds, quickComposerSurface, quickQuotePreview, hasQuickQuote, quickHasAttachment, quickTextSendControl, quickQuoteTextMatches, quickMessageHasQuote, resolveQuickReplyTarget} = require('../dist-js/ai-quick-dom.js');
+const {isAiComposerSendControlDescription} = require('../dist-js/ai-composer-command.js');
 const {formatCaprineAiSharedAnswer, caprineAiSharedAnswerCharacterLimit} = require('../dist-js/share-text-protocol.js');
 const {MessengerContextFixtureElement: Element} = require('./helpers/messenger-context-fixture.cjs');
 
@@ -128,6 +129,187 @@ test('native DOM scope keeps the reply preview outside the composer region and r
 	surface.append(new Element({attributes: {contenteditable: 'true'}}));
 	assert.equal(quickComposerSurface(composer), undefined);
 });
+
+function emojiComposer(emoji = '😻', label = `傳送${emoji}`) {
+	// Sanitized native structure: the quick-reaction image is a control beside
+	// the empty editor, not a pending upload or a message-history attachment.
+	const surface = new Element({
+		children: [{
+			attributes: {role: 'region'}, children: [
+				{attributes: {contenteditable: 'true'}},
+				{
+					attributes: {role: 'button', 'aria-label': label}, rectangle: {width: 30, height: 30}, children: [
+						{children: [{children: [{tag: 'span', children: [{tag: 'img', attributes: {alt: emoji}}]}]}]},
+					],
+				},
+			],
+		}],
+	});
+	return {
+		surface,
+		region: surface.children[0],
+		composer: surface.querySelector('[contenteditable="true"]'),
+		button: surface.querySelector('[role="button"]'),
+		image: surface.querySelector('img'),
+	};
+}
+
+test('native quick-emoji controls are not pending attachments', () => {
+	for (const emoji of ['😻', '👍🏽', '❤️', '👩‍💻', '🇹🇼', '1️⃣']) {
+		for (const label of [`傳送${emoji}`, `Send ${emoji}`]) {
+			assert.equal(quickHasAttachment(emojiComposer(emoji, label).composer), false, label);
+		}
+	}
+});
+
+test('unknown image controls and misplaced emoji images still block Quick sends', () => {
+	for (const [emoji, label] of [
+		['😻', 'Choose sticker'],
+		['😻', 'Remove attachment'],
+		['😻', '傳送👍'],
+		['', '傳送'],
+		['photo.png', 'Send photo.png'],
+		['😻😻', '傳送😻😻'],
+		['😻photo', 'Send 😻photo'],
+		['x', 'Send x'],
+	]) {
+		assert.equal(quickHasAttachment(emojiComposer(emoji, label).composer), true, label);
+	}
+
+	for (const location of ['surface', 'composer']) {
+		const f = emojiComposer();
+		f.button.remove();
+		f[location].append(f.button);
+		assert.equal(quickHasAttachment(f.composer), true, location);
+	}
+
+	const f = emojiComposer();
+	f.button.append(new Element({tag: 'img', attributes: {alt: '😻'}}));
+	assert.equal(quickHasAttachment(f.composer), true, 'ambiguous control with multiple images');
+});
+
+test('real attachments remain blocked beside and inside a quick-emoji control', () => {
+	const attachments = [
+		{tag: 'img'},
+		{tag: 'video'},
+		{tag: 'audio'},
+		{attributes: {'data-testid': 'attachment-preview'}},
+		{attributes: {'data-testid': 'composer-attachment'}},
+		{attributes: {role: 'progressbar'}},
+		{attributes: {role: 'button', 'aria-label': '移除附件'}},
+		{attributes: {role: 'button', 'aria-label': '刪除附件'}},
+		{attributes: {role: 'button', 'aria-label': 'Remove attachment'}},
+	];
+	for (const attachment of attachments) {
+		for (const location of ['surface', 'button']) {
+			const f = emojiComposer();
+			f[location].append(new Element(attachment));
+			assert.equal(quickHasAttachment(f.composer), true, `${location}: ${JSON.stringify(attachment)}`);
+		}
+	}
+
+	for (const attributes of [
+		{'data-testid': 'attachment-preview'},
+		{'data-testid': 'composer-attachment'},
+		{role: 'progressbar'},
+		{'aria-label': 'Remove attachment'},
+	]) {
+		const f = emojiComposer();
+		for (const [key, value] of Object.entries(attributes)) {
+			f.image.setAttribute(key, value);
+		}
+
+		assert.equal(quickHasAttachment(f.composer), true, 'explicit attachment marker on the control image wins');
+	}
+});
+
+test('Quick text Send selection rejects emoji, hidden and ambiguous controls', () => {
+	const dom = emojiComposer('😻', 'Send 😻');
+	const classify = control => isAiComposerSendControlDescription(control.getAttribute('aria-label') ?? '');
+	assert.equal(classify(dom.button), true, 'native emoji labels also match the existing Send classifier');
+	assert.equal(quickTextSendControl(dom.composer, classify), undefined, 'emoji-only is not text Send');
+	const send = new Element({attributes: {role: 'button', 'aria-label': 'Press Enter to send'}, rectangle: {width: 30, height: 30}});
+	dom.region.append(send);
+	assert.equal(quickTextSendControl(dom.composer, classify), send);
+	send.hidden = true;
+	assert.equal(quickTextSendControl(dom.composer, classify), undefined, 'hidden text Send cannot fall back to emoji');
+	send.hidden = false;
+	dom.region.append(new Element({attributes: {role: 'button', 'aria-label': 'Send'}, rectangle: {width: 30, height: 30}}));
+	assert.equal(quickTextSendControl(dom.composer, classify), undefined, 'multiple text Send controls are ambiguous');
+});
+
+for (const phase of ['question', 'answer']) {
+	test(`Quick ${phase} send selects text Send only and still stops newly added attachments`, async () => {
+		for (const scenario of ['text-send', 'emoji-only', 'insert-attachment', 'authorize-attachment']) {
+			const dom = emojiComposer('😻', 'Send 😻');
+			const f = fixture();
+			f.action.phase = phase;
+			if (phase === 'question') {
+				delete f.action.replyToMessageId;
+			}
+
+			let emojiClicks = 0;
+			dom.button.click = () => {
+				emojiClicks++;
+			};
+
+			const send = new Element({attributes: {role: 'button', 'aria-label': 'Press Enter to send'}, rectangle: {width: 30, height: 30}});
+			send.click = () => {
+				f.state.sends++;
+				dom.composer.textContent = '';
+				quickQuotePreview(dom.composer)?.remove();
+			};
+
+			if (scenario !== 'emoji-only') {
+				dom.region.append(send);
+			}
+
+			const resolveSend = composer => quickTextSendControl(composer, control => isAiComposerSendControlDescription(control.getAttribute('aria-label') ?? ''));
+			Object.assign(f.adapter, {
+				resolveComposer: () => dom.composer,
+				readText: composer => composer.textContent,
+				hasAttachment: quickHasAttachment,
+				hasReply: hasQuickQuote,
+				async prepareReply() {
+					dom.surface.setChildren([new Element({
+						children: [
+							{children: [{attributes: {role: 'button', 'aria-label': 'Cancel reply'}}]},
+							{attributes: {dir: 'auto'}, text: 'Synthetic question'},
+						],
+					}), dom.region]);
+					return true;
+				},
+				replyMatches: () => quickQuoteTextMatches(quickQuotePreview(dom.composer), 'Synthetic question'),
+				insertText(composer, text) {
+					composer.textContent = text;
+					if (scenario === 'insert-attachment') {
+						dom.surface.append(new Element({tag: 'img'}));
+					}
+				},
+				async authorizeSend() {
+					f.state.auths++;
+					if (scenario === 'authorize-attachment') {
+						dom.surface.append(new Element({attributes: {role: 'progressbar'}}));
+					}
+
+					return true;
+				},
+				canSend: composer => Boolean(resolveSend(composer)),
+				send(composer) {
+					resolveSend(composer).click();
+				},
+			});
+			// eslint-disable-next-line no-await-in-loop
+			const result = await executeQuickMessengerAction(f.action, f.adapter);
+			const expected = scenario === 'text-send' ? {status: 'observed', messageId: 'new-answer'}
+				: {status: 'blocked', code: scenario === 'emoji-only' ? 'send-control-unavailable' : 'attachment-present'};
+			assert.deepEqual(result, expected);
+			assert.equal(emojiClicks, 0);
+			assert.equal(f.state.sends, scenario === 'text-send' ? 1 : 0);
+			assert.equal(f.state.auths, ['text-send', 'authorize-attachment'].includes(scenario) ? 1 : 0);
+		}
+	});
+}
 
 test('repeated question text still resolves the exact newly sent message identity', () => {
 	const messages = ['previous-question', 'new-question'].map(id => ({

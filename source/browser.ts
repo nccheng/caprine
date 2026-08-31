@@ -15,7 +15,7 @@ import {
 import {restoreMessengerComposerFocus} from './ai-assist-focus';
 import {executeQuickMessengerAction, QuickMessengerAction} from './ai-quick-messenger';
 import {
-	hasQuickQuote, quickComposerSurface, quickHasAttachment, quickObservedMessageIds, quickOutgoingMessages, quickQuotePreview, quickQuoteTextMatches, quickReplySelector, resolveQuickReplyTarget,
+	hasQuickQuote, quickComposerSurface, quickHasAttachment, quickObservedMessageIds, quickOutgoingMessages, quickQuotePreview, quickQuoteTextMatches, quickReplySelector, quickTextSendControl, resolveQuickReplyTarget,
 } from './ai-quick-dom';
 import {
 	AiComposerCommandSnapshot,
@@ -627,12 +627,7 @@ async function handleQuickMessengerAction(action: QuickMessengerAction): Promise
 		setTimeout(resolve, 100);
 	});
 	let quote: {preview: Element; id: string; text: string; row: HTMLElement} | undefined;
-	const sendControl = (composer: HTMLElement): HTMLElement | undefined => {
-		const region = composer.closest('[role="region"]');
-		const controls = [...region?.querySelectorAll<HTMLElement>('[role="button"], button') ?? []]
-			.filter(control => control.getClientRects().length > 0 && isMessengerSendControl(control, composer));
-		return controls.length === 1 ? controls[0] : undefined;
-	};
+	const sendControl = (composer: HTMLElement): HTMLElement | undefined => quickTextSendControl(composer, isMessengerSendControl);
 
 	try {
 		respond(await executeQuickMessengerAction(action, {

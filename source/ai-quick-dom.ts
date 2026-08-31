@@ -3,6 +3,7 @@
 export const quickReplySelector = '[role="button"][aria-label="Reply"], [role="button"][aria-label="Reply to this message"], [role="button"][aria-label="回覆此訊息"]';
 const cancelReplySelector = '[role="button"][aria-label="Cancel reply"], [role="button"][aria-label="取消回覆"]';
 const quoteJumpSelector = '[role="button"][aria-label="Go to replied message"], [role="button"][aria-label="前往已回覆的訊息"]';
+const emojiSegmenter = new Intl.Segmenter('en', {granularity: 'grapheme'});
 
 export function quickComposerSurface(composer: HTMLElement): Element | undefined {
 	const region = composer.closest('[role="region"]');
@@ -32,20 +33,49 @@ export function quickQuoteTextMatches(element: Element, text: string): boolean {
 	return [...element.querySelectorAll('[dir="auto"]')].some(node => node.textContent === text);
 }
 
+function isQuickEmojiControlImage(image: Element, composer: HTMLElement): boolean {
+	const control = image.closest('[role="button"], button');
+	const emoji = image.getAttribute('alt') ?? '';
+	if (!control || !composer.closest('[role="region"]')?.contains(control)
+		|| composer.contains(image) || control.contains(composer)
+		|| control.querySelectorAll('img').length !== 1
+		|| !/[\p{Extended_Pictographic}\p{Regional_Indicator}\u20E3]/u.test(emoji)
+		|| [...emojiSegmenter.segment(emoji)].length !== 1) {
+		return false;
+	}
+
+	// Only the native quick-reaction control's matching emoji image is exempt.
+	// Images in arbitrary buttons or uploads must still block automatic sends.
+	const label = control.getAttribute('aria-label');
+	return label === `傳送${emoji}` || label === `Send ${emoji}`;
+}
+
 export function quickHasAttachment(composer: HTMLElement): boolean {
 	const surface = quickComposerSurface(composer);
 	const quotePreview = quickQuotePreview(composer);
 	return !surface || [...surface.querySelectorAll([
 		'[data-testid="attachment-preview"]',
 		'[data-testid="composer-attachment"]',
-		'img',
 		'video',
 		'audio',
 		'[role="progressbar"]',
 		'[aria-label*="remove" i]',
 		'[aria-label*="移除" i]',
 		'[aria-label*="刪除" i]',
-	].join(','))].some(element => !quotePreview?.contains(element));
+	].join(','))].some(element => !quotePreview?.contains(element))
+		|| [...surface.querySelectorAll('img')].some(image => !quotePreview?.contains(image) && !isQuickEmojiControlImage(image, composer));
+}
+
+export function quickTextSendControl(
+	composer: HTMLElement,
+	isSendControl: (control: HTMLElement, composer: HTMLElement) => boolean,
+): HTMLElement | undefined {
+	const region = composer.closest('[role="region"]');
+	// Quick-reaction buttons can also be labelled "Send". An image-bearing
+	// control must never be clicked as the automatic text Send action.
+	const controls = [...region?.querySelectorAll<HTMLElement>('[role="button"], button') ?? []]
+		.filter(control => control.getClientRects().length > 0 && !control.querySelector('img') && isSendControl(control, composer));
+	return controls.length === 1 ? controls[0] : undefined;
 }
 
 export type QuickDomMessage = {id: string; text: string; element: HTMLElement; article: Element};
