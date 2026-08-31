@@ -93,14 +93,20 @@ export function quickObservedMessageIds(
 	// the model/reply phase. Normalize older IDs too, so their acknowledgement
 	// cannot be mistaken for this send when the message text is identical.
 	const offlineId = (id: string) => /^\d+@msgr\.(\d+)$/.exec(id)?.[1];
-	const previous = new Set([...before].map(id => offlineId(id) ?? id));
+	const identity = (id: string) => offlineId(id) ?? id;
+	const previous = new Set([...before].map(id => identity(id)));
 	const hadPending = [...before].some(id => /^\d+$/.test(id));
-	return messages.filter(message => {
-		const offline = offlineId(message.id);
-		// Mid.* is the other observed native ID format. If an older optimistic
-		// row exists, we cannot prove that an unrelated mid.* is new.
-		const replyable = offline !== undefined || (message.id.startsWith('mid.') && !hadPending);
-		return replyable && !previous.has(offline ?? message.id) && message.text === text
-			&& quickMessageHasQuote(message, question);
-	}).map(message => message.id);
+	const candidates = messages.filter(message => !previous.has(identity(message.id)) && message.text === text);
+	// Mid.* is the other observed native ID format. If an older optimistic
+	// row exists, we cannot prove that an unrelated mid.* is new.
+	const native = candidates.filter(message => offlineId(message.id) !== undefined || (message.id.startsWith('mid.') && !hadPending));
+	const resolved = new Set(native.map(message => identity(message.id)));
+	// A pending/unknown row may be this send, while a different native row is
+	// syncing from another client. Do not drop that ambiguity. Its quote may
+	// also still be hydrating, so wait before applying the native quote check.
+	if (candidates.some(message => !resolved.has(identity(message.id)))) {
+		return [];
+	}
+
+	return native.filter(message => quickMessageHasQuote(message, question)).map(message => message.id);
 }

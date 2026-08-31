@@ -32,6 +32,15 @@ just because its text matches. When an older optimistic row exists, a new
 Unknown or unacknowledged IDs time out as uncertain, with no retry. Native UI
 observation still does not independently prove recipient delivery.
 
+Discovery found one validated blocker (C1): discarding a new optimistic row
+could leave a distinct same-text native row as the only candidate, suppressing
+the existing ambiguity guard. The bounded correction retains unresolved
+numeric/unknown identity candidates, even if their quote is still hydrating.
+Observation waits until those identities resolve; coexisting optimistic/native
+aliases of the same message do not count twice. Two distinct native IDs still
+reach the executor's ambiguity guard. Focused regressions cover question and
+answer phases, other-client synchronization, unknown IDs and alias overlap.
+
 No change to Quick defaults, panel Ask/Insert, attribution, source selection,
 provider access, history retention, conversation/draft guards, persisted
 one-use send authorization, or exact quote validation. Old runs are not resumed.

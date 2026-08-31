@@ -281,11 +281,49 @@ test('question and answer observations wait through numeric-to-native ID replace
 
 test('older optimistic IDs and renamed native IDs are not newly sent messages', () => {
 	const root = new Element({attributes: {role: 'main'}});
-	root.append(nativeArticle('100@msgr.111', 'Same'), nativeArticle('100@msgr.222', 'Same'), nativeArticle('mid.unrelated', 'Same'));
+	root.append(nativeArticle('100@msgr.111', 'Same'), nativeArticle('100@msgr.222', 'Same'));
 	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['111']), 'Same'), ['100@msgr.222']);
+	root.append(nativeArticle('mid.unrelated', 'Same'));
+	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['111']), 'Same'), [], 'a mid ID cannot resolve an older pending alias');
 	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['99@msgr.111', 'mid.unrelated']), 'Same'), ['100@msgr.222']);
 	root.append(nativeArticle('100@msgr.333', 'Same'));
-	assert.equal(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['111']), 'Same').length, 2, 'ambiguous new identities must reach the executor ambiguity guard');
+	assert.equal(quickObservedMessageIds(quickOutgoingMessages(root), new Set(['111', 'mid.unrelated']), 'Same').length, 2, 'ambiguous new identities must reach the executor ambiguity guard');
+});
+
+test('a different native message cannot hide this send while its numeric or unknown identity is unresolved', async () => {
+	for (const phase of ['question', 'answer']) {
+		for (const pendingId of ['111', 'unknown-id']) {
+			const f = fixture();
+			f.action.phase = phase;
+			if (phase === 'question') {
+				delete f.action.replyToMessageId;
+			}
+
+			const quoted = phase === 'answer' ? 'Original' : undefined;
+			const root = new Element({attributes: {role: 'main'}});
+			const {send} = f.adapter;
+			f.adapter.send = composer => {
+				send(composer);
+				// This send is still optimistic; a different client's matching
+				// native message arrives. The pending quote is not hydrated yet.
+				root.append(nativeArticle(pendingId, f.action.text), nativeArticle('100@msgr.222', f.action.text, quoted));
+			};
+
+			f.adapter.observe = (before, text) => quickObservedMessageIds(quickOutgoingMessages(root), before, text, quoted);
+			// eslint-disable-next-line no-await-in-loop
+			assert.deepEqual(await executeQuickMessengerAction(f.action, f.adapter), {status: 'uncertain', code: 'send-result-unknown'});
+			assert.equal(f.state.sends, 1);
+			assert.equal(f.state.auths, 1);
+		}
+	}
+});
+
+test('coexisting optimistic and native aliases are one resolved identity, but different native IDs remain ambiguous', () => {
+	const root = new Element({attributes: {role: 'main'}});
+	root.append(nativeArticle('111', 'Same'), nativeArticle('100@msgr.111', 'Same'));
+	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(), 'Same'), ['100@msgr.111']);
+	root.append(nativeArticle('100@msgr.222', 'Same'));
+	assert.deepEqual(quickObservedMessageIds(quickOutgoingMessages(root), new Set(), 'Same'), ['100@msgr.111', '100@msgr.222']);
 });
 
 test('unacknowledged or unknown IDs remain uncertain after one send', async () => {
