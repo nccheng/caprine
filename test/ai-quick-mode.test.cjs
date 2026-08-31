@@ -143,9 +143,10 @@ test('attributed maximum-size answers fit both sending paths without allowing la
 	assert.equal(text.length, caprineAiSharedAnswerCharacterLimit);
 	assert.match(text, /^Caprine AI Assist\nAI response shared by Derek\n\n/);
 	assert.equal(isQuickMessengerAction({...fixture().action, text}), true);
-	assert.equal(isQuickMessengerAction({
-		...fixture().action, phase: 'question', replyToMessageId: undefined, text,
-	}), false);
+	const questionAction = {...fixture().action, phase: 'question', text: 'x'.repeat(20_000)};
+	delete questionAction.replyToMessageId;
+	assert.equal(isQuickMessengerAction(questionAction), true);
+	assert.equal(isQuickMessengerAction({...questionAction, text}), false);
 	const insertion = {
 		type: 'insert-draft', requestId: 'draft-insertion-request-1', conversationId: 'messenger-thread:test',
 		answerGeneration: 1, authorizationToken: 'draft-insertion-token:00000000-0000-4000-8000-000000000001', text,
