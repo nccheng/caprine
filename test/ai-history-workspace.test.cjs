@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const {openAiResponseModel} = require('../dist-js/openai-client.js');
 const {
 	buildAiHistoryChatViews,
 	maximumHistoryChats,
@@ -25,7 +26,7 @@ function interaction(overrides = {}) {
 		},
 		draftStatus: 'inserted',
 		id: 'interaction-1',
-		model: 'gpt-5.6-luna',
+		model: openAiResponseModel,
 		outcome: 'completed',
 		provider: 'openai',
 		question: 'First question',
@@ -105,7 +106,7 @@ test('history workspace exposes only bounded renderable video evidence and no lo
 			id: 'video:thread:hash',
 			keyframes: [{bytes: Uint8Array.of(0xFF, 0xD8, 1, 0xFF, 0xD9), mimeType: 'image/jpeg', timestampSeconds: 5}],
 			mediaSha256: 'ab'.repeat(32),
-			model: 'gpt-5.6-luna',
+			model: openAiResponseModel,
 			provider: 'openai',
 			sampledFrameCount: 8,
 			samplingConfiguration: {maximumFrames: 180},
