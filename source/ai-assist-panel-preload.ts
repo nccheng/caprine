@@ -16,6 +16,9 @@ const sendCommand = async (command: AiAssistPanelCommand): Promise<AiAssistPanel
 };
 
 contextBridge.exposeInMainWorld('caprineAiAssist', {
+	setQuickMode: async (enabled: boolean) => sendCommand({enabled, type: 'set-quick-mode'}),
+	copyQuickDiagnostics: async (chatId: string, runId: string) => sendCommand({chatId, runId, type: 'copy-quick-diagnostics'}),
+	recoverQuickRun: async (chatId: string, runId: string) => sendCommand({chatId, runId, type: 'recover-quick-run'}),
 	cancel: async () => sendCommand({type: 'cancel'}),
 	cancelTranscription: async (reviewSequence: number, transcriptId: string) => sendCommand({reviewSequence, transcriptId, type: 'cancel-transcription'}),
 	cancelHistoryDeletion: async (authorizationToken: string) => sendCommand({authorizationToken, type: 'cancel-history-deletion'}),

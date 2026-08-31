@@ -98,7 +98,7 @@ export const messengerContextSelectors = {
 	nonMessageUi: '[role="navigation"], [role="complementary"], [role="tablist"], [data-messenger-sidebar]',
 	placeholder: '[aria-busy="true"], [data-virtualized-placeholder], [data-placeholder="true"]',
 	reaction: '[aria-label*="reaction" i], [aria-label*="reacted" i]',
-	reply: 'blockquote, [data-reply-to-message-id], [aria-label*="replied to" i]',
+	reply: 'blockquote, [data-reply-to-message-id], [aria-label*="replied to" i], [aria-label="前往已回覆的訊息"]',
 	senderAvatar: 'img[alt][data-message-author], [data-message-author] img[alt]',
 	timestamp: 'time[datetime], abbr[data-utime]',
 } as const;
@@ -932,7 +932,8 @@ function semanticMessageLabelFromElement(
 		element.getAttribute('aria-label'),
 		maximumStringLengths.text + maximumStringLengths.displayName + maximumStringLengths.timestamp + 16,
 	);
-	const parts = accessibleText?.match(/^at\s+(.+?),\s+(.+?)(?::\s*(.*))?$/i);
+	const parts = accessibleText?.match(/^at\s+(.+?),\s+(.+?)(?::\s*(.*))?$/i)
+		?? accessibleText?.match(/^(.+?)，([^：]+)：\s*(.*)$/);
 	const senderDisplayName = normalizedInline(parts?.[2], maximumStringLengths.displayName);
 	if (!senderDisplayName) {
 		return;
@@ -941,7 +942,7 @@ function semanticMessageLabelFromElement(
 	return {
 		confident: true,
 		senderDisplayName,
-		senderRole: /^you$/i.test(senderDisplayName) ? 'outgoing' : 'incoming',
+		senderRole: /^(?:you|你)$/i.test(senderDisplayName) ? 'outgoing' : 'incoming',
 		text: normalizedMultiline(parts?.[3], maximumStringLengths.text),
 		timestamp: normalizedInline(parts?.[1], maximumStringLengths.timestamp),
 	};

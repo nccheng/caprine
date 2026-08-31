@@ -10,8 +10,11 @@ import {
 } from './media-transcription';
 import {OpenAiUrlCitation, OpenAiWebSource, WebSearchMode} from './openai-client';
 import {maximumHistoryReviewedTranscriptCharacters} from './reviewed-transcripts';
+import {
+	AiQuickRun, interruptedQuickRun, isAiQuickRun, maximumQuickRunsPerChat,
+} from './ai-quick-run';
 
-export const aiHistorySchemaVersion = 6;
+export const aiHistorySchemaVersion = 7;
 export const maximumHistoryReviewedTranscripts = 50;
 
 export const maximumVideoArtifactKeyframes = 12;
@@ -276,6 +279,56 @@ export class AiHistoryStore {
 		this.now = options.now ?? Date.now;
 		this.database.exec('PRAGMA foreign_keys = ON');
 		this.migrate();
+		this.interruptQuickRuns();
+	}
+
+	createQuickRun(run: AiQuickRun): void {
+		if (!isAiQuickRun(run) || run.outcome !== 'running') {
+			throw new TypeError('Invalid new quick run');
+		}
+
+		this.transaction(() => {
+			const chat = this.database.prepare('SELECT id FROM ai_history_chats WHERE id = ? AND conversation_id = ?').get(run.chatId, run.conversationId);
+			if (!chat) {
+				throw new Error('Quick run chat is unavailable');
+			}
+
+			this.database.prepare('INSERT INTO ai_assist_runs (id, chat_id, updated_at, data_json) VALUES (?, ?, ?, ?)')
+				.run(run.id, run.chatId, run.updatedAt, JSON.stringify(run));
+			this.database.prepare(`DELETE FROM ai_assist_runs WHERE chat_id = ? AND id NOT IN
+				(SELECT id FROM ai_assist_runs WHERE chat_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?)`)
+				.run(run.chatId, run.chatId, maximumQuickRunsPerChat);
+		});
+	}
+
+	updateQuickRun(run: AiQuickRun): void {
+		if (!isAiQuickRun(run)) {
+			throw new TypeError('Invalid quick run');
+		}
+
+		const result = this.database.prepare(`UPDATE ai_assist_runs SET updated_at = ?, data_json = ?
+			WHERE id = ? AND chat_id = ? AND updated_at <= ?
+			AND json_extract(data_json, '$.conversationId') = ?
+			AND json_extract(data_json, '$.outcome') = 'running'
+			AND json_array_length(data_json, '$.events') = ?`)
+			.run(run.updatedAt, JSON.stringify(run), run.id, run.chatId, run.updatedAt, run.conversationId, run.events.length - 1);
+		if (result.changes !== 1) {
+			throw new Error('Quick run is finished, deleted, or unavailable');
+		}
+	}
+
+	loadQuickRuns(conversationId: string, chatId: string): AiQuickRun[] {
+		const rows = this.database.prepare(`SELECT r.data_json FROM ai_assist_runs r JOIN ai_history_chats c ON c.id = r.chat_id
+			WHERE c.conversation_id = ? AND c.id = ? ORDER BY r.updated_at DESC, r.id DESC LIMIT ?`)
+			.all(conversationId, chatId, maximumQuickRunsPerChat) as Array<{data_json: string}>;
+		return rows.map(row => {
+			const run: unknown = JSON.parse(row.data_json);
+			if (!isAiQuickRun(run)) {
+				throw new TypeError('Invalid stored quick run');
+			}
+
+			return run;
+		});
 	}
 
 	close(): void {
@@ -387,7 +440,7 @@ export class AiHistoryStore {
 			SELECT
 				c.id,
 				c.created_at,
-				COALESCE(MAX(i.completed_at), c.created_at) AS last_activity_at,
+				MAX(COALESCE(MAX(i.completed_at), c.created_at), COALESCE((SELECT MAX(r.updated_at) FROM ai_assist_runs r WHERE r.chat_id = c.id), c.created_at)) AS last_activity_at,
 				COALESCE((
 					SELECT t.content
 					FROM ai_history_interactions first_i
@@ -395,7 +448,7 @@ export class AiHistoryStore {
 					WHERE first_i.chat_id = c.id
 					ORDER BY first_i.requested_at, first_i.id
 					LIMIT 1
-				), 'New AI chat') AS title,
+				), (SELECT json_extract(r.data_json, '$.question') FROM ai_assist_runs r WHERE r.chat_id = c.id ORDER BY r.updated_at LIMIT 1), 'New AI chat') AS title,
 				COALESCE((
 					SELECT t.content
 					FROM ai_history_interactions last_i
@@ -403,7 +456,7 @@ export class AiHistoryStore {
 					WHERE last_i.chat_id = c.id
 					ORDER BY last_i.completed_at DESC, last_i.id DESC
 					LIMIT 1
-				), 'No answers yet.') AS preview,
+				), (SELECT 'Quick mode: ' || json_extract(r.data_json, '$.outcome') FROM ai_assist_runs r WHERE r.chat_id = c.id ORDER BY r.updated_at DESC LIMIT 1), 'No answers yet.') AS preview,
 				COALESCE(SUM(json_array_length(json_extract(i.context_json, '$.items'))), 0) AS context_count,
 				COUNT(i.id) AS interaction_count,
 				COALESCE(MAX(i.web_search_ran), 0) AS has_web,
@@ -413,7 +466,7 @@ export class AiHistoryStore {
 			FROM ai_history_chats c
 			LEFT JOIN ai_history_interactions i ON i.chat_id = c.id
 			WHERE c.conversation_id = ?
-				AND (? = '' OR EXISTS (
+				AND (? = '' OR EXISTS (SELECT 1 FROM ai_assist_runs r WHERE r.chat_id = c.id AND LOWER(r.data_json) LIKE ? ESCAPE '\\') OR EXISTS (
 					SELECT 1
 					FROM ai_history_interactions search_i
 					JOIN ai_history_turns search_t ON search_t.interaction_id = search_i.id
@@ -444,7 +497,7 @@ export class AiHistoryStore {
 			GROUP BY c.id
 			ORDER BY last_activity_at DESC, c.created_at DESC, c.id DESC
 			LIMIT 100
-		`).all(conversationId, normalizedQuery, pattern, pattern, pattern, pattern, pattern, pattern, pattern) as SummaryRow[];
+		`).all(conversationId, normalizedQuery, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern) as SummaryRow[];
 
 		return rows.map(row => ({
 			badges: [
@@ -1082,6 +1135,20 @@ export class AiHistoryStore {
 		JSON.stringify(artifact.uncertaintyNotes);
 	}
 
+	private interruptQuickRuns(): void {
+		const rows = this.database.prepare('SELECT data_json FROM ai_assist_runs WHERE json_extract(data_json, \'$.outcome\') = \'running\'').all() as Array<{data_json: string}>;
+		this.transaction(() => {
+			for (const row of rows) {
+				const run: unknown = JSON.parse(row.data_json);
+				if (!isAiQuickRun(run)) {
+					throw new TypeError('Invalid interrupted quick run');
+				}
+
+				this.updateQuickRun(interruptedQuickRun(run, this.now()));
+			}
+		});
+	}
+
 	private migrate(): void {
 		const version = Number((this.database.prepare('PRAGMA user_version').get() as {user_version: number}).user_version);
 		if (version > aiHistorySchemaVersion) {
@@ -1220,6 +1287,19 @@ export class AiHistoryStore {
 							) STRICT;
 							CREATE INDEX ai_history_reviewed_transcripts_interaction
 								ON ai_history_reviewed_transcripts (interaction_id);
+						`);
+						break;
+					}
+
+					case 7: {
+						this.database.exec(`
+							CREATE TABLE ai_assist_runs (
+								id TEXT PRIMARY KEY,
+								chat_id TEXT NOT NULL REFERENCES ai_history_chats(id) ON DELETE CASCADE,
+								updated_at INTEGER NOT NULL,
+								data_json TEXT NOT NULL
+							) STRICT;
+							CREATE INDEX ai_assist_runs_chat ON ai_assist_runs (chat_id, updated_at);
 						`);
 						break;
 					}

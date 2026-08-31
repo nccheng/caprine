@@ -13,6 +13,10 @@ import {
 	isAiAssistMessengerCommand,
 } from './ai-assist-ipc';
 import {restoreMessengerComposerFocus} from './ai-assist-focus';
+import {executeQuickMessengerAction, QuickMessengerAction} from './ai-quick-messenger';
+import {
+	hasQuickQuote, quickComposerSurface, quickHasAttachment, quickMessageHasQuote, quickOutgoingMessages, quickQuotePreview, quickQuoteTextMatches, quickReplySelector,
+} from './ai-quick-dom';
 import {
 	AiComposerCommandSnapshot,
 	AiComposerCommandState,
@@ -90,6 +94,11 @@ const aiComposerSendGestureGuard = new AiComposerSendGestureGuard<HTMLElement>()
 let pendingAiComposerImeEnter: HTMLElement | undefined;
 let handledAiComposerImeEnter: HTMLElement | undefined;
 let composerCommandInFlight = false;
+let isAiQuickModeEnabled = false;
+let quickGestureEpoch = 0;
+let quickInvocationEpoch: number | undefined;
+let quickActionInFlight: {runId: string; cancelled: boolean} | undefined;
+const quickConsumedTokens = new Set<string>();
 let draftInsertionInFlight: {cancelled: boolean; requestId: string} | undefined;
 const insertedDraftProvenance = new InsertedDraftProvenanceState<HTMLElement>();
 let composerStatusHost: HTMLElement | undefined;
@@ -347,7 +356,9 @@ function showComposerStatus(command: ReturnType<typeof parseAiComposerCommand>):
 	if (command.error === 'prompt-too-long') {
 		message = 'This /ai question is too long to move into Caprine. It will not be sent to Messenger; shorten it before trying again.';
 	} else if (command.prompt.length > 0) {
-		message = 'Caprine AI Assist is armed. This command will not be sent. Text after /ai is visible to Messenger while you type it.';
+		message = isAiQuickModeEnabled
+			? 'Quick AI: Enter publishes this question, asks the model and automatically replies under your account. Any further interaction stops automation. Inspect the run in AI Assist History.'
+			: 'Caprine AI Assist is armed. This command will not be sent. Text after /ai is visible to Messenger while you type it.';
 	}
 
 	if (composerStatusText!.textContent !== message) {
@@ -562,6 +573,120 @@ async function handleDraftInsertion(
 	}
 }
 
+function stopQuickActionOnGesture(event: Event): void {
+	if (event.isTrusted) {
+		quickGestureEpoch += 1;
+	}
+}
+
+for (const type of ['keydown', 'pointerdown', 'paste', 'drop', 'compositionstart']) {
+	window.addEventListener(type, stopQuickActionOnGesture, true);
+}
+
+async function handleQuickMessengerAction(action: QuickMessengerAction): Promise<void> {
+	const respond = (result: Awaited<ReturnType<typeof executeQuickMessengerAction>>): void => {
+		electronIpcRenderer.send(aiAssistIpcChannels.messengerEvent, {
+			type: 'quick-action', runId: action.runId, token: action.token, result,
+		});
+	};
+
+	if (!isAiAssistEnabled || !isAiQuickModeEnabled || quickInvocationEpoch === undefined
+		|| quickActionInFlight !== undefined || quickConsumedTokens.has(action.token)) {
+		respond({status: 'blocked', code: 'stale-authorization'});
+		return;
+	}
+
+	quickConsumedTokens.add(action.token);
+	const execution = {runId: action.runId, cancelled: false};
+	quickActionInFlight = execution;
+	const epoch = quickInvocationEpoch;
+	const current = (): boolean => quickActionInFlight === execution && !execution.cancelled
+		&& isAiAssistEnabled && isAiQuickModeEnabled && quickGestureEpoch === epoch;
+	const root = resolveLoadedMessengerConversationRoot();
+	const messages = () => root?.isConnected && resolveLoadedMessengerConversationRoot() === root
+		? quickOutgoingMessages(root) : [];
+	const settle = async (): Promise<void> => new Promise(resolve => {
+		setTimeout(resolve, 100);
+	});
+	let quote: {preview: Element; id: string; text: string; row: HTMLElement} | undefined;
+	const sendControl = (composer: HTMLElement): HTMLElement | undefined => {
+		const region = composer.closest('[role="region"]');
+		const controls = [...region?.querySelectorAll<HTMLElement>('[role="button"], button') ?? []]
+			.filter(control => control.getClientRects().length > 0 && isMessengerSendControl(control, composer));
+		return controls.length === 1 ? controls[0] : undefined;
+	};
+
+	try {
+		respond(await executeQuickMessengerAction(action, {
+			currentConversationId,
+			isCurrent: () => current() && Boolean(root?.isConnected && resolveLoadedMessengerConversationRoot() === root),
+			resolveComposer: uniqueCurrentMessengerComposer,
+			isEditable: composer => isDraftInsertionComposerEditable(composer) && Boolean(quickComposerSurface(composer)),
+			readText: composerText,
+			hasAttachment: quickHasAttachment,
+			hasReply: hasQuickQuote,
+			async prepareReply(id, composer) {
+				const originals = messages().filter(message => message.id === id);
+				const original = originals[0];
+				if (originals.length !== 1 || !original || messages().filter(message => message.text === original.text).length !== 1) {
+					return false;
+				}
+
+				original.element.focus();
+				original.element.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+				original.element.dispatchEvent(new PointerEvent('pointerover', {bubbles: true}));
+				await settle();
+				if (!current() || currentConversationId() !== action.conversationId || composerText(composer) !== '' || hasQuickQuote(composer)) {
+					return false;
+				}
+
+				const buttons = [...original.article.querySelectorAll<HTMLElement>(quickReplySelector)]
+					.filter(button => button.getClientRects().length > 0 && button.getAttribute('aria-disabled') !== 'true');
+				if (buttons.length !== 1 || !original.element.isConnected
+					|| !messages().some(message => message.element === original.element && message.id === id && message.text === original.text)) {
+					return false;
+				}
+
+				buttons[0].click();
+				await settle();
+				const preview = quickQuotePreview(composer);
+				if (!preview || !quickQuoteTextMatches(preview, original.text)) {
+					return false;
+				}
+
+				quote = {
+					id, preview, row: original.element, text: original.text,
+				};
+				return true;
+			},
+			replyMatches: (id, composer) => Boolean(quote?.id === id && quote.row.isConnected && quote.row.dataset.messageId === id
+				&& quickQuotePreview(composer) === quote.preview && quickQuoteTextMatches(quote.preview, quote.text)
+				&& messages().filter(message => message.text === quote!.text).length === 1),
+			insertText: setComposerText,
+			canSend: composer => Boolean(sendControl(composer)),
+			authorizeSend: async () => current() && await electronIpcRenderer.invoke(aiAssistIpcChannels.quickSendAuthorization, action) === true,
+			send(composer) {
+				const button = sendControl(composer);
+				if (!button || !current()) {
+					throw new Error('Send control lost');
+				}
+
+				button.click();
+			},
+			messageIds: () => new Set(messages().map(message => message.id)),
+			observe: (before, text, replyTo) => messages()
+				.filter(message => !before.has(message.id) && message.text === text
+					&& quickMessageHasQuote(message, replyTo ? quote?.text : undefined))
+				.map(message => message.id),
+			settle,
+		}));
+	} finally {
+		if (quickActionInFlight === execution) {
+			quickActionInFlight = undefined;
+		}
+	}
+}
+
 function isMessengerSendControl(target: EventTarget | undefined, composer: HTMLElement): boolean {
 	if (!(target instanceof Element)) {
 		return false;
@@ -662,6 +787,11 @@ async function consumeComposerCommand(snapshot: Readonly<AiComposerCommandSnapsh
 					&& aiComposerCommandState.matches(snapshot, snapshotState(snapshot));
 			},
 			async openPanel(prompt) {
+				if (isAiQuickModeEnabled && prompt.trim()) {
+					quickInvocationEpoch = quickGestureEpoch;
+					quickConsumedTokens.clear();
+				}
+
 				const result: unknown = await electronIpcRenderer.invoke(aiAssistIpcChannels.composerCommand, {
 					conversationId,
 					prompt,
@@ -1357,6 +1487,29 @@ async function resolveMessengerMedia(requestId: string, messageId: string, kind:
 
 electronIpcRenderer.on(aiAssistIpcChannels.messengerCommand, (_event, value: unknown) => {
 	if (!isAiAssistMessengerCommand(value)) {
+		return;
+	}
+
+	if (value.type === 'set-quick-mode') {
+		isAiQuickModeEnabled = value.enabled;
+		if (!value.enabled) {
+			quickInvocationEpoch = undefined;
+		}
+
+		return;
+	}
+
+	if (value.type === 'quick-action') {
+		void handleQuickMessengerAction(value.action);
+		return;
+	}
+
+	if (value.type === 'cancel-quick-action') {
+		if (quickActionInFlight?.runId === value.runId) {
+			quickActionInFlight.cancelled = true;
+		}
+
+		quickInvocationEpoch = undefined;
 		return;
 	}
 

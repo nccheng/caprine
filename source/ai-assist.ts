@@ -14,11 +14,16 @@ import {
 } from 'electron';
 import config from './config';
 import {
+	advanceQuickRun, AiQuickRun, formatQuickRunDiagnostics, maximumQuickRunInputCharacters, QuickRunErrorCode, QuickRunEvent, QuickRunOutcome,
+} from './ai-quick-run';
+import {isQuickMessengerAction, QuickMessengerAction, QuickMessengerResult} from './ai-quick-messenger';
+import {
 	aiAssistIpcChannels,
 	AiComposerCommandRequest,
 	AiComposerCommandResult,
 	AiMessageAnchorRequest,
 	AiAssistMessengerCommand,
+	isQuickSavedContext,
 	AiAssistMessengerEvent,
 	AiAssistPanelCommand,
 	AiAssistPanelState,
@@ -87,6 +92,7 @@ import {
 	buildReviewedPrompt,
 	contextCaptureRetryNotice,
 	ContextReviewSnapshot,
+	restoreContextReviewSnapshot,
 	ContextWindowSize,
 	contextReviewSubmissionDecision,
 	createUnlockedContextReview,
@@ -153,6 +159,8 @@ const panelPartition = 'ai-assist';
 type ReviewContextSource = 'current' | 'historical-current' | 'historical-original';
 type OpenAiRequestRunOptions = {
 	isConnectionTest: boolean;
+	frozenReview?: Readonly<ContextReviewSnapshot>;
+	quickRunId?: string;
 	reviewedImages?: ReadonlyArray<Readonly<ReviewedImageItem>>;
 	reviewSnapshot?: Readonly<ConversationSnapshot>;
 	searchMode?: WebSearchMode;
@@ -222,7 +230,21 @@ function durableVideoKeyframes(
 	return keyframes;
 }
 
+class QuickRunFailure extends Error {
+	constructor(readonly code: QuickRunErrorCode, readonly uncertain = false) {
+		super(code);
+	}
+}
+
 class AiAssistController {
+	private composerAcceptanceInFlight = false;
+	private quickRun?: {run: AiQuickRun; snapshot: Readonly<ConversationSnapshot>};
+	private pendingQuickAction?: {
+		action: QuickMessengerAction;
+		authorized: boolean;
+		resolve: (result: QuickMessengerResult) => void;
+	};
+
 	private answerGeneration = 0;
 	private anchor?: {
 		sequence: number;
@@ -397,6 +419,7 @@ class AiAssistController {
 		);
 		void this.refreshVideoToolAvailability();
 		ipcMain.handle(aiAssistIpcChannels.composerCommand, this.handleComposerCommand);
+		ipcMain.handle(aiAssistIpcChannels.quickSendAuthorization, this.handleQuickSendAuthorization);
 		ipcMain.handle(aiAssistIpcChannels.draftInsertionAuthorization, this.handleDraftInsertionAuthorizationCheck);
 		ipcMain.handle(aiAssistIpcChannels.messageAnchor, this.handleMessageAnchor);
 		ipcMain.handle(aiAssistIpcChannels.panelCommand, this.handlePanelCommand);
@@ -431,6 +454,7 @@ class AiAssistController {
 		};
 		const diagnostics = this.diagnosticsState;
 		return {
+			quickMode: config.get('aiAssistQuickMode'),
 			...(this.anchor && this.isRequestSnapshotCurrent(this.anchor.snapshot.snapshot) ? {
 				anchor: {
 					item: this.anchor.snapshot.item,
@@ -531,6 +555,12 @@ class AiAssistController {
 				? this.historyStore.loadChat(snapshot.conversationId, this.selectedHistoryChatId)
 				: undefined;
 			const chats = buildAiHistoryChatViews(summaries, selectedChat);
+			for (const chat of chats) {
+				if (chat.id === selectedChat?.id) {
+					chat.quickRuns = this.historyStore.loadQuickRuns(snapshot.conversationId, chat.id);
+				}
+			}
+
 			return {
 				chats,
 				query: this.historyQuery,
@@ -557,6 +587,7 @@ class AiAssistController {
 		}
 
 		this.notifyMessenger({type: 'set-enabled', enabled});
+		this.notifyMessenger({type: 'set-quick-mode', enabled: config.get('aiAssistQuickMode')});
 		this.broadcastState();
 	}
 
@@ -565,9 +596,9 @@ class AiAssistController {
 			return;
 		}
 
-		const refocusSnapshot = this.panelWindow && !this.panelWindow.isDestroyed()
-			? this.conversationBinding.currentSnapshot
-			: undefined;
+		const refocusSnapshot = this.quickRun?.run.outcome === 'running'
+			? this.quickRun.snapshot
+			: (this.panelWindow && !this.panelWindow.isDestroyed() ? this.conversationBinding.currentSnapshot : undefined);
 		this.panelFocusReturnSnapshot = undefined;
 		this.showPanelWindow();
 		void this.refreshConversation(refocusSnapshot);
@@ -582,7 +613,16 @@ class AiAssistController {
 			throw new TypeError('Rejected invalid AI Assist composer command IPC');
 		}
 
-		return {accepted: await this.acceptComposerCommand(value)};
+		if (this.composerAcceptanceInFlight) {
+			return {accepted: false};
+		}
+
+		this.composerAcceptanceInFlight = true;
+		try {
+			return {accepted: await this.acceptComposerCommand(value)};
+		} finally {
+			this.composerAcceptanceInFlight = false;
+		}
 	};
 
 	private readonly handleMessageAnchor = async (
@@ -604,7 +644,38 @@ class AiAssistController {
 			throw new TypeError('Rejected invalid AI Assist panel IPC');
 		}
 
+		if (this.quickRun?.run.outcome === 'running' && !['get-state', 'cancel', 'close', 'copy-diagnostics', 'copy-quick-diagnostics', 'set-quick-mode'].includes(value.type)) {
+			this.notice = 'A quick run is active. Cancel it before changing its context or history.';
+			return this.state;
+		}
+
 		switch (value.type) {
+			case 'set-quick-mode': {
+				if (!value.enabled) {
+					this.cancelQuickRun('disabled');
+				}
+
+				config.set('aiAssistQuickMode', value.enabled);
+				this.notifyMessenger({enabled: value.enabled, type: 'set-quick-mode'});
+				break;
+			}
+
+			case 'copy-quick-diagnostics': {
+				const conversationId = this.conversationBinding.currentSnapshot?.conversationId;
+				const run = conversationId ? this.historyStore?.loadQuickRuns(conversationId, value.chatId).find(run => run.id === value.runId) : undefined;
+				if (run) {
+					clipboard.writeText(formatQuickRunDiagnostics(run));
+					this.notice = 'Redacted execution diagnostics copied. Private content and identifiers were excluded.';
+				}
+
+				break;
+			}
+
+			case 'recover-quick-run': {
+				this.recoverQuickRun(value.chatId, value.runId);
+				break;
+			}
+
 			case 'cancel': {
 				this.cancelActiveRequest();
 				this.cancelTranscription();
@@ -827,6 +898,17 @@ class AiAssistController {
 			return;
 		}
 
+		if (value.type === 'quick-action') {
+			const pending = this.pendingQuickAction;
+			if (pending && pending.action.runId === value.runId && pending.action.token === value.token) {
+				this.pendingQuickAction = undefined;
+				pending.resolve(value.result.status === 'observed' && !pending.authorized
+					? {status: 'blocked', code: 'stale-authorization'} : value.result);
+			}
+
+			return;
+		}
+
 		if (value.type === 'draft-insertion') {
 			this.handleDraftInsertionResult(value);
 			return;
@@ -988,6 +1070,7 @@ class AiAssistController {
 		});
 
 		webContents.on('dom-ready', () => {
+			this.notifyMessenger({type: 'set-quick-mode', enabled: config.get('aiAssistQuickMode')});
 			this.conversationReportGate.markDocumentReady();
 			this.notifyMessenger({
 				type: 'set-enabled',
@@ -1021,6 +1104,21 @@ class AiAssistController {
 	private async acceptComposerCommand(value: Readonly<AiComposerCommandRequest>): Promise<boolean> {
 		if (!config.get('aiAssistEnabled')) {
 			return false;
+		}
+
+		if (this.quickRun?.run.outcome === 'running' || this.activeRequest !== undefined) {
+			return false;
+		}
+
+		if (config.get('aiAssistQuickMode') && value.prompt.trim().length > 0) {
+			await this.refreshConversation(undefined, true);
+			const snapshot = this.conversationBinding.currentSnapshot;
+			if (!config.get('aiAssistEnabled') || !config.get('aiAssistQuickMode') || !snapshot || snapshot.conversationId !== value.conversationId || !this.isRequestSnapshotCurrent(snapshot) || !this.historyStore || !this.hasApiKey) {
+				return false;
+			}
+
+			void this.startQuickRun(value.prompt, snapshot);
+			return true;
 		}
 
 		this.showPanelWindow();
@@ -1186,7 +1284,7 @@ class AiAssistController {
 		const reviewedItems = value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item}));
 		this.diagnosticsHealth.contextHealthy();
 		this.review = {
-			browsingMode: config.get('aiAssistWebSearchMode'),
+			browsingMode: this.quickRun?.run.outcome === 'running' ? this.quickRun.run.browsingMode : config.get('aiAssistWebSearchMode'),
 			contextSource: pending.contextSource,
 			editable: true,
 			...createUnlockedContextReview({
@@ -1209,7 +1307,7 @@ class AiAssistController {
 			: `${value.items.length} of ${pending.requestedCount} messages available for review. Nothing has left Messenger.`;
 		this.broadcastState();
 		pending.resolve();
-		if (hasImages) {
+		if (hasImages && this.quickRun?.run.outcome !== 'running') {
 			await this.populateReviewedImages({
 				...(pending.anchorMessageId ? {anchorMessageId: pending.anchorMessageId} : {}),
 				idPrefix: value.requestId,
@@ -1581,6 +1679,7 @@ class AiAssistController {
 		invalidateConversation = true,
 		preserveConversationReportId?: string,
 	): void {
+		this.cancelQuickRun(reason === 'ai-disabled' ? 'disabled' : (reason === 'panel-closed' ? 'cancelled' : 'conversation-changed'));
 		if (['conversation-changed', 'conversation-unavailable', 'messenger-reloaded', 'panel-failed'].includes(reason)) {
 			this.diagnosticsHealth.contextDegraded();
 		}
@@ -1608,6 +1707,7 @@ class AiAssistController {
 
 	private async refreshConversation(
 		refocusSnapshot?: Readonly<ConversationSnapshot>,
+		allowWithoutPanel = false,
 	): Promise<void> {
 		if (!refocusSnapshot) {
 			this.clearMediaState();
@@ -1626,8 +1726,7 @@ class AiAssistController {
 
 		if (
 			!this.conversationLifecycle.isCurrent(reportedGeneration)
-			|| !this.panelWindow
-			|| this.panelWindow.isDestroyed()
+			|| (!allowWithoutPanel && (!this.panelWindow || this.panelWindow.isDestroyed()))
 		) {
 			return;
 		}
@@ -2527,6 +2626,7 @@ class AiAssistController {
 				prompt,
 				{
 					isConnectionTest: false,
+					frozenReview: lockedReview.snapshot,
 					reviewedImages: lockedReview.snapshot.images,
 					reviewSnapshot: lockedReview.snapshot.snapshot,
 					searchMode: lockedReview.browsingMode,
@@ -2552,6 +2652,10 @@ class AiAssistController {
 		const searchMode = options.isConnectionTest ? 'off' : (options.searchMode ?? config.get('aiAssistWebSearchMode'));
 		const lifecycleBeforeReport = this.conversationLifecycle.snapshot;
 		const reportedGeneration = await this.requestConversationState();
+		if (options.quickRunId && !this.quickRunIsCurrent(options.quickRunId)) {
+			return;
+		}
+
 		if (reportedGeneration === undefined) {
 			if (this.conversationLifecycle.isCurrent(lifecycleBeforeReport)) {
 				this.conversationBinding.reportUnavailable();
@@ -2677,7 +2781,7 @@ class AiAssistController {
 				});
 			}
 
-			if (this.activeRequest?.id !== request.id) {
+			if (this.activeRequest?.id !== request.id || (options.quickRunId && !this.quickRunIsCurrent(options.quickRunId))) {
 				return;
 			}
 
@@ -2695,8 +2799,13 @@ class AiAssistController {
 				this.error = undefined;
 				this.notice = 'OpenAI API key works.';
 			} else {
+				if (options.quickRunId && this.quickRun?.run.id === options.quickRunId) {
+					this.quickRun.run.answer = answer.text;
+				}
+
 				const historyInteractionId = this.persistCompletedInteraction(
 					answer,
+					options.frozenReview,
 					request.historyChatId,
 					request.requestedAt,
 					request.snapshot,
@@ -2819,12 +2928,12 @@ class AiAssistController {
 
 	private persistCompletedInteraction(
 		answer: OpenAiAnswer,
+		review: Readonly<ContextReviewSnapshot> | undefined,
 		historyChatId: string | undefined,
 		requestedAt: number,
 		snapshot: Readonly<ConversationSnapshot>,
 		videoArtifact?: AiHistoryVideoArtifactInput,
 	): string {
-		const review = this.review?.snapshot;
 		if (!review || review.question.length === 0 || !this.historyStore) {
 			throw new OpenAiRequestError('provider-unavailable', 'Caprine could not preserve the reviewed context. Nothing was shown.');
 		}
@@ -3324,7 +3433,283 @@ class AiAssistController {
 		this.broadcastState();
 	}
 
+	private quickRunIsCurrent(runId: string): boolean {
+		return this.quickRun?.run.id === runId && this.quickRun.run.outcome === 'running'
+			&& config.get('aiAssistEnabled') && config.get('aiAssistQuickMode')
+			&& this.isRequestSnapshotCurrent(this.quickRun.snapshot);
+	}
+
+	private recoverQuickRun(chatId: string, runId: string): void {
+		const snapshot = this.conversationBinding.currentSnapshot;
+		if (!snapshot || !this.isRequestSnapshotCurrent(snapshot) || this.activeRequest !== undefined || !this.historyStore) {
+			return;
+		}
+
+		try {
+			const run = this.historyStore.loadQuickRuns(snapshot.conversationId, chatId).find(run => run.id === runId);
+			if (!run?.contextJson || run.outcome === 'running') {
+				return;
+			}
+
+			const context: unknown = JSON.parse(run.contextJson);
+			if (!isQuickSavedContext(context) || context.question !== run.question) {
+				throw new Error('Unavailable saved context');
+			}
+
+			this.cancelPendingContextCapture();
+			this.clearContextReview();
+			this.clearAnswer();
+			this.review = {
+				browsingMode: run.browsingMode, contextSource: 'historical-original', editable: false, locked: false,
+				sequence: ++this.reviewSequence,
+				snapshot: restoreContextReviewSnapshot({
+					...context, snapshot, images: [], transcripts: [], newMessagesAvailable: false,
+				}),
+			};
+			this.historyChat = {chatId, conversationId: snapshot.conversationId, sessionId: snapshot.sessionId};
+			this.selectedHistoryChatId = chatId;
+			this.invocation = {prompt: run.question, sequence: ++this.invocationSequence};
+			if (run.answer) {
+				const interaction = run.interactionId ? this.historyStore.loadInteraction(snapshot.conversationId, chatId, run.interactionId) : undefined;
+				this.answer.store({
+					text: run.answer, webSearch: {
+						mode: run.browsingMode, citations: interaction?.webSearch.citations ?? [],
+						sources: interaction?.webSearch.sources ?? [], ran: interaction?.webSearch.ran ?? false,
+					},
+				}, snapshot, snapshot);
+				this.currentHistoryInteractionId = run.interactionId;
+				this.draftInsertionAuthorization.issue({
+					answerGeneration: ++this.answerGeneration, authorizationToken: `draft-insertion-token:${randomUUID()}`,
+					conversationId: snapshot.conversationId, snapshot, text: run.answer,
+				});
+			}
+
+			this.error = undefined;
+			this.notice = 'Saved quick run opened for manual review only. Nothing was sent or requested again. Check Messenger for duplicates before Ask or Insert.';
+		} catch {
+			this.notice = 'The saved quick run could not be opened safely.';
+		}
+	}
+
+	private recordQuickEvent(event: Omit<QuickRunEvent, 'at'>, outcome: QuickRunOutcome = 'running'): void {
+		if (!this.quickRun || !this.historyStore) {
+			throw new QuickRunFailure('history-unavailable');
+		}
+
+		const run = advanceQuickRun(this.quickRun.run, {...event, at: Math.max(Date.now(), this.quickRun.run.updatedAt)}, outcome);
+		this.historyStore.updateQuickRun(run);
+		this.quickRun.run = run;
+		this.notice = `Quick mode — ${event.stage}: ${event.status}${event.code ? ` (${event.code})` : ''}. Inspect this run in History. No automatic retry.`;
+		this.broadcastState();
+	}
+
+	private readonly handleQuickSendAuthorization = (event: IpcMainInvokeEvent, value: unknown): boolean => {
+		if (!this.isExpectedAiInboundSender(aiAssistIpcChannels.quickSendAuthorization, event) || !isQuickMessengerAction(value)) {
+			return false;
+		}
+
+		const pending = this.pendingQuickAction;
+		if (!pending || pending.authorized || !this.quickRunIsCurrent(value.runId)
+			|| !Object.keys(pending.action).every(key => pending.action[key as keyof QuickMessengerAction] === value[key as keyof QuickMessengerAction])) {
+			return false;
+		}
+
+		try {
+			if (value.phase === 'answer') {
+				this.recordQuickEvent({stage: 'reply', status: 'succeeded'});
+			}
+
+			this.recordQuickEvent({stage: value.phase === 'question' ? 'question-send' : 'answer-send', status: 'started'});
+			pending.authorized = true;
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	private async quickMessengerAction(phase: 'question' | 'answer', text: string): Promise<QuickMessengerResult> {
+		const active = this.quickRun;
+		if (!active || !this.quickRunIsCurrent(active.run.id) || this.pendingQuickAction) {
+			throw new QuickRunFailure('stale-authorization');
+		}
+
+		const action: QuickMessengerAction = {
+			runId: active.run.id,
+			token: randomUUID(),
+			conversationId: active.run.conversationId,
+			phase,
+			text,
+			...(phase === 'answer' ? {replyToMessageId: active.run.questionMessageId} : {}),
+		};
+		return new Promise(resolve => {
+			const timeout = setTimeout(() => {
+				const pending = this.pendingQuickAction;
+				if (pending?.action.token === action.token) {
+					this.notifyMessenger({runId: action.runId, type: 'cancel-quick-action'});
+					this.pendingQuickAction = undefined;
+					resolve({code: 'send-result-unknown', status: pending.authorized ? 'uncertain' : 'blocked'});
+				}
+			}, 6000);
+			this.pendingQuickAction = {
+				action,
+				authorized: false,
+				resolve(result) {
+					clearTimeout(timeout);
+					resolve(result);
+				},
+			};
+			this.notifyMessenger({action, type: 'quick-action'});
+		});
+	}
+
+	private async startQuickRun(question: string, snapshot: Readonly<ConversationSnapshot>): Promise<void> {
+		const runId = randomUUID();
+		let stage: QuickRunEvent['stage'] = 'invocation';
+		try {
+			if (!this.historyStore || this.quickRun?.run.outcome === 'running') {
+				throw new QuickRunFailure('history-unavailable');
+			}
+
+			const chatId = this.historyStore.createChat(snapshot.conversationId);
+			const at = Date.now();
+			const run: AiQuickRun = {
+				id: runId, chatId, conversationId: snapshot.conversationId, createdAt: at, updatedAt: at,
+				appVersion: app.getVersion(), model: openAiResponseModel,
+				browsingMode: config.get('aiAssistWebSearchMode'), contextCount: config.get('aiAssistContextWindowSize'),
+				question, prompt: '', answer: '', outcome: 'running',
+				events: [{at, stage, status: 'succeeded'}],
+			};
+			this.historyStore.createQuickRun(run);
+			this.quickRun = {run, snapshot};
+			this.historyChat = {chatId, conversationId: snapshot.conversationId, sessionId: snapshot.sessionId};
+			this.historyConversationId = snapshot.conversationId;
+			this.selectedHistoryChatId = chatId;
+			this.invocation = {prompt: question, sequence: ++this.invocationSequence};
+			stage = 'context';
+			this.recordQuickEvent({stage, status: 'started'});
+			await this.requestContextReview(question);
+			if (!this.quickRunIsCurrent(runId)) {
+				return;
+			}
+
+			if (!this.review) {
+				throw new QuickRunFailure('context-unavailable');
+			}
+
+			const frozenReview = this.review.snapshot;
+			const contextJson = JSON.stringify({
+				actualCount: frozenReview.actualCount, contextVersion: frozenReview.contextVersion,
+				items: frozenReview.items, question: frozenReview.question, requestedCount: frozenReview.requestedCount,
+			});
+			const prompt = buildReviewedPrompt(frozenReview);
+			if (prompt.length > maximumQuickRunInputCharacters || contextJson.length > maximumQuickRunInputCharacters) {
+				throw new QuickRunFailure('input-too-large');
+			}
+
+			this.quickRun.run.contextJson = contextJson;
+			this.quickRun.run.prompt = prompt;
+			if (prompt.length > openAiPromptCharacterLimit) {
+				throw new QuickRunFailure('input-too-large');
+			}
+
+			this.recordQuickEvent({stage, status: 'succeeded'});
+			stage = 'question-send';
+			const original = await this.quickMessengerAction('question', question);
+			if (!this.quickRunIsCurrent(runId)) {
+				return;
+			}
+
+			if (original.status !== 'observed') {
+				throw new QuickRunFailure(original.code, original.status === 'uncertain');
+			}
+
+			this.quickRun.run.questionMessageId = original.messageId;
+			this.recordQuickEvent({stage, status: 'succeeded'});
+			stage = 'model';
+			this.recordQuickEvent({stage, status: 'started'});
+			this.review = {...this.review, locked: true, browsingMode: run.browsingMode};
+			await this.runOpenAiRequest(this.quickRun.run.prompt, {
+				isConnectionTest: false,
+				frozenReview,
+				quickRunId: runId,
+				reviewSnapshot: snapshot,
+				searchMode: run.browsingMode,
+			});
+			if (!this.quickRunIsCurrent(runId)) {
+				return;
+			}
+
+			const answer = this.answer.read(snapshot);
+			if (!answer) {
+				throw new QuickRunFailure(this.error?.code ?? 'provider-unavailable');
+			}
+
+			this.quickRun.run.answer = answer.text;
+			this.quickRun.run.interactionId = this.currentHistoryInteractionId;
+			this.recordQuickEvent({stage, status: 'succeeded'});
+			stage = 'reply';
+			this.recordQuickEvent({stage, status: 'started'});
+			const reply = await this.quickMessengerAction('answer', answer.text);
+			if (!this.quickRunIsCurrent(runId)) {
+				return;
+			}
+
+			if (reply.status !== 'observed') {
+				stage = this.quickRun.run.events.at(-1)?.stage ?? stage;
+				throw new QuickRunFailure(reply.code, reply.status === 'uncertain');
+			}
+
+			this.quickRun.run.answerMessageId = reply.messageId;
+			this.recordQuickEvent({stage: 'answer-send', status: 'succeeded'}, 'completed');
+			this.draftInsertionAuthorization.invalidate();
+			this.notice = 'Quick reply observed in Messenger. Recipient delivery is not independently confirmed. Inspect the run in History.';
+		} catch (error) {
+			const failure = error instanceof QuickRunFailure ? error : new QuickRunFailure('history-unavailable');
+			if (this.quickRun?.run.id === runId && this.quickRun.run.outcome === 'running') {
+				try {
+					this.recordQuickEvent({stage, status: failure.uncertain ? 'unknown' : 'failed', code: failure.code}, failure.uncertain ? 'send-uncertain' : 'failed');
+				} catch {
+					this.diagnosticsHealth.historyFailed();
+				}
+			}
+
+			this.notice = `Quick mode stopped: ${failure.code}. No automatic retry. Inspect the original question, answer and run in History before continuing.`;
+			this.showPanelWindow();
+		} finally {
+			if (this.quickRun?.run.id === runId) {
+				this.quickRun = undefined;
+			}
+
+			this.broadcastState();
+		}
+	}
+
+	private cancelQuickRun(code: QuickRunErrorCode): void {
+		const active = this.quickRun;
+		if (!active || active.run.outcome !== 'running') {
+			return;
+		}
+
+		const pending = this.pendingQuickAction;
+		const uncertain = Boolean(pending?.authorized);
+		try {
+			this.recordQuickEvent({stage: active.run.events.at(-1)?.stage ?? 'invocation', status: uncertain ? 'unknown' : 'cancelled', code}, uncertain ? 'send-uncertain' : 'cancelled');
+		} catch {
+			this.diagnosticsHealth.historyFailed();
+			active.run = {...active.run, outcome: uncertain ? 'send-uncertain' : 'cancelled'};
+		}
+
+		this.notifyMessenger({runId: active.run.id, type: 'cancel-quick-action'});
+		this.pendingQuickAction = undefined;
+		pending?.resolve({code, status: uncertain ? 'uncertain' : 'blocked'});
+		this.activeRequest?.abortController.abort();
+		this.activeRequest = undefined;
+		this.cancelPendingContextCapture();
+		this.sessionState.completeRequest();
+	}
+
 	private cancelActiveRequest(): void {
+		this.cancelQuickRun('cancelled');
 		this.activeRequest?.abortController.abort();
 		this.activeRequest = undefined;
 	}
