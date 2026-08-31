@@ -15,7 +15,7 @@ import {
 import {restoreMessengerComposerFocus} from './ai-assist-focus';
 import {executeQuickMessengerAction, QuickMessengerAction} from './ai-quick-messenger';
 import {
-	hasQuickQuote, quickComposerSurface, quickHasAttachment, quickMessageHasQuote, quickOutgoingMessages, quickQuotePreview, quickQuoteTextMatches, quickReplySelector, resolveQuickReplyTarget,
+	hasQuickQuote, quickComposerSurface, quickHasAttachment, quickObservedMessageIds, quickOutgoingMessages, quickQuotePreview, quickQuoteTextMatches, quickReplySelector, resolveQuickReplyTarget,
 } from './ai-quick-dom';
 import {
 	AiComposerCommandSnapshot,
@@ -694,10 +694,7 @@ async function handleQuickMessengerAction(action: QuickMessengerAction): Promise
 				button.click();
 			},
 			messageIds: () => new Set(messages().map(message => message.id)),
-			observe: (before, text, replyTo) => messages()
-				.filter(message => !before.has(message.id) && message.text === text
-					&& quickMessageHasQuote(message, replyTo ? quote?.text : undefined))
-				.map(message => message.id),
+			observe: (before, text, replyTo) => quickObservedMessageIds(messages(), before, text, replyTo ? quote?.text : undefined),
 			settle,
 		}));
 	} finally {

@@ -81,3 +81,26 @@ export function quickMessageHasQuote(message: QuickDomMessage, question?: string
 	return question === undefined ? quotes.length === 0
 		: quotes.length === 1 && quickQuoteTextMatches(quotes[0], question);
 }
+
+export function quickObservedMessageIds(
+	messages: readonly QuickDomMessage[],
+	before: ReadonlySet<string>,
+	text: string,
+	question?: string,
+): string[] {
+	// Messenger replaces a numeric optimistic ID with <timestamp>@msgr.<ID>.
+	// Wait for a replyable ID; do not hand the disappearing optimistic row to
+	// the model/reply phase. Normalize older IDs too, so their acknowledgement
+	// cannot be mistaken for this send when the message text is identical.
+	const offlineId = (id: string) => /^\d+@msgr\.(\d+)$/.exec(id)?.[1];
+	const previous = new Set([...before].map(id => offlineId(id) ?? id));
+	const hadPending = [...before].some(id => /^\d+$/.test(id));
+	return messages.filter(message => {
+		const offline = offlineId(message.id);
+		// Mid.* is the other observed native ID format. If an older optimistic
+		// row exists, we cannot prove that an unrelated mid.* is new.
+		const replyable = offline !== undefined || (message.id.startsWith('mid.') && !hadPending);
+		return replyable && !previous.has(offline ?? message.id) && message.text === text
+			&& quickMessageHasQuote(message, question);
+	}).map(message => message.id);
+}
