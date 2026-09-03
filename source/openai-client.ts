@@ -137,35 +137,13 @@ function optionalTitle(value: unknown): string | undefined {
 	return value;
 }
 
-function extractSources(item: Record<string, unknown>): OpenAiWebSource[] {
-	if (!isRecord(item.action) || item.action.sources === undefined) {
-		return [];
-	}
-
-	if (!Array.isArray(item.action.sources) || item.action.sources.length > openAiSourceLimit) {
-		throw new OpenAiRequestError('malformed-response', 'OpenAI returned too many or malformed web-search sources. Try again.');
-	}
-
-	return item.action.sources.map(source => {
-		if (!isRecord(source) || source.type !== 'url') {
-			throw new OpenAiRequestError('malformed-response', 'OpenAI returned malformed web-search source metadata. Try again.');
-		}
-
-		const title = optionalTitle(source.title);
-		return {
-			...(title ? {title} : {}),
-			url: normalizeUrl(source.url),
-		};
-	});
-}
-
 function extractOutput(value: unknown, mode: WebSearchMode): OpenAiAnswer {
 	if (!isRecord(value) || !Array.isArray(value.output)) {
 		throw new OpenAiRequestError('malformed-response', 'OpenAI returned an unreadable response. Try again.');
 	}
 
 	const citations: OpenAiUrlCitation[] = [];
-	const sources: OpenAiWebSource[] = [];
+	const sourcesByUrl = new Map<string, OpenAiWebSource>();
 	const textParts: string[] = [];
 	let flattenedTextLength = 0;
 	let webSearchRan = false;
@@ -176,10 +154,6 @@ function extractOutput(value: unknown, mode: WebSearchMode): OpenAiAnswer {
 
 		if (item.type === 'web_search_call') {
 			webSearchRan ||= item.status === 'completed';
-			sources.push(...extractSources(item));
-			if (sources.length > openAiSourceLimit) {
-				throw new OpenAiRequestError('malformed-response', 'OpenAI returned too many web-search sources. Try again.');
-			}
 		}
 
 		if (!Array.isArray(item.content)) {
@@ -218,6 +192,7 @@ function extractOutput(value: unknown, mode: WebSearchMode): OpenAiAnswer {
 				}
 
 				const title = optionalTitle(annotation.title);
+				const url = normalizeUrl(annotation.url);
 				citations.push({
 					contentIndex,
 					endIndex: contentStartIndex + (annotation.end_index as number),
@@ -226,11 +201,23 @@ function extractOutput(value: unknown, mode: WebSearchMode): OpenAiAnswer {
 					providerStartIndex: annotation.start_index as number,
 					startIndex: contentStartIndex + (annotation.start_index as number),
 					...(title ? {title} : {}),
-					url: normalizeUrl(annotation.url),
+					url,
 				});
+
+				const existingSource = sourcesByUrl.get(url);
+				if (existingSource && !existingSource.title && title) {
+					existingSource.title = title;
+				} else if (!existingSource && sourcesByUrl.size < openAiSourceLimit) {
+					sourcesByUrl.set(url, {
+						...(title ? {title} : {}),
+						url,
+					});
+				}
 			}
 		}
 	}
+
+	const sources = [...sourcesByUrl.values()];
 
 	if (mode === 'always' && !webSearchRan) {
 		throw new OpenAiRequestError('search-required', 'OpenAI did not complete the required web search. Nothing was labeled as searched.');
@@ -342,7 +329,6 @@ function webSearchOptions(mode: WebSearchMode): Record<string, unknown> {
 	}
 
 	return {
-		include: ['web_search_call.action.sources'],
 		tool_choice: mode === 'always' ? 'required' : 'auto',
 		tools: [{type: 'web_search'}],
 	};
