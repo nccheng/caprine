@@ -148,9 +148,10 @@ test('OpenAI client maps Always, Auto, and Off to the only supported hosted tool
 
 	assert.deepEqual(requests[0].body.tools, [{type: 'web_search'}]);
 	assert.equal(requests[0].body.tool_choice, 'required');
-	assert.deepEqual(requests[0].body.include, ['web_search_call.action.sources']);
+	assert.equal('include' in requests[0].body, false);
 	assert.deepEqual(requests[1].body.tools, [{type: 'web_search'}]);
 	assert.equal(requests[1].body.tool_choice, 'auto');
+	assert.equal('include' in requests[1].body, false);
 	assert.equal('tools' in requests[2].body, false);
 	assert.equal('tool_choice' in requests[2].body, false);
 	assert.equal('include' in requests[2].body, false);
@@ -186,7 +187,7 @@ test('Auto reports actual search use and Off rejects unexpected search output', 
 	await expectCode(unsupportedEvidence.createResponse('sk-private', 'Question', 'auto'), 'malformed-response');
 });
 
-test('OpenAI client normalizes provider citations and sources without parsing prose URLs', async () => {
+test('OpenAI client derives sources only from provider citations without parsing prose URLs', async () => {
 	const text = '  Current fact [1]. Visit https://not-evidence.example in prose.  ';
 	// Provider-owned response field names are snake_case.
 	const annotation = {
@@ -234,7 +235,6 @@ test('OpenAI client normalizes provider citations and sources without parsing pr
 		ran: true,
 		sources: [
 			{title: 'Evidence title', url: 'https://evidence.example/source'},
-			{url: 'https://secondary.example/'},
 		],
 	});
 	assert.equal(answer.webSearch.sources.some(source => source.url.includes('not-evidence')), false);
@@ -275,7 +275,7 @@ test('OpenAI client translates part-local citation offsets while retaining provi
 	assert.equal(answer.text.slice(answer.webSearch.citations[0].startIndex, answer.webSearch.citations[0].endIndex), 'XYZ');
 });
 
-test('OpenAI client rejects unsupported annotations, malformed offsets, and excessive sources', async () => {
+test('OpenAI client rejects unsupported annotations, malformed offsets, and unsafe citation URLs', async () => {
 	const unsupported = new OpenAiClient({
 		fetchImplementation: async () => openAiResponse('Answer', {
 			annotations: [{type: 'file_citation'}],
@@ -300,13 +300,90 @@ test('OpenAI client rejects unsupported annotations, malformed offsets, and exce
 	});
 	await expectCode(malformedOffset.createResponse('sk-private', 'Question'), 'malformed-response');
 
-	const excessiveSources = new OpenAiClient({
+	const unsafeUrl = new OpenAiClient({
 		fetchImplementation: async () => openAiResponse('Answer', {
+			annotations: [{
+				// Provider-owned response field names are snake_case.
+				// eslint-disable-next-line camelcase
+				end_index: 6,
+				// Provider-owned response field names are snake_case.
+				// eslint-disable-next-line camelcase
+				start_index: 0,
+				type: 'url_citation',
+				url: 'https://user:secret@example.com/source',
+			}],
 			searched: true,
-			sources: Array.from({length: openAiSourceLimit + 1}, () => ({type: 'url', url: 'https://example.com'})),
 		}),
 	});
-	await expectCode(excessiveSources.createResponse('sk-private', 'Question'), 'malformed-response');
+	await expectCode(unsafeUrl.createResponse('sk-private', 'Question'), 'malformed-response');
+});
+
+test('OpenAI client ignores excessive supplemental sources without retrying the provider', async () => {
+	let requestCount = 0;
+	const text = 'Answer [1]';
+	const client = new OpenAiClient({
+		async fetchImplementation() {
+			requestCount++;
+			return openAiResponse(text, {
+				annotations: [{
+					// Provider-owned response field names are snake_case.
+					// eslint-disable-next-line camelcase
+					end_index: text.length,
+					// Provider-owned response field names are snake_case.
+					// eslint-disable-next-line camelcase
+					start_index: text.length - 3,
+					title: 'Cited evidence',
+					type: 'url_citation',
+					url: 'https://evidence.example/source',
+				}],
+				searched: true,
+				sources: Array.from({length: openAiSourceLimit + 1}, (_, index) => ({
+					title: `Supplemental ${index}`,
+					type: 'url',
+					url: `https://supplemental.example/${index}`,
+				})),
+			});
+		},
+	});
+
+	const answer = await client.createResponse('sk-private', 'Question');
+	assert.equal(requestCount, 1);
+	assert.deepEqual(answer.webSearch.sources, [{title: 'Cited evidence', url: 'https://evidence.example/source'}]);
+});
+
+test('OpenAI client deduplicates cited sources, promotes titles, and bounds only the source list', async () => {
+	const text = 'x'.repeat(openAiSourceLimit + 1);
+	const annotations = Array.from({length: openAiSourceLimit + 1}, (_, index) => ({
+		// Provider-owned response field names are snake_case.
+		// eslint-disable-next-line camelcase
+		end_index: index + 1,
+		// Provider-owned response field names are snake_case.
+		// eslint-disable-next-line camelcase
+		start_index: index,
+		title: index === 0 ? '' : `Source ${index}`,
+		type: 'url_citation',
+		url: `https://evidence.example/${index}`,
+	}));
+	annotations.splice(1, 0, {
+		// Provider-owned response field names are snake_case.
+		// eslint-disable-next-line camelcase
+		end_index: 1,
+		// Provider-owned response field names are snake_case.
+		// eslint-disable-next-line camelcase
+		start_index: 0,
+		title: 'Promoted title',
+		type: 'url_citation',
+		url: 'https://evidence.example/0',
+	});
+	const client = new OpenAiClient({
+		fetchImplementation: async () => openAiResponse(text, {annotations, searched: true}),
+	});
+
+	const answer = await client.createResponse('sk-private', 'Question');
+	assert.equal(answer.webSearch.citations.length, openAiSourceLimit + 2);
+	assert.equal(answer.webSearch.sources.length, openAiSourceLimit);
+	assert.deepEqual(answer.webSearch.sources[0], {title: 'Promoted title', url: 'https://evidence.example/0'});
+	assert.equal(answer.webSearch.sources.some(source => source.url === `https://evidence.example/${openAiSourceLimit}`), false);
 });
 
 test('OpenAI client refuses redirects away from the official endpoint', async () => {
