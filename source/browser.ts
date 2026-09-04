@@ -30,6 +30,7 @@ import {
 	resolveAiComposerFromEventSignals,
 	routeAiComposerBrowserEnter,
 	routeAiComposerBrowserSend,
+	shouldUseQuickAiComposerMode,
 } from './ai-composer-command';
 import {
 	ConversationIdentityCandidate,
@@ -369,9 +370,9 @@ function showComposerStatus(command: ReturnType<typeof parseAiComposerCommand>):
 	if (command.error === 'prompt-too-long') {
 		message = 'This /ai question is too long to move into Caprine. It will not be sent to Messenger; shorten it before trying again.';
 	} else if (command.prompt.length > 0) {
-		message = isAiQuickModeEnabled
+		message = shouldUseQuickAiComposerMode(command.prompt, isAiQuickModeEnabled)
 			? 'Quick AI: Enter publishes this question, asks the model and automatically replies under your account. Any further interaction stops automation. Inspect the run in AI Assist History.'
-			: 'Caprine AI Assist is armed. This command will not be sent. Text after /ai is visible to Messenger while you type it.';
+			: 'Caprine AI Assist is armed. Enter opens private review and this command will not be sent to Messenger. Text after /ai is visible to Messenger while you type it.';
 	}
 
 	if (composerStatusText!.textContent !== message) {
@@ -799,7 +800,7 @@ async function consumeComposerCommand(snapshot: Readonly<AiComposerCommandSnapsh
 					&& aiComposerCommandState.matches(snapshot, snapshotState(snapshot));
 			},
 			async openPanel(prompt) {
-				if (isAiQuickModeEnabled && prompt.trim()) {
+				if (shouldUseQuickAiComposerMode(prompt, isAiQuickModeEnabled)) {
 					quickInvocationEpoch = quickGestureEpoch;
 					quickConsumedTokens.clear();
 				}

@@ -1,3 +1,5 @@
+import {containsFacebookReelUrl} from './facebook-reel';
+
 export type AiComposerCommand = {
 	draftText: string;
 	error?: 'prompt-too-long';
@@ -96,6 +98,12 @@ export type AiComposerCommandSnapshotState<Composer> = Readonly<{
 }>;
 
 const maximumComposerPromptLength = 20_000;
+
+export function shouldUseQuickAiComposerMode(prompt: string, quickModeEnabled: boolean): boolean {
+	return quickModeEnabled
+		&& prompt.trim().length > 0
+		&& !containsFacebookReelUrl(prompt);
+}
 
 function normalizedDraftText(value: string): string {
 	return value

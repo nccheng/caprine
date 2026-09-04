@@ -19,6 +19,9 @@ import {
 } from './ai-quick-run';
 import {isQuickMessengerAction, QuickMessengerAction, QuickMessengerResult} from './ai-quick-messenger';
 import {
+	shouldUseQuickAiComposerMode,
+} from './ai-composer-command';
+import {
 	aiAssistIpcChannels,
 	AiComposerCommandRequest,
 	AiComposerCommandResult,
@@ -1182,7 +1185,7 @@ class AiAssistController {
 			return false;
 		}
 
-		if (config.get('aiAssistQuickMode') && value.prompt.trim().length > 0) {
+		if (shouldUseQuickAiComposerMode(value.prompt, config.get('aiAssistQuickMode'))) {
 			await this.refreshConversation(undefined, true);
 			const snapshot = this.conversationBinding.currentSnapshot;
 			if (!config.get('aiAssistEnabled') || !config.get('aiAssistQuickMode') || !snapshot || snapshot.conversationId !== value.conversationId || !this.isRequestSnapshotCurrent(snapshot) || !this.historyStore || !this.hasApiKey) {
