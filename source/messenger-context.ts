@@ -1,3 +1,5 @@
+import {normalizeFacebookReelUrl} from './facebook-reel';
+
 export const conversationContextConfidenceLevels = ['high', 'medium', 'low'] as const;
 export type ConversationContextConfidence = typeof conversationContextConfidenceLevels[number];
 // This bounds loaded DOM traversal only; AI context selection belongs to a later layer.
@@ -1097,7 +1099,7 @@ function linkPreviewFromElement(element: Element): MessengerContextCandidate['li
 			}
 		}
 
-		if (!['http:', 'https:'].includes(url.protocol) || /(^|\.)facebook\.com$/i.test(url.hostname)) {
+		if (!['http:', 'https:'].includes(url.protocol)) {
 			continue;
 		}
 
@@ -1105,6 +1107,21 @@ function linkPreviewFromElement(element: Element): MessengerContextCandidate['li
 			.filter(node => visibleElement(node))
 			.map(node => normalizedMultiline(node.textContent, maximumStringLengths.description))
 			.flatMap(value => value ? [value] : []);
+		const reelUrl = normalizeFacebookReelUrl(url.href);
+		if (reelUrl) {
+			preview = {
+				description: visibleText.slice(1).join('\n') || undefined,
+				domain: 'facebook.com',
+				title: visibleText[0] ?? 'Facebook Reel',
+				url: reelUrl,
+			};
+			break;
+		}
+
+		if (/(^|\.)facebook\.com$/i.test(url.hostname)) {
+			continue;
+		}
+
 		preview = {
 			description: visibleText.slice(1).join('\n') || undefined,
 			domain: url.hostname,
@@ -1124,6 +1141,11 @@ function attachmentsFromElement(element: Element): MessengerContextCandidate['at
 	}
 
 	if (element.querySelector('video')) {
+		kinds.add('video');
+	}
+
+	if ([...element.querySelectorAll<HTMLAnchorElement>('a[href]')]
+		.some(anchor => normalizeFacebookReelUrl(anchor.href.length > 0 ? anchor.href : (anchor.getAttribute('href') ?? '')))) {
 		kinds.add('video');
 	}
 

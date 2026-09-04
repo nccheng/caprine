@@ -250,17 +250,23 @@ test('oversized provider input remains a terminal inspectable failure with froze
 
 test('manual Reel submission without prepared video evidence stays editable and never reaches the provider', async () => {
 	const f = fixture();
-	const question = '總結 https://www.facebook.com/reel/1744555046768453';
+	const question = '幫我總結這個影片';
 	const frozen = restoreContextReviewSnapshot({
 		actualCount: 1, contextVersion: 'fixture', images: [], newMessagesAvailable: false, question,
 		requestedCount: 10, snapshot: f.snapshot,
 		transcripts: [{
-			contextItemId: 'context-reel', id: 'transcript:context-reel', kind: 'video',
-			messageId: 'message-reel', senderLabel: 'Video received from Alex', status: 'no-audio',
+			contextItemId: 'different-video', id: 'transcript:different-video', kind: 'video',
+			messageId: 'message-video',
+			originalSegments: [{endSeconds: 1, startSeconds: 0, text: 'Unrelated completed transcript'}],
+			senderLabel: 'Video received from Alex', status: 'completed',
 		}],
 		items: [{
 			id: 'context-reel', item: {
-				confidence: 'low', omittedReason: 'no-supported-content', sender: {role: 'unknown'},
+				attachments: [{kind: 'video'}], confidence: 'high',
+				linkPreview: {
+					domain: 'facebook.com', url: 'https://www.facebook.com/reel/1744555046768453',
+				},
+				sender: {role: 'incoming'},
 			},
 		}],
 	});
@@ -289,9 +295,17 @@ test('manual Reel submission without prepared video evidence stays editable and 
 test('Quick mode rejects a Reel before sending the question or contacting the provider', async () => {
 	const f = fixture();
 	const store = new AiHistoryStore({databasePath: ':memory:'});
-	const question = 'Summarize https://www.facebook.com/reel/1744555046768453';
+	const question = 'Summarize this';
 	const frozen = restoreContextReviewSnapshot({
-		actualCount: 0, contextVersion: 'fixture', images: [], items: [], newMessagesAvailable: false,
+		actualCount: 1, contextVersion: 'fixture', images: [], items: [{
+			id: 'context-reel', item: {
+				attachments: [{kind: 'video'}], confidence: 'high',
+				linkPreview: {
+					domain: 'facebook.com', url: 'https://www.facebook.com/reel/1744555046768453',
+				},
+				sender: {role: 'incoming'},
+			},
+		}], newMessagesAvailable: false,
 		question, requestedCount: 10, snapshot: f.snapshot, transcripts: [],
 	});
 	f.controller.quickRun = undefined;

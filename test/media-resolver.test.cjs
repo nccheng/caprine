@@ -98,6 +98,91 @@ test('local inspection retains the exact handle until provider handoff', async (
 	assert.deepEqual(await readdir(directory), []);
 });
 
+test('Facebook Reel pages resolve through the authenticated session into bounded video bytes', async () => {
+	const directory = await fixtureDirectory();
+	const diagnostics = [];
+	const requests = [];
+	const reelId = '1744555046768453';
+	const directUrl = 'https://video.xx.fbcdn.net/reel-fixture.mp4?token=private';
+	const html = `<html><script type="application/json">{"video_id":"${reelId}","browser_native_hd_url":"${directUrl}"}</script></html>`;
+	const resolver = new MessengerMediaResolver(directory, async (url, init) => {
+		requests.push({init, url});
+		if (requests.length === 1) {
+			return new Response(null, {
+				headers: {location: `https://m.facebook.com/reel/${reelId}/?mibextid=fixture`},
+				status: 302,
+			});
+		}
+
+		if (requests.length === 2) {
+			return new Response(html, {
+				headers: {'content-length': String(Buffer.byteLength(html)), 'content-type': 'text/html; charset=utf-8'},
+				status: 200,
+			});
+		}
+
+		return new Response(new Uint8Array([1, 2, 3, 4]), {
+			headers: {'content-length': '4', 'content-type': 'video/mp4'},
+			status: 200,
+		});
+	}, diagnostic => diagnostics.push(diagnostic));
+
+	const media = await resolver.resolveFacebookReel(
+		`http://facebook.com/reel/${reelId}/?tracking=removed`,
+		'message-reel',
+		snapshot,
+		6,
+	);
+	assert.deepEqual(requests.map(request => request.url), [
+		`https://www.facebook.com/reel/${reelId}`,
+		`https://m.facebook.com/reel/${reelId}/?mibextid=fixture`,
+		directUrl,
+	]);
+	assert.equal(requests.every(request => request.init.credentials === 'include'), true);
+	assert.equal(requests.every(request => request.init.redirect === 'manual'), true);
+	assert.equal(requests[0].init.headers.accept, 'text/html,application/xhtml+xml');
+	assert.equal(requests[1].init.headers.accept, 'text/html,application/xhtml+xml');
+	assert.equal(requests[2].init.headers, undefined);
+	assert.equal(media.kind, 'video');
+	assert.equal(media.byteLength, 4);
+	assert.equal(JSON.stringify(diagnostics).includes('private'), false);
+
+	await resolver.withFile(media.handleId, 'message-reel', snapshot, async () => {});
+	assert.deepEqual(await readdir(directory), []);
+});
+
+test('Facebook Reel resolution fails closed for login redirects and unbound page media', async () => {
+	const directory = await fixtureDirectory();
+	const reelUrl = 'https://www.facebook.com/reel/1744555046768453';
+	const loginRedirect = new MessengerMediaResolver(directory, async () => new Response(null, {
+		headers: {location: 'https://www.facebook.com/login/'},
+		status: 302,
+	}));
+	await assert.rejects(
+		loginRedirect.resolveFacebookReel(reelUrl, 'message-reel', snapshot),
+		error => error instanceof MediaResolverError && error.code === 'unsupported-source',
+	);
+
+	const wrongReelHtml = '{"video_id":"9999999999999999","playable_url":"https://video.xx.fbcdn.net/wrong.mp4"}';
+	const wrongReel = new MessengerMediaResolver(directory, async () => new Response(wrongReelHtml, {
+		headers: {'content-type': 'text/html'},
+		status: 200,
+	}));
+	await assert.rejects(
+		wrongReel.resolveFacebookReel(reelUrl, 'message-reel', snapshot),
+		error => error instanceof MediaResolverError && error.code === 'unsupported-source',
+	);
+
+	const wrongMime = new MessengerMediaResolver(directory, async () => new Response('not a Reel page', {
+		headers: {'content-type': 'application/json'},
+		status: 200,
+	}));
+	await assert.rejects(
+		wrongMime.resolveFacebookReel(reelUrl, 'message-reel', snapshot),
+		error => error instanceof MediaResolverError && error.code === 'mime-mismatch',
+	);
+});
+
 test('HTTPS media rejects external redirects, MIME mismatches, and oversized bodies', async () => {
 	const directory = await fixtureDirectory();
 	const external = new MessengerMediaResolver(directory, async () => new Response(null, {
