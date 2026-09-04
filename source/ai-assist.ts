@@ -2147,6 +2147,7 @@ class AiAssistController {
 			const [result] = await this.mediaTranscriptionService.transcribeBatch(() => this.readApiKey(), {
 				consent: 'transcribe-and-review',
 				items: [{handleId: handle.handleId, messageId: handle.messageId}],
+				retainVideoHandles: transcript.kind === 'video',
 				snapshot: handle.snapshot,
 			}, pending.abortController.signal, phase => {
 				if (this.pendingTranscription !== pending) {
