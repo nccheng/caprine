@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const {createHash} = require('node:crypto');
-const {mkdtemp, readdir} = require('node:fs/promises');
+const {mkdtemp, readdir, readFile} = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
@@ -743,6 +743,65 @@ test('silent video returns an explicit no-audio result without reading a key or 
 	});
 	assert.equal(providerCalls, 0);
 	assert.deepEqual(await readdir(directory), []);
+});
+
+test('reviewed video retains its original file for frames only after successful transcription', async () => {
+	await Promise.all(['success', 'silent', 'failure', 'cancelled', 'stale', 'audio'].map(async scenario => {
+		const directory = await fixtureDirectory();
+		const resolver = new MessengerMediaResolver(directory, async () => {
+			throw new Error('unexpected network request');
+		});
+		await resolver.cleanupRestartArtifacts();
+		const kind = scenario === 'audio' ? 'audio' : 'video';
+		const media = await resolver.resolveBlob(new Uint8Array([1, 2, 3]).buffer,
+			kind === 'video' ? 'video/mp4' : 'audio/ogg', kind, 'retained-video', snapshot, 2);
+		const controller = new AbortController();
+		let current = snapshot;
+		const service = new MediaTranscriptionService(resolver, {
+			async transcribe() {
+				if (scenario === 'failure') {
+					throw new TranscriptionError('provider-failed', 'Fixture failure');
+				}
+
+				if (scenario === 'cancelled') {
+					controller.abort();
+				}
+
+				if (scenario === 'stale') {
+					current = {...snapshot, conversationId: 'other-conversation'};
+				}
+
+				return {model: openAiTranscriptionModel, segments: [{startSeconds: 0, endSeconds: 2, text: 'Video'}]};
+			},
+		}, () => current, {
+			inspectDuration: async () => 2,
+			videoAudioExtractor: {
+				async extract() {
+					return scenario === 'silent'
+						? {audioTrackAvailable: false, durationSeconds: 2}
+						: {
+							audioTrackAvailable: true, durationSeconds: 2, bytes: new Uint8Array([4, 5]), mimeType: 'audio/mpeg',
+						};
+				},
+			},
+		});
+		const pending = service.transcribeBatch('fixture-key', request({
+			items: [{handleId: media.handleId, messageId: media.messageId}],
+			retainVideoHandles: true,
+		}), controller.signal);
+		await (['failure', 'cancelled', 'stale'].includes(scenario) ? assert.rejects(pending) : pending);
+		if (['success', 'silent'].includes(scenario)) {
+			await resolver.inspectFile(media.handleId, media.messageId, snapshot, async filePath => {
+				const bytes = await readFile(filePath);
+				assert.equal(bytes.length, 3);
+			});
+			await assert.rejects(resolver.inspectFile(media.handleId, media.messageId,
+				{...snapshot, conversationId: 'wrong-conversation'}, async () => {}));
+			await resolver.releaseHandle(media.handleId);
+		}
+
+		assert.deepEqual(await readdir(directory), [], scenario);
+	}));
 });
 
 test('late video extraction results are rejected after cancellation and conversation invalidation', async () => {

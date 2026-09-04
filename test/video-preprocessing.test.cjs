@@ -287,6 +287,14 @@ test('silent long video is sparse, capped at 180 frames, and retains boundaries'
 		);
 		assert.equal(artifact.coverage, 'sparse');
 		assert.equal(artifact.frameCount, maximumVideoAnalysisFrames);
+		const extraction = runner.invocations.find(invocation => invocation.arguments_.at(-1).endsWith('%03d.jpg'));
+		const filter = extraction.arguments_[extraction.arguments_.indexOf('-vf') + 1];
+		let expression = /^select='([^']+)'/u.exec(filter)[1].replaceAll(/eq\(pts\\,\d+\)/gu, 'x');
+		for (let depth = 0; depth < 8; depth += 1) {
+			expression = expression.replaceAll('(x+x)', 'x');
+		}
+
+		assert.equal(expression, 'x', '180 frame choices must form a shallow balanced expression');
 		assert.deepEqual(artifact.transcript, {status: 'no-audio'});
 		assert.ok(artifact.frameTimeline[0].reasons.includes('opening'));
 		assert.ok(artifact.frameTimeline.at(-1).reasons.includes('closing'));

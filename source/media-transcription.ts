@@ -114,10 +114,12 @@ export type MediaTranscriptionRequest = {
 		handleId: string;
 		messageId: string;
 	}>;
+	// The controller owns these temporary video handles until frame analysis ends.
+	retainVideoHandles?: boolean;
 	snapshot: Readonly<ConversationSnapshot>;
 };
 
-type MediaHandleStore = Pick<MessengerMediaResolver, 'describeHandle' | 'releaseHandle' | 'withFile'>;
+type MediaHandleStore = Pick<MessengerMediaResolver, 'describeHandle' | 'inspectFile' | 'releaseHandle' | 'withFile'>;
 type MediaDurationInspector = (filePath: string) => Promise<number>;
 type TranscribableMediaFile = {
 	bytes: Uint8Array;
@@ -502,7 +504,10 @@ async function withMediaFiles<T>(context: MediaFilesContext<T>): Promise<T> {
 	}
 
 	const item = request.items[index];
-	return mediaHandles.withFile(item.handleId, item.messageId, request.snapshot, async (filePath, media) => {
+	const retainVideo = request.retainVideoHandles === true
+		&& mediaHandles.describeHandle(item.handleId, item.messageId, request.snapshot).kind === 'video';
+	const accessFile = retainVideo ? mediaHandles.inspectFile.bind(mediaHandles) : mediaHandles.withFile.bind(mediaHandles);
+	return accessFile(item.handleId, item.messageId, request.snapshot, async (filePath, media) => {
 		validateMedia(media);
 		if (media.kind === 'video') {
 			const videoMedia = media as ResolvedMedia & {kind: 'video'};
@@ -629,6 +634,7 @@ export class MediaTranscriptionService {
 		signal?: AbortSignal,
 		onPhase?: (phase: MediaTranscriptionPhase) => void,
 	): Promise<MediaTranscriptionResult[]> {
+		const retainedHandles = new Set<string>();
 		try {
 			if (request.consent !== 'transcribe-and-review') {
 				throw new TranscriptionError('invalid-consent', 'Choose Transcribe and review before sending media to OpenAI.');
@@ -656,7 +662,7 @@ export class MediaTranscriptionService {
 				validateMedia(media);
 			}
 
-			return await withMediaFiles({
+			const results = await withMediaFiles({
 				callback: async files => {
 					if (signal?.aborted) {
 						throw new TranscriptionError('cancelled', 'Transcription cancelled.');
@@ -777,10 +783,20 @@ export class MediaTranscriptionService {
 				signal,
 				videoAudioExtractor: this.videoAudioExtractor,
 			});
+			if (request.retainVideoHandles === true) {
+				for (const [index, result] of results.entries()) {
+					if (result.source.kind === 'video') {
+						retainedHandles.add(request.items[index].handleId);
+					}
+				}
+			}
+
+			return results;
 		} catch (error) {
 			mapResolverError(error);
 		} finally {
-			await Promise.all(request.items.map(async item => this.mediaHandles.releaseHandle(item.handleId).catch(() => undefined)));
+			await Promise.all(request.items.filter(item => !retainedHandles.has(item.handleId))
+				.map(async item => this.mediaHandles.releaseHandle(item.handleId).catch(() => undefined)));
 		}
 	}
 }

@@ -316,7 +316,13 @@ function samplingSelectionExpression(durationSeconds: number, maximumSamples: nu
 }
 
 function selectExpression(candidates: readonly CandidateFrame[]): string {
-	return candidates.map(candidate => `eq(pts\\,${candidate.pts})`).join('+');
+	if (candidates.length <= 1) {
+		return candidates.length === 0 ? '0' : `eq(pts\\,${candidates[0].pts})`;
+	}
+
+	// A flat 180-term sum exceeds FFmpeg's expression parser depth limit.
+	const midpoint = Math.floor(candidates.length / 2);
+	return `(${selectExpression(candidates.slice(0, midpoint))}+${selectExpression(candidates.slice(midpoint))})`;
 }
 
 function hammingDistance(left: Uint8Array, right: Uint8Array): number {
