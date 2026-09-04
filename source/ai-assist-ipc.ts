@@ -926,7 +926,8 @@ function isReviewedTranscriptItem(value: unknown): value is ReviewedTranscriptIt
 
 	const keys = ['contextItemId', 'id', 'kind', 'messageId', 'senderLabel', 'status'];
 	for (const key of ['byteLength', 'durationSeconds', 'editedSegments', 'mimeType', 'notice', 'originalSegments']) {
-		if (value[key] !== undefined) {
+		// Electron preserves own undefined fields when a transcript clears metadata.
+		if (Object.hasOwn(value, key)) {
 			keys.push(key);
 		}
 	}
