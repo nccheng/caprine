@@ -67,6 +67,7 @@ function fixture(report = deferred(), response = deferred()) {
 	};
 	Object.assign(controller, {
 		quickRun: {run, snapshot}, requestCounter: 0, answerGeneration: 0, reviewSequence: 0, invocationSequence: 0,
+		promptReelUrls: new Map(),
 		conversationLifecycle: {snapshot: 1, isCurrent: () => true},
 		requestConversationState: () => report.promise,
 		conversationBinding: {currentSnapshot: snapshot},
@@ -290,6 +291,126 @@ test('manual Reel submission without prepared video evidence stays editable and 
 	assert.match(f.controller.notice, /Facebook Reel detected/);
 	assert.match(f.controller.notice, /Nothing was sent to OpenAI\.$/);
 	assert.equal(broadcasts, 1);
+});
+
+test('Ask refreshes an existing review when its private question adds a Reel URL', async () => {
+	const f = fixture();
+	const reelUrl = 'https://www.facebook.com/reel/1744555046768453';
+	f.controller.quickRun = undefined;
+	f.controller.reviewedImageCapture = undefined;
+	f.controller.promptReelUrls = new Map();
+	f.controller.review = {
+		browsingMode: 'auto', contextSource: 'current', editable: true, locked: false,
+		sequence: 1,
+		snapshot: restoreContextReviewSnapshot({
+			actualCount: 0, contextVersion: 'fixture', images: [], items: [], newMessagesAvailable: false,
+			question: '', requestedCount: 10, snapshot: f.snapshot, transcripts: [],
+		}),
+	};
+	let refreshed;
+	f.controller.requestContextReview = async (question, anchorMessageId) => {
+		refreshed = {anchorMessageId, question};
+	};
+
+	await f.controller.submitReviewedPrompt(`幫我總結這個影片 ${reelUrl}`);
+
+	assert.deepEqual(refreshed, {anchorMessageId: undefined, question: `幫我總結這個影片 ${reelUrl}`});
+	assert.equal(f.counts.provider, 0);
+	assert.equal(f.counts.persisted, 0);
+});
+
+test('a Reel URL in the private prompt becomes explicit reviewable video evidence', async () => {
+	const f = fixture();
+	const reelId = '1744555046768453';
+	const reelUrl = `https://www.facebook.com/reel/${reelId}`;
+	let resolved = 0;
+	f.controller.quickRun = undefined;
+	f.controller.mediaCandidates = [];
+	f.controller.promptReelUrls = new Map();
+	f.controller.diagnosticsHealth = {
+		contextHealthy() {},
+	};
+	f.controller.pendingContextCapture = {
+		contextSource: 'current',
+		question: `幫我總結這個影片 ${reelUrl}`,
+		requestId: 'context-capture-reel',
+		requestedCount: 10,
+		resolve() {
+			resolved++;
+		},
+		snapshot: f.snapshot,
+	};
+
+	await f.controller.handleContextCapture({
+		contextVersion: 'fixture-reel',
+		conversationId: f.snapshot.conversationId,
+		items: [],
+		requestId: 'context-capture-reel',
+		requestedCount: 10,
+		status: 'available',
+		stopReason: 'no-more-history',
+		type: 'context-capture',
+	});
+
+	assert.equal(resolved, 1);
+	assert.equal(f.controller.review.snapshot.items.length, 1);
+	assert.equal(f.controller.review.snapshot.items[0].item.linkPreview.url, reelUrl);
+	assert.equal(f.controller.review.snapshot.items[0].item.messageId, `prompt-reel-${reelId}`);
+	assert.deepEqual(
+		[...f.controller.promptReelUrls],
+		[[`prompt-reel-${reelId}`, reelUrl]],
+	);
+	assert.equal(f.controller.review.snapshot.transcripts.length, 1);
+	assert.equal(f.controller.review.snapshot.transcripts[0].kind, 'video');
+	assert.equal(f.controller.review.snapshot.transcripts[0].status, 'available');
+	assert.equal(f.controller.review.snapshot.transcripts[0].senderLabel, 'Facebook Reel from private prompt');
+	assert.match(f.controller.notice, /Select Prepare video audio before Ask/);
+});
+
+test('preparing a private-prompt Reel resolves it in the trusted main process', async () => {
+	const f = fixture();
+	const messageId = 'prompt-reel-1744555046768453';
+	const reelUrl = 'https://www.facebook.com/reel/1744555046768453';
+	let messengerRequests = 0;
+	let resolved;
+	f.controller.quickRun = undefined;
+	f.controller.mediaCleanupReady = Promise.resolve();
+	f.controller.mediaRequestCounter = 0;
+	f.controller.pendingMediaRequests = new Map();
+	f.controller.promptReelUrls = new Map([[messageId, reelUrl]]);
+	f.controller.notifyMessenger = () => {
+		messengerRequests++;
+	};
+
+	f.controller.mediaResolver = {
+		async releaseAll() {},
+		async releaseHandle() {},
+		async resolveFacebookReel(...parameters) {
+			const [url, resolvedMessageId, snapshot, durationSeconds, signal] = parameters;
+			resolved = {
+				durationSeconds, resolvedMessageId, signal, snapshot, url,
+			};
+			return {
+				byteLength: 1234,
+				handleId: 'media-handle',
+				kind: 'video',
+				messageId: resolvedMessageId,
+				mimeType: 'video/mp4',
+				sourceType: 'https',
+			};
+		},
+	};
+
+	await f.controller.resolveMedia(messageId, 'video', {kind: 'video', messageId});
+
+	assert.equal(messengerRequests, 0);
+	assert.equal(resolved.url, reelUrl);
+	assert.equal(resolved.resolvedMessageId, messageId);
+	assert.equal(resolved.snapshot, f.snapshot);
+	assert.equal(resolved.signal.aborted, false);
+	assert.equal(f.controller.pendingMediaRequests.size, 0);
+	assert.equal(f.controller.mediaResolution.status, 'ready');
+	assert.equal(f.controller.mediaResolution.handleId, 'media-handle');
 });
 
 test('Quick mode rejects a Reel before sending the question or contacting the provider', async () => {

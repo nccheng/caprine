@@ -24,6 +24,7 @@ const {
 const {
 	extractFacebookReelVideoUrl,
 	facebookReelId,
+	facebookReelUrlInText,
 	normalizeFacebookReelUrl,
 } = require('../dist-js/facebook-reel.js');
 
@@ -77,6 +78,11 @@ test('Facebook Reel evidence gate recognizes only bounded Facebook Reel URLs', (
 
 test('Facebook Reel normalization and page parsing are bounded to the requested video', () => {
 	const reelId = '1744555046768453';
+	assert.equal(
+		facebookReelUrlInText(`請總結 http://m.facebook.com/reel/${reelId}/?tracking=removed。`),
+		`https://www.facebook.com/reel/${reelId}`,
+	);
+	assert.equal(facebookReelUrlInText(`https://facebook.com.example/reel/${reelId}`), undefined);
 	assert.equal(
 		normalizeFacebookReelUrl(`http://m.facebook.com/reel/${reelId}/?tracking=removed`),
 		`https://www.facebook.com/reel/${reelId}`,
