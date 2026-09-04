@@ -21,6 +21,44 @@ function decodeHtmlEntities(value: string): string {
 		.replaceAll(/&quot;|&#34;|&#x22;/giu, '"');
 }
 
+export function normalizeFacebookVideoPageUrl(value: string, expectedReelId: string): string | undefined {
+	try {
+		const url = new URL(value);
+		const match = /^\/([\w.-]+)\/videos\/(?:[\w.-]+\/)?(\d{5,30})\/?$/u.exec(url.pathname);
+		if (url.protocol !== 'https:' || url.username || url.password || url.port
+			|| !isFacebookHostname(url.hostname) || !match || match[2] !== expectedReelId) {
+			return;
+		}
+
+		return `https://www.facebook.com/${match[1]}/videos/${match[2]}/`;
+	} catch {}
+
+	return undefined;
+}
+
+export function extractFacebookReelPageUrl(html: string, expectedReelId: string): string | undefined {
+	if (html.length > maximumFacebookReelPageBytes) {
+		return;
+	}
+
+	for (const tag of html.matchAll(/<(meta|link)\b[^>]*>/giu)) {
+		const attributes = new Map<string, string>();
+		for (const attribute of tag[0].matchAll(/\b([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/gu)) {
+			attributes.set(attribute[1].toLowerCase(), decodeHtmlEntities(attribute[2] ?? attribute[3]));
+		}
+
+		const value = tag[1].toLowerCase() === 'meta' && attributes.get('property') === 'og:url'
+			? attributes.get('content')
+			: (tag[1].toLowerCase() === 'link' && attributes.get('rel') === 'canonical' ? attributes.get('href') : undefined);
+		const pageUrl = value ? normalizeFacebookVideoPageUrl(value, expectedReelId) : undefined;
+		if (pageUrl) {
+			return pageUrl;
+		}
+	}
+
+	return undefined;
+}
+
 function normalizedPlayableUrl(value: unknown): string | undefined {
 	if (typeof value !== 'string' || value.length > 8192) {
 		return;

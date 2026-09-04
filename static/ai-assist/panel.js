@@ -284,7 +284,9 @@ function mediaStatusForState(state) {
 	}
 
 	if (resolution.status === 'unsupported') {
-		return `This ${resolution.kind} uses a segmented or MediaSource player that cannot provide one complete file yet${duration}.`;
+		return resolution.sourceType === 'segmented'
+			? `This ${resolution.kind} uses a segmented or MediaSource player that cannot provide one complete file yet${duration}.`
+			: `A supported complete ${resolution.kind} file could not be found on this page${duration}. Nothing was sent to OpenAI.`;
 	}
 
 	return `${resolution.kind} bytes are unavailable${duration}.`;

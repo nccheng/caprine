@@ -98,7 +98,7 @@ test('local inspection retains the exact handle until provider handoff', async (
 	assert.deepEqual(await readdir(directory), []);
 });
 
-test('Facebook Reel pages resolve through the authenticated session into bounded video bytes', async () => {
+test('Facebook Reel pages omit credentials before authenticated bounded media resolution', async () => {
 	const directory = await fixtureDirectory();
 	const diagnostics = [];
 	const requests = [];
@@ -153,6 +153,70 @@ test('Facebook Reel pages resolve through the authenticated session into bounded
 
 	await resolver.withFile(media.handleId, 'message-reel', snapshot, async () => {});
 	assert.deepEqual(await readdir(directory), []);
+});
+
+test('Reel introduction pages follow only same-video canonical pages before resolving bytes', async () => {
+	const directory = await fixtureDirectory();
+	const requests = [];
+	const reelId = '1744555046768453';
+	const canonical = `https://www.facebook.com/creator/videos/description/${reelId}/?tracking=private`;
+	const resolver = new MessengerMediaResolver(directory, async (url, init) => {
+		requests.push({url, init});
+		if (requests.length === 1) {
+			return new Response(`<meta content="${canonical}" property="og:url">`, {headers: {'content-type': 'text/html'}});
+		}
+
+		if (requests.length === 2) {
+			return new Response(`{"video_id":"${reelId}","playable_url":"https://video.xx.fbcdn.net/reel.mp4"}`, {headers: {'content-type': 'text/html'}});
+		}
+
+		return new Response(new Uint8Array([1, 2, 3]), {headers: {'content-type': 'video/mp4'}});
+	});
+	const media = await resolver.resolveFacebookReel(`https://www.facebook.com/reel/${reelId}`, 'reel', snapshot);
+	assert.equal(media.byteLength, 3);
+	assert.equal(requests[1].url, `https://www.facebook.com/creator/videos/${reelId}/`);
+	assert.match(requests[1].init.headers['user-agent'], /Macintosh/);
+	assert.ok(requests.slice(0, 2).every(({init}) => init.credentials === 'omit'));
+	await resolver.releaseAll();
+});
+
+test('Reel page redirects accept same-ID creator videos and reject wrong targets without fetching them', async () => {
+	const reelId = '1744555046768453';
+	for (const target of [
+		`https://m.facebook.com/creator/videos/${reelId}/`,
+		'https://m.facebook.com/creator/videos/9999999999/',
+		`https://evil.example/creator/videos/${reelId}/`,
+		`https://user:secret@m.facebook.com/creator/videos/${reelId}/`,
+	]) {
+		// eslint-disable-next-line no-await-in-loop
+		const directory = await fixtureDirectory();
+		const requests = [];
+		const resolver = new MessengerMediaResolver(directory, async url => {
+			requests.push(url);
+			return requests.length === 1
+				? new Response(null, {status: 302, headers: {location: target}})
+				: new Response('<html>No media</html>', {headers: {'content-type': 'text/html'}});
+		});
+		// eslint-disable-next-line no-await-in-loop
+		await assert.rejects(resolver.resolveFacebookReel(`https://www.facebook.com/reel/${reelId}`, 'reel', snapshot), {code: 'unsupported-source'});
+		assert.equal(requests.length, target === `https://m.facebook.com/creator/videos/${reelId}/` ? 2 : 1);
+	}
+});
+
+test('Reel canonical cycles and mixed page chains remain bounded', async () => {
+	const directory = await fixtureDirectory();
+	const reelId = '1744555046768453';
+	for (const cycle of [true, false]) {
+		let requests = 0;
+		const resolver = new MessengerMediaResolver(directory, async () => {
+			requests++;
+			const creator = cycle ? 'creator' : `creator${requests}`;
+			return new Response(`<link rel='canonical' href='https://m.facebook.com/${creator}/videos/${reelId}/'>`, {headers: {'content-type': 'text/html'}});
+		});
+		// eslint-disable-next-line no-await-in-loop
+		await assert.rejects(resolver.resolveFacebookReel(`https://www.facebook.com/reel/${reelId}`, 'reel', snapshot), {code: 'unsupported-source'});
+		assert.equal(requests, cycle ? 2 : 4);
+	}
 });
 
 test('Facebook Reel resolution fails closed for login redirects and unbound page media', async () => {
