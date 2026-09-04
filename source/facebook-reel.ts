@@ -114,13 +114,18 @@ export function facebookReelId(value: string): string | undefined {
 }
 
 export function containsFacebookReelUrl(text: string): boolean {
+	return facebookReelUrlInText(text) !== undefined;
+}
+
+export function facebookReelUrlInText(text: string): string | undefined {
 	for (const match of text.matchAll(/https?:\/\/[^\s<>"']+/giu)) {
-		if (normalizeFacebookReelUrl(match[0].replace(trailingUrlPunctuation, ''))) {
-			return true;
+		const normalized = normalizeFacebookReelUrl(match[0].replace(trailingUrlPunctuation, ''));
+		if (normalized) {
+			return normalized;
 		}
 	}
 
-	return false;
+	return undefined;
 }
 
 export function isAllowedFacebookMediaUrl(value: string): boolean {

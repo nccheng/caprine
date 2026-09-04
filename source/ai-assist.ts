@@ -51,10 +51,15 @@ import {
 import {isExpectedAiInboundSender} from './ai-renderer-trust';
 import {openCitationExternal} from './citation-navigation';
 import {MediaKind} from './media-contract';
-import {normalizeFacebookReelUrl} from './facebook-reel';
+import {
+	facebookReelId,
+	facebookReelUrlInText,
+	normalizeFacebookReelUrl,
+} from './facebook-reel';
 import {ConversationContextItem} from './messenger-context';
 import {
 	MediaDiagnostic,
+	MediaResolverError,
 	MessengerMediaResolver,
 	ResolvedMedia,
 } from './media-resolver';
@@ -95,6 +100,7 @@ import {
 	buildReviewedPrompt,
 	contextCaptureRetryNotice,
 	ContextReviewSnapshot,
+	ReviewedContextItem,
 	restoreContextReviewSnapshot,
 	ContextWindowSize,
 	contextReviewSubmissionDecision,
@@ -241,6 +247,48 @@ class QuickRunFailure extends Error {
 	}
 }
 
+function addPrivatePromptReelReview(
+	reviewedItems: ReviewedContextItem[],
+	question: string,
+	requestId: string,
+	promptReelUrls: Map<string, string>,
+): {promptReelUrl?: string; syntheticContextItemId?: string} {
+	promptReelUrls.clear();
+	const promptReelUrl = facebookReelUrlInText(question);
+	if (!promptReelUrl) {
+		return {};
+	}
+
+	let reviewedReel = reviewedItems.find(({item}) =>
+		normalizeFacebookReelUrl(item.linkPreview?.url ?? '') === promptReelUrl);
+	let syntheticContextItemId: string | undefined;
+	if (!reviewedReel?.item.messageId) {
+		const reelId = facebookReelId(promptReelUrl)!;
+		syntheticContextItemId = `${requestId}:prompt-reel`;
+		reviewedReel = {
+			id: syntheticContextItemId,
+			item: {
+				attachments: [{kind: 'video'}],
+				confidence: 'high',
+				linkPreview: {
+					domain: 'facebook.com',
+					title: 'Facebook Reel from private prompt',
+					url: promptReelUrl,
+				},
+				messageId: `prompt-reel-${reelId}`,
+				sender: {displayName: 'Private prompt', role: 'unknown'},
+			},
+		};
+		reviewedItems.push(reviewedReel);
+	}
+
+	if (reviewedReel.item.messageId) {
+		promptReelUrls.set(reviewedReel.item.messageId, promptReelUrl);
+	}
+
+	return {promptReelUrl, syntheticContextItemId};
+}
+
 class AiAssistController {
 	private composerAcceptanceInFlight = false;
 	private quickRun?: {run: AiQuickRun; snapshot: Readonly<ConversationSnapshot>};
@@ -287,6 +335,7 @@ class AiAssistController {
 	private invocation?: AiAssistPanelState['invocation'];
 	private invocationSequence = 0;
 	private mediaCandidates: MessengerMediaCandidate[] = [];
+	private readonly promptReelUrls = new Map<string, string>();
 	private mediaRequestCounter = 0;
 	private mediaResolution?: MessengerMediaResolution;
 	private readonly mediaCleanupReady: Promise<void>;
@@ -484,7 +533,10 @@ class AiAssistController {
 			history,
 			...(this.invocation ? {invocation: this.invocation} : {}),
 			media: {
-				candidates: this.mediaCandidates,
+				candidates: [
+					...this.mediaCandidates.filter(candidate => !this.promptReelUrls.has(candidate.messageId)),
+					...[...this.promptReelUrls.keys()].map(messageId => ({kind: 'video' as const, messageId})),
+				],
 				...(this.mediaResolution ? {resolution: this.mediaResolution} : {}),
 			},
 			...(this.review && this.isRequestSnapshotCurrent(this.review.snapshot.snapshot) ? {
@@ -1302,6 +1354,19 @@ class AiAssistController {
 		}
 
 		const reviewedItems = value.items.map((item, index) => ({id: `${value.requestId}:${index}`, item}));
+		const {promptReelUrl, syntheticContextItemId} = addPrivatePromptReelReview(
+			reviewedItems,
+			pending.question,
+			value.requestId,
+			this.promptReelUrls,
+		);
+
+		const transcripts = createReviewedTranscriptItems(
+			reviewedItems,
+			messageId => this.mediaCandidates.find(candidate => candidate.messageId === messageId)?.durationSeconds,
+		).map(transcript => transcript.contextItemId === syntheticContextItemId
+			? {...transcript, senderLabel: 'Facebook Reel from private prompt'}
+			: transcript);
 		this.diagnosticsHealth.contextHealthy();
 		this.review = {
 			browsingMode: this.quickRun?.run.outcome === 'running' ? this.quickRun.run.browsingMode : config.get('aiAssistWebSearchMode'),
@@ -1313,18 +1378,17 @@ class AiAssistController {
 				question: pending.question,
 				requestedCount: pending.requestedCount,
 				snapshot: pending.snapshot,
-				transcripts: createReviewedTranscriptItems(
-					reviewedItems,
-					messageId => this.mediaCandidates.find(candidate => candidate.messageId === messageId)?.durationSeconds,
-				),
+				transcripts,
 			}),
 			sequence: ++this.reviewSequence,
 		};
 		this.error = undefined;
 		const hasImages = value.items.some(item => item.attachments?.some(attachment => attachment.kind === 'image'));
-		this.notice = hasImages
-			? `${value.items.length} of ${pending.requestedCount} messages available for review. Preparing processed image previews locally…`
-			: `${value.items.length} of ${pending.requestedCount} messages available for review. Nothing has left Messenger.`;
+		this.notice = promptReelUrl
+			? 'Facebook Reel from the private prompt is ready for local preparation. Select Prepare video audio, then Transcribe and review, before Ask.'
+			: (hasImages
+				? `${value.items.length} of ${pending.requestedCount} messages available for review. Preparing processed image previews locally…`
+				: `${value.items.length} of ${pending.requestedCount} messages available for review. Nothing has left Messenger.`);
 		this.broadcastState();
 		pending.resolve();
 		if (hasImages && this.quickRun?.run.outcome !== 'running') {
@@ -1828,7 +1892,7 @@ class AiAssistController {
 				this.broadcastState();
 				resolvePromise();
 			}, 32_000);
-			this.pendingMediaRequests.set(requestId, {
+			const pending = {
 				abortController,
 				durationSeconds: candidate.durationSeconds,
 				kind,
@@ -1838,7 +1902,14 @@ class AiAssistController {
 					resolvePromise();
 				},
 				snapshot,
-			});
+			};
+			this.pendingMediaRequests.set(requestId, pending);
+			const promptReelUrl = this.promptReelUrls.get(messageId);
+			if (promptReelUrl) {
+				void this.resolvePromptReel(requestId, pending, promptReelUrl);
+				return;
+			}
+
 			this.notifyMessenger({
 				kind,
 				messageId,
@@ -1846,6 +1917,59 @@ class AiAssistController {
 				type: 'resolve-media',
 			});
 		});
+	}
+
+	private async resolvePromptReel(
+		requestId: string,
+		pending: {
+			abortController: AbortController;
+			durationSeconds?: number;
+			kind: MediaKind;
+			messageId: string;
+			resolve: () => void;
+			snapshot: Readonly<ConversationSnapshot>;
+		},
+		url: string,
+	): Promise<void> {
+		try {
+			const media = await this.mediaResolver.resolveFacebookReel(
+				url,
+				pending.messageId,
+				pending.snapshot,
+				pending.durationSeconds,
+				pending.abortController.signal,
+			);
+			if (
+				this.pendingMediaRequests.get(requestId) !== pending
+				|| pending.abortController.signal.aborted
+				|| !this.isRequestSnapshotCurrent(pending.snapshot)
+			) {
+				await this.mediaResolver.releaseHandle(media.handleId);
+				return;
+			}
+
+			this.mediaResolution = {...media, status: 'ready'};
+		} catch (error) {
+			if (this.pendingMediaRequests.get(requestId) !== pending) {
+				return;
+			}
+
+			this.mediaResolution = {
+				...(pending.durationSeconds === undefined ? {} : {durationSeconds: pending.durationSeconds}),
+				kind: pending.kind,
+				messageId: pending.messageId,
+				sourceType: 'https',
+				status: error instanceof MediaResolverError && error.code === 'unsupported-source'
+					? 'unsupported'
+					: 'unavailable',
+			};
+		} finally {
+			if (this.pendingMediaRequests.get(requestId) === pending) {
+				this.pendingMediaRequests.delete(requestId);
+				pending.resolve();
+				this.broadcastState();
+			}
+		}
 	}
 
 	private updateTranscriptState(
@@ -2561,25 +2685,25 @@ class AiAssistController {
 			return;
 		}
 
-		if (!this.review) {
-			await this.requestContextReview(question, this.anchor?.snapshot.item.messageId);
+		if (await this.capturePromptReviewIfNeeded(question)) {
 			return;
 		}
 
-		const hasSavedHistoricalVideo = this.review.contextSource === 'historical-original'
-			&& this.review.snapshot.transcripts.some(item => this.videoArtifacts.has(item.id));
-		const submittedQuestion = this.review.contextSource === 'historical-original' && !hasSavedHistoricalVideo
-			? this.review.snapshot.question
+		let review = this.review!;
+		const hasSavedHistoricalVideo = review.contextSource === 'historical-original'
+			&& review.snapshot.transcripts.some(item => this.videoArtifacts.has(item.id));
+		const submittedQuestion = review.contextSource === 'historical-original' && !hasSavedHistoricalVideo
+			? review.snapshot.question
 			: question;
 
-		const submissionDecision = contextReviewSubmissionDecision(this.review.locked);
+		const submissionDecision = contextReviewSubmissionDecision(review.locked);
 		if (!submissionDecision.allowed) {
 			this.notice = submissionDecision.notice;
 			this.broadcastState();
 			return;
 		}
 
-		if (!this.isRequestSnapshotCurrent(this.review.snapshot.snapshot)) {
+		if (!this.isRequestSnapshotCurrent(review.snapshot.snapshot)) {
 			this.error = {
 				code: 'provider-unavailable',
 				message: 'Conversation changed — capture context again before asking OpenAI.',
@@ -2588,7 +2712,7 @@ class AiAssistController {
 			return;
 		}
 
-		const imageSelection = reviewedImageSelectionSummary(this.review.snapshot.images);
+		const imageSelection = reviewedImageSelectionSummary(review.snapshot.images);
 		if (imageSelection.blockingNotice) {
 			this.error = {
 				code: 'input-too-large',
@@ -2598,13 +2722,13 @@ class AiAssistController {
 			return;
 		}
 
-		this.review = {
-			...this.review,
+		review = {
+			...review,
 			locked: false,
-			sequence: ++this.reviewSequence,
-			snapshot: updateContextReview(this.review.snapshot, {question: submittedQuestion}),
+			snapshot: updateContextReview(review.snapshot, {question: submittedQuestion}),
 		};
-		const prompt = buildReviewedPrompt(this.review.snapshot);
+		this.review = review;
+		const prompt = buildReviewedPrompt(review.snapshot);
 		if (prompt.length > openAiPromptCharacterLimit) {
 			this.error = {
 				code: 'input-too-large',
@@ -2614,8 +2738,8 @@ class AiAssistController {
 			return;
 		}
 
-		const reelContextItemIds = facebookReelContextItemIds(this.review.snapshot.items);
-		const selectedVideoTranscript = this.review.snapshot.transcripts.find(item =>
+		const reelContextItemIds = facebookReelContextItemIds(review.snapshot.items);
+		const selectedVideoTranscript = review.snapshot.transcripts.find(item =>
 			item.kind === 'video'
 			&& ['completed', 'no-audio'].includes(item.status)
 			&& (reelContextItemIds.size === 0 || reelContextItemIds.has(item.contextItemId)));
@@ -2632,9 +2756,9 @@ class AiAssistController {
 			}
 			: undefined;
 		const reelSubmissionDecision = reelVideoEvidenceSubmissionDecision(
-			this.review.snapshot.question,
+			review.snapshot.question,
 			selectedVideoTranscript?.status === 'completed' || Boolean(selectedVideoArtifact),
-			this.review.snapshot.items,
+			review.snapshot.items,
 		);
 		if (!reelSubmissionDecision.allowed) {
 			this.error = undefined;
@@ -2643,19 +2767,21 @@ class AiAssistController {
 			return;
 		}
 
-		const finalizedImages = finalizeReviewedImageSelection(this.review.snapshot.images);
+		const finalizedImages = finalizeReviewedImageSelection(review.snapshot.images);
 		for (const handleId of finalizedImages.releasedHandleIds) {
 			this.processedImages.releaseHandle(handleId);
 		}
 
-		this.review = {
-			...this.review,
+		review = {
+			...review,
 			locked: true,
-			snapshot: updateContextReview(this.review.snapshot, {images: [...finalizedImages.items]}),
+			sequence: ++this.reviewSequence,
+			snapshot: updateContextReview(review.snapshot, {images: [...finalizedImages.items]}),
 		};
+		this.review = review;
 		this.broadcastState();
 
-		const lockedReview = this.review;
+		const lockedReview = review;
 		try {
 			await this.runOpenAiRequest(
 				prompt,
@@ -2677,6 +2803,22 @@ class AiAssistController {
 				'all',
 			);
 		}
+	}
+
+	private async capturePromptReviewIfNeeded(question: string): Promise<boolean> {
+		const promptReelUrl = facebookReelUrlInText(question);
+		if (
+			this.review
+			&& (this.review.contextSource === 'historical-original'
+				|| (promptReelUrl
+					? [...this.promptReelUrls.values()].includes(promptReelUrl)
+					: this.promptReelUrls.size === 0))
+		) {
+			return false;
+		}
+
+		await this.requestContextReview(question, this.anchor?.snapshot.item.messageId);
+		return true;
 	}
 
 	private async runOpenAiRequest(
@@ -3387,6 +3529,7 @@ class AiAssistController {
 		this.pendingTranscription = undefined;
 		this.transcriptHandles.clear();
 		this.transcriptMediaHashes.clear();
+		this.promptReelUrls.clear();
 		this.videoArtifacts.clear();
 		this.videoAnalysis = undefined;
 		this.cancelMediaResolution();
@@ -3412,6 +3555,7 @@ class AiAssistController {
 		this.pendingTranscription = undefined;
 		this.transcriptHandles.clear();
 		this.transcriptMediaHashes.clear();
+		this.promptReelUrls.clear();
 		this.videoArtifacts.clear();
 		this.videoAnalysis = undefined;
 		this.cancelMediaResolution();
