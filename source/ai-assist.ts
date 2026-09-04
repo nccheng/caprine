@@ -2525,7 +2525,7 @@ class AiAssistController {
 				authorizationToken: authorization.authorizationToken,
 				conversationId: authorization.conversationId,
 				requestId,
-				text: formatCaprineAiSharedAnswer(authorization.text),
+				text: formatCaprineAiSharedAnswer(authorization.text, authorization.question),
 				type: 'insert-draft',
 			});
 		});
@@ -3038,6 +3038,7 @@ class AiAssistController {
 					answerGeneration: ++this.answerGeneration,
 					authorizationToken: `draft-insertion-token:${randomUUID()}`,
 					conversationId: request.snapshot.conversationId,
+					question: options.frozenReview?.question ?? '',
 					snapshot: request.snapshot,
 					text: answer.text,
 				});
@@ -3665,7 +3666,7 @@ class AiAssistController {
 				this.currentHistoryInteractionId = run.interactionId;
 				this.draftInsertionAuthorization.issue({
 					answerGeneration: ++this.answerGeneration, authorizationToken: `draft-insertion-token:${randomUUID()}`,
-					conversationId: snapshot.conversationId, snapshot, text: run.answer,
+					conversationId: snapshot.conversationId, question: run.question, snapshot, text: run.answer,
 				});
 			}
 
@@ -3843,7 +3844,7 @@ class AiAssistController {
 			this.recordQuickEvent({stage, status: 'succeeded'});
 			stage = 'reply';
 			this.recordQuickEvent({stage, status: 'started'});
-			const reply = await this.quickMessengerAction('answer', formatCaprineAiSharedAnswer(answer.text));
+			const reply = await this.quickMessengerAction('answer', formatCaprineAiSharedAnswer(answer.text, question));
 			if (!this.quickRunIsCurrent(runId)) {
 				return;
 			}

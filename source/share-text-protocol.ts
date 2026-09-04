@@ -10,10 +10,19 @@ export const caprineAiShareUrlCharacterLimit = 2048;
 export const caprineAiShareTextCharacterLimit = 50_000;
 
 const sharedAnswerHeading = `${caprineAiShareAssistantLabel}\n${caprineAiShareSharerLabel}\n\n`;
-export const caprineAiSharedAnswerCharacterLimit = caprineAiShareAnswerCharacterLimit + sharedAnswerHeading.length;
+const sharedQuestionHeading = '原始提問：\n';
+const sharedResponseHeading = '\n\nAI 回覆：\n';
+export const caprineAiSharedQuestionCharacterLimit = 20_000;
+export const caprineAiSharedAnswerCharacterLimit = caprineAiShareAnswerCharacterLimit
+	+ caprineAiSharedQuestionCharacterLimit + sharedAnswerHeading.length + sharedQuestionHeading.length + sharedResponseHeading.length;
 
-export function formatCaprineAiSharedAnswer(answer: string): string {
-	return sharedAnswerHeading + answer;
+export function formatCaprineAiSharedAnswer(answer: string, question: string): string {
+	if (typeof answer !== 'string' || answer.length > caprineAiShareAnswerCharacterLimit
+		|| typeof question !== 'string' || question.length > caprineAiSharedQuestionCharacterLimit) {
+		throw new TypeError('The shared question or answer exceeds its allowed size.');
+	}
+
+	return sharedAnswerHeading + (question.length > 0 ? sharedQuestionHeading + question + sharedResponseHeading : '') + answer;
 }
 
 const startMarker = `<<< ${caprineAiShareProtocolVersion} >>>`;

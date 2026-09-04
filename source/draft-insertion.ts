@@ -21,6 +21,7 @@ export type DraftInsertionAuthorizationView = {
 };
 
 export type DraftInsertionAuthorization = DraftInsertionAuthorizationView & {
+	question: string;
 	snapshot: Readonly<ConversationSnapshot>;
 	text: string;
 };

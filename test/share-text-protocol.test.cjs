@@ -8,6 +8,7 @@ const {
 	caprineAiShareQuestionCharacterLimit,
 	caprineAiShareSharerLabel,
 	caprineAiShareSourceLimit,
+	formatCaprineAiSharedAnswer,
 	formatCaprineAiShareText,
 	parseCaprineAiShareText,
 } = require('../dist-js/share-text-protocol.js');
@@ -18,6 +19,17 @@ const basicInput = (overrides = {}) => ({
 	question: 'What happened?',
 	sources: [],
 	...overrides,
+});
+
+test('shared question precedes answer verbatim, preserving URLs, multiline text, Unicode, and inert markup', () => {
+	const question = '幫我總結 😻\r\nhttps://www.facebook.com/reel/1744555046768453\n<b>原始文字</b>';
+	const answer = '摘要\n第一點\n第二點';
+	assert.equal(formatCaprineAiSharedAnswer(answer, question),
+		`Caprine AI Assist\nAI response shared by Derek\n\n原始提問：\n${question}\n\nAI 回覆：\n${answer}`);
+	assert.equal(formatCaprineAiSharedAnswer(answer, ''), `Caprine AI Assist\nAI response shared by Derek\n\n${answer}`);
+	assert.throws(() => formatCaprineAiSharedAnswer(answer, 'q'.repeat(20_001)), TypeError);
+	assert.throws(() => formatCaprineAiSharedAnswer('a'.repeat(20_001), question), TypeError);
+	assert.throws(() => formatCaprineAiSharedAnswer(answer, {prompt: 'PRIVATE CONTEXT'}), TypeError);
 });
 
 test('caprine-ai/1 round trips unsearched and searched answers as readable plain text', () => {
