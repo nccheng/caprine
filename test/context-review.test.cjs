@@ -58,6 +58,7 @@ test('Facebook Reel evidence gate recognizes only bounded Facebook Reel URLs', (
 	);
 	assert.equal(blocked.allowed, false);
 	assert.match(blocked.notice, /no reviewed video evidence is prepared/);
+	assert.match(blocked.notice, /Open Context review, select Prepare video audio, then Transcribe and review/);
 	assert.match(blocked.notice, /Nothing was sent to OpenAI\.$/);
 
 	const reelItems = [{
@@ -107,6 +108,12 @@ test('Facebook Reel normalization and page parsing are bounded to the requested 
 	const jsonUrl = 'https://video.xx.fbcdn.net/reel-hd.mp4?token=one&part=two';
 	const jsonHtml = `{"browser_native_hd_url":"${jsonUrl}","video_id":"${reelId}"}`;
 	assert.equal(extractFacebookReelVideoUrl(jsonHtml, reelId), jsonUrl);
+	const mobileHtml = `<script>boot({metadata:"{\\"story_fbid\\":[\\"${reelId}\\"]}",playable_url:"${metaUrl}"})</script>`;
+	assert.equal(extractFacebookReelVideoUrl(mobileHtml, reelId), metaUrl);
+	assert.equal(extractFacebookReelVideoUrl(
+		`<script>boot({metadata:"unbound ${reelId}",playable_url:"${metaUrl}"})</script>`,
+		reelId,
+	), undefined);
 	assert.equal(extractFacebookReelVideoUrl(`{
 		"id":"unrelated",
 		"playable_url":"${metaUrl}",

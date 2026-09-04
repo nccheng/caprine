@@ -23,6 +23,7 @@ const webSearchMode = document.querySelector('#web-search-mode');
 const quickMode = document.querySelector('#quick-mode');
 const contextSourceDisclosure = document.querySelector('#context-source-disclosure');
 const contextAvailability = document.querySelector('#context-availability');
+const contextReviewDetails = document.querySelector('#context-review-details');
 const contextReviewSummary = document.querySelector('#context-review-details > summary');
 const contextMessageDetails = document.querySelector('#context-message-details');
 const contextMessageSummary = document.querySelector('#context-message-summary');
@@ -82,6 +83,8 @@ let diagnosticsCopySequence;
 let historyDeletionFocusTarget;
 let renderedHistoryDeleteButton;
 let renderedHistoryDeleteChatId;
+let renderedPrimaryReelTranscriptId;
+let renderedPrimaryReelTranscriptRow;
 let initialFocusApplied = false;
 const contextReviewRows = new Map();
 const reviewedImageRows = new Map();
@@ -600,6 +603,19 @@ function updateReviewedTranscriptRow(row, item, reviewSequence, locked, credenti
 	}
 }
 
+async function runTranscriptAction(row) {
+	let nextState;
+	if (row.item.status === 'ready') {
+		nextState = await window.caprineAiAssist.transcribeReviewedMedia(row.reviewSequence, row.item.id);
+	} else if (row.item.status === 'extracting' || row.item.status === 'transcribing') {
+		nextState = await window.caprineAiAssist.cancelTranscription(row.reviewSequence, row.item.id);
+	} else {
+		nextState = await window.caprineAiAssist.prepareTranscript(row.reviewSequence, row.item.id);
+	}
+
+	render(nextState);
+}
+
 function createReviewedTranscriptRow(item, reviewSequence, locked, credentialsConfigured) {
 	const article = document.createElement('article');
 	article.className = 'context-item';
@@ -641,16 +657,7 @@ function createReviewedTranscriptRow(item, reviewSequence, locked, credentialsCo
 		status,
 	};
 	action.addEventListener('click', async () => {
-		let nextState;
-		if (row.item.status === 'ready') {
-			nextState = await window.caprineAiAssist.transcribeReviewedMedia(row.reviewSequence, row.item.id);
-		} else if (row.item.status === 'extracting' || row.item.status === 'transcribing') {
-			nextState = await window.caprineAiAssist.cancelTranscription(row.reviewSequence, row.item.id);
-		} else {
-			nextState = await window.caprineAiAssist.prepareTranscript(row.reviewSequence, row.item.id);
-		}
-
-		render(nextState);
+		await runTranscriptAction(row);
 	});
 	save.addEventListener('click', async () => {
 		const texts = row.editors.map(editor => editor.value);
@@ -688,6 +695,46 @@ function renderReviewedTranscripts(review, isRequesting, credentialsConfigured) 
 		if (!presentIds.has(id)) {
 			row.article.remove();
 			reviewedTranscriptRows.delete(id);
+		}
+	}
+}
+
+function primaryPromptReelTranscript(review) {
+	return review?.transcripts?.find(item =>
+		item.kind === 'video'
+		&& item.senderLabel === 'Facebook Reel from private prompt'
+		&& !['completed', 'no-audio'].includes(item.status));
+}
+
+function primaryReelActionLabel(status) {
+	switch (status) {
+		case 'ready': {
+			return 'Transcribe and review Reel';
+		}
+
+		case 'preparing': {
+			return 'Preparing Reel audio…';
+		}
+
+		case 'extracting':
+		case 'transcribing': {
+			return 'Transcribing Reel…';
+		}
+
+		case 'unsupported':
+		case 'oversized': {
+			return 'Review Reel preparation error';
+		}
+
+		case 'canceled':
+		case 'failed':
+		case 'removed':
+		case 'timed-out': {
+			return 'Retry Reel audio preparation';
+		}
+
+		default: {
+			return 'Prepare Reel audio';
 		}
 	}
 }
@@ -1244,6 +1291,15 @@ function render(state) {
 	webSearchMode.value = state.review?.browsingMode ?? state.webSearchMode;
 	quickMode.checked = state.quickMode === true;
 	renderContextReview(state.review, isRequesting, state.credentials.configured);
+	const primaryReelTranscript = primaryPromptReelTranscript(state.review);
+	renderedPrimaryReelTranscriptRow = primaryReelTranscript
+		? reviewedTranscriptRows.get(primaryReelTranscript.id)
+		: undefined;
+	if (renderedPrimaryReelTranscriptRow && renderedPrimaryReelTranscriptId !== primaryReelTranscript.id) {
+		contextReviewDetails.open = true;
+	}
+
+	renderedPrimaryReelTranscriptId = primaryReelTranscript?.id;
 	if (state.invocation && state.invocation.sequence !== renderedInvocationSequence) {
 		promptInput.value = state.invocation.prompt;
 		promptCaptureGeneration = state.conversation.captureGeneration;
@@ -1297,6 +1353,8 @@ function render(state) {
 		askButton.textContent = 'Asked — Refresh context to ask again';
 	} else if (state.review?.editable === false && state.videoAnalysis?.status === 'ready') {
 		askButton.textContent = 'Ask another question with prepared video';
+	} else if (primaryReelTranscript) {
+		askButton.textContent = primaryReelActionLabel(primaryReelTranscript.status);
 	} else {
 		askButton.textContent = state.review ? 'Ask with reviewed context' : 'Review context';
 	}
@@ -1304,6 +1362,7 @@ function render(state) {
 	askButton.disabled = isRequesting
 		|| isReviewLocked
 		|| isContextCapturing
+		|| ['preparing', 'extracting', 'transcribing'].includes(primaryReelTranscript?.status)
 		|| isImageSelectionBlocked
 		|| !isConversationReady
 		|| Boolean(state.review && !state.credentials.configured);
@@ -1380,6 +1439,17 @@ mediaForm.addEventListener('submit', async event => {
 
 promptForm.addEventListener('submit', async event => {
 	event.preventDefault();
+	if (renderedPrimaryReelTranscriptRow) {
+		contextReviewDetails.open = true;
+		if (renderedPrimaryReelTranscriptRow.action.disabled) {
+			focusFirstAvailable(renderedPrimaryReelTranscriptRow.action, contextReviewSummary);
+		} else {
+			await runTranscriptAction(renderedPrimaryReelTranscriptRow);
+		}
+
+		return;
+	}
+
 	render(await window.caprineAiAssist.submitPrompt(promptInput.value));
 });
 

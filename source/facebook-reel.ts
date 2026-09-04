@@ -86,6 +86,49 @@ function collectBoundVideoCandidates(
 	}
 }
 
+function scriptHasNearbyTargetBinding(script: string, candidateIndex: number, expectedReelId: string): boolean {
+	// eslint-disable-next-line unicorn/prefer-set-has -- The value is a bounded source substring, not a collection.
+	const prefix = script.slice(Math.max(0, candidateIndex - 4096), candidateIndex);
+	const bindings = [
+		`"video_id":"${expectedReelId}"`,
+		`\\"video_id\\":\\"${expectedReelId}\\"`,
+		`"post_id":"${expectedReelId}"`,
+		`\\"post_id\\":\\"${expectedReelId}\\"`,
+		`"story_fbid":["${expectedReelId}"]`,
+		`\\"story_fbid\\":[\\"${expectedReelId}\\"]`,
+	];
+	for (const binding of bindings) {
+		if (prefix.includes(binding)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+function collectBoundScriptVideoCandidates(
+	html: string,
+	expectedReelId: string,
+	candidates: Array<{rank: number; url: string}>,
+): void {
+	const keyPattern = [...playableUrlKeys.keys()].join('|');
+	const candidatePattern = new RegExp(`\\b(${keyPattern})\\s*:\\s*"([^"\\r\\n]{1,8192})"`, 'gu');
+	for (const scriptMatch of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/giu)) {
+		const script = scriptMatch[1];
+		for (const candidateMatch of script.matchAll(candidatePattern)) {
+			if (!scriptHasNearbyTargetBinding(script, candidateMatch.index ?? 0, expectedReelId)) {
+				continue;
+			}
+
+			const url = normalizedPlayableUrl(candidateMatch[2]);
+			const rank = playableUrlKeys.get(candidateMatch[1]);
+			if (url && rank !== undefined) {
+				candidates.push({rank, url});
+			}
+		}
+	}
+}
+
 export function normalizeFacebookReelUrl(value: string): string | undefined {
 	let url: URL;
 	try {
@@ -161,6 +204,8 @@ export function extractFacebookReelVideoUrl(html: string, expectedReelId: string
 	for (const document of jsonDocuments(html)) {
 		collectBoundVideoCandidates(document, expectedReelId, candidates, {remaining: 50_000});
 	}
+
+	collectBoundScriptVideoCandidates(html, expectedReelId, candidates);
 
 	candidates.sort((left, right) => left.rank - right.rank);
 	return candidates[0]?.url;

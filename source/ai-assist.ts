@@ -1367,7 +1367,7 @@ class AiAssistController {
 		const transcripts = createReviewedTranscriptItems(
 			reviewedItems,
 			messageId => this.mediaCandidates.find(candidate => candidate.messageId === messageId)?.durationSeconds,
-		).map(transcript => transcript.contextItemId === syntheticContextItemId
+		).map(transcript => transcript.contextItemId === syntheticContextItemId || this.promptReelUrls.has(transcript.messageId)
 			? {...transcript, senderLabel: 'Facebook Reel from private prompt'}
 			: transcript);
 		this.diagnosticsHealth.contextHealthy();
