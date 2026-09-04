@@ -99,6 +99,7 @@ import {
 	createUnlockedContextReview,
 	editContextReviewItem,
 	removeContextReviewItem,
+	reelVideoEvidenceSubmissionDecision,
 	updateContextReview,
 } from './context-review';
 import {
@@ -232,7 +233,7 @@ function durableVideoKeyframes(
 }
 
 class QuickRunFailure extends Error {
-	constructor(readonly code: QuickRunErrorCode, readonly uncertain = false) {
+	constructor(readonly code: QuickRunErrorCode, readonly uncertain = false, readonly notice?: string) {
 		super(code);
 	}
 }
@@ -2595,20 +2596,7 @@ class AiAssistController {
 			return;
 		}
 
-		const finalizedImages = finalizeReviewedImageSelection(this.review.snapshot.images);
-		for (const handleId of finalizedImages.releasedHandleIds) {
-			this.processedImages.releaseHandle(handleId);
-		}
-
-		this.review = {
-			...this.review,
-			locked: true,
-			snapshot: updateContextReview(this.review.snapshot, {images: [...finalizedImages.items]}),
-		};
-		this.broadcastState();
-
-		const lockedReview = this.review;
-		const selectedVideoTranscript = lockedReview.snapshot.transcripts.find(item =>
+		const selectedVideoTranscript = this.review.snapshot.transcripts.find(item =>
 			item.kind === 'video' && ['completed', 'no-audio'].includes(item.status));
 		const storedVideoArtifact = selectedVideoTranscript
 			? this.videoArtifacts.get(selectedVideoTranscript.id)
@@ -2622,6 +2610,30 @@ class AiAssistController {
 				},
 			}
 			: undefined;
+		const reelSubmissionDecision = reelVideoEvidenceSubmissionDecision(
+			this.review.snapshot.question,
+			Boolean(selectedVideoTranscript),
+		);
+		if (!reelSubmissionDecision.allowed) {
+			this.error = undefined;
+			this.notice = reelSubmissionDecision.notice;
+			this.broadcastState();
+			return;
+		}
+
+		const finalizedImages = finalizeReviewedImageSelection(this.review.snapshot.images);
+		for (const handleId of finalizedImages.releasedHandleIds) {
+			this.processedImages.releaseHandle(handleId);
+		}
+
+		this.review = {
+			...this.review,
+			locked: true,
+			snapshot: updateContextReview(this.review.snapshot, {images: [...finalizedImages.items]}),
+		};
+		this.broadcastState();
+
+		const lockedReview = this.review;
 		try {
 			await this.runOpenAiRequest(
 				prompt,
@@ -3613,6 +3625,11 @@ class AiAssistController {
 				throw new QuickRunFailure('input-too-large');
 			}
 
+			const reelSubmissionDecision = reelVideoEvidenceSubmissionDecision(frozenReview.question, false);
+			if (!reelSubmissionDecision.allowed) {
+				throw new QuickRunFailure('unsupported-media', false, reelSubmissionDecision.notice);
+			}
+
 			this.recordQuickEvent({stage, status: 'succeeded'});
 			stage = 'question-send';
 			const original = await this.quickMessengerAction('question', question);
@@ -3675,7 +3692,9 @@ class AiAssistController {
 			}
 
 			const reason = failure.code === 'user-interrupted' ? 'another keyboard or pointer action interrupted the run' : failure.code;
-			this.notice = `Quick mode stopped: ${reason} (${stage}). The automatic reply did not complete. No automatic retry. Inspect the run in History and check Messenger before starting again.`;
+			this.notice = failure.notice
+				? `${failure.notice} Quick mode did not send the question or answer. Inspect the failed run in History.`
+				: `Quick mode stopped: ${reason} (${stage}). The automatic reply did not complete. No automatic retry. Inspect the run in History and check Messenger before starting again.`;
 			this.showPanelWindow();
 		} finally {
 			if (this.quickRun?.run.id === runId) {

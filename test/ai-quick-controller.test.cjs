@@ -28,7 +28,11 @@ function loadController() {
 			},
 		},
 		'./messenger-image-normalization': {},
-		'./reviewed-images': {withSelectedReviewedImageInputs: async ({run}) => run([])},
+		'./reviewed-images': {
+			finalizeReviewedImageSelection: items => ({items, releasedHandleIds: []}),
+			reviewedImageSelectionSummary: () => ({aggregateBytes: 0, selectedCount: 0}),
+			withSelectedReviewedImageInputs: async ({run}) => run([]),
+		},
 	};
 	const exports = {};
 	vm.runInNewContext(`${readFileSync(modulePath, 'utf8')}\nexports.ControllerForTest = AiAssistController;`, {
@@ -238,6 +242,78 @@ test('oversized provider input remains a terminal inspectable failure with froze
 		assert.equal(JSON.parse(saved.contextJson).items[0].item.text.length, 19_990);
 		assert.equal(f.counts.provider, 0);
 		assert.equal(sends, 0);
+		assert.equal(f.controller.quickRun, undefined);
+	} finally {
+		store.close();
+	}
+});
+
+test('manual Reel submission without prepared video evidence stays editable and never reaches the provider', async () => {
+	const f = fixture();
+	const question = '總結 https://www.facebook.com/reel/1744555046768453';
+	const frozen = restoreContextReviewSnapshot({
+		actualCount: 1, contextVersion: 'fixture', images: [], newMessagesAvailable: false, question,
+		requestedCount: 10, snapshot: f.snapshot, transcripts: [],
+		items: [{
+			id: 'context-reel', item: {
+				confidence: 'low', omittedReason: 'no-supported-content', sender: {role: 'unknown'},
+			},
+		}],
+	});
+	f.controller.quickRun = undefined;
+	f.controller.reviewedImageCapture = undefined;
+	f.controller.review = {
+		browsingMode: 'auto', contextSource: 'current', editable: true, locked: false,
+		sequence: 1, snapshot: frozen,
+	};
+	f.controller.videoArtifacts = new Map();
+	let broadcasts = 0;
+	f.controller.broadcastState = () => {
+		broadcasts++;
+	};
+
+	await f.controller.submitReviewedPrompt(question);
+
+	assert.equal(f.counts.provider, 0);
+	assert.equal(f.counts.persisted, 0);
+	assert.equal(f.controller.review.locked, false);
+	assert.match(f.controller.notice, /Facebook Reel detected/);
+	assert.match(f.controller.notice, /Nothing was sent to OpenAI\.$/);
+	assert.equal(broadcasts, 1);
+});
+
+test('Quick mode rejects a Reel before sending the question or contacting the provider', async () => {
+	const f = fixture();
+	const store = new AiHistoryStore({databasePath: ':memory:'});
+	const question = 'Summarize https://www.facebook.com/reel/1744555046768453';
+	const frozen = restoreContextReviewSnapshot({
+		actualCount: 0, contextVersion: 'fixture', images: [], items: [], newMessagesAvailable: false,
+		question, requestedCount: 10, snapshot: f.snapshot, transcripts: [],
+	});
+	f.controller.quickRun = undefined;
+	f.controller.historyStore = store;
+	f.controller.requestContextReview = async () => {
+		f.controller.review = {snapshot: frozen};
+	};
+
+	f.controller.showPanelWindow = () => {};
+	let sends = 0;
+	f.controller.quickMessengerAction = async () => {
+		sends++;
+	};
+
+	try {
+		await f.controller.startQuickRun(question, f.snapshot);
+		const chat = store.loadConversationSummaries(f.snapshot.conversationId)[0];
+		const saved = store.loadQuickRuns(f.snapshot.conversationId, chat.id)[0];
+		assert.equal(saved.outcome, 'failed');
+		assert.equal(saved.events.at(-1).stage, 'context');
+		assert.equal(saved.events.at(-1).code, 'unsupported-media');
+		assert.equal(saved.questionMessageId, undefined);
+		assert.equal(f.counts.provider, 0);
+		assert.equal(sends, 0);
+		assert.match(f.controller.notice, /Facebook Reel detected/);
+		assert.match(f.controller.notice, /did not send the question or answer/);
 		assert.equal(f.controller.quickRun, undefined);
 	} finally {
 		store.close();
