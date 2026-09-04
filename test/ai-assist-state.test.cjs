@@ -1121,6 +1121,7 @@ test('private-prompt Reel uses the primary button for prepare, consent, then Ask
 		browsingMode: 'auto',
 		contextSource: 'current',
 		editable: true,
+		imageSelection: {aggregateBytes: 0, selectedCount: 0},
 		images: [],
 		items: [],
 		locked: false,
@@ -1131,13 +1132,14 @@ test('private-prompt Reel uses the primary button for prepare, consent, then Ask
 		transcripts: [transcript],
 	};
 	const availableState = {...state('ready', 1), review};
-	const readyState = {...availableState, review: {...review, transcripts: [{...transcript, status: 'ready'}]}};
+	const readyState = {...availableState, review: {...review, transcripts: [{...transcript, notice: undefined, status: 'ready'}]}};
 	const completedState = {
 		...availableState,
 		review: {
 			...review,
 			transcripts: [{
 				...transcript,
+				notice: undefined,
 				originalSegments: [{endSeconds: 1, startSeconds: 0, text: 'Transcript'}],
 				status: 'completed',
 			}],
@@ -1145,6 +1147,10 @@ test('private-prompt Reel uses the primary button for prepare, consent, then Ask
 	};
 	const submit = element('prompt-form').listeners.get('submit');
 	const event = {preventDefault() {}};
+	// Electron structured clone preserves explicitly cleared optional fields.
+	// The preload must accept the state before the renderer can advance its button.
+	assert.equal(isAiAssistPanelState(structuredClone(readyState)), true);
+	assert.equal(isAiAssistPanelState(structuredClone(completedState)), true);
 
 	renderState(state('ready', 1));
 	element('prompt').value = prompt;
@@ -1172,6 +1178,48 @@ test('private-prompt Reel uses the primary button for prepare, consent, then Ask
 	commandState.current = completedState;
 	await submit(event);
 	assert.deepEqual(submitCommands, [prompt]);
+});
+
+test('transcript IPC accepts cleared optional fields but rejects unknown or malformed fields', () => {
+	const {state} = createPanelFixture();
+	const transcript = {
+		contextItemId: 'review:prompt-reel',
+		id: 'transcript:prompt-reel',
+		kind: 'video',
+		messageId: 'prompt-reel-1744555046768453',
+		senderLabel: 'Facebook Reel from private prompt',
+		status: 'available',
+	};
+	const panelState = item => structuredClone({
+		...state('ready', 1),
+		review: {
+			actualCount: 0, browsingMode: 'off', contextSource: 'current', editable: true, items: [], locked: false,
+			newMessagesAvailable: false, question: 'Summarize this Reel', requestedCount: 20,
+			sequence: 1, transcripts: [item],
+		},
+	});
+	assert.equal(isAiAssistPanelState(panelState(transcript)), true);
+	const optionalFields = ['byteLength', 'durationSeconds', 'editedSegments', 'mimeType', 'notice', 'originalSegments'];
+	for (const field of optionalFields) {
+		assert.equal(isAiAssistPanelState(panelState({...transcript, [field]: undefined})), true, field);
+		assert.equal(isAiAssistPanelState(panelState({...transcript, [field]: null})), false, field);
+	}
+
+	for (const status of ['preparing', 'ready', 'extracting', 'transcribing', 'failed', 'canceled', 'removed', 'timed-out', 'unsupported', 'oversized', 'no-audio']) {
+		assert.equal(isAiAssistPanelState(panelState({...transcript, notice: undefined, status})), true, status);
+	}
+
+	const {completeReviewedTranscript} = require('../dist-js/reviewed-transcripts.js');
+	const completed = completeReviewedTranscript(transcript, {
+		byteLength: 1234, durationSeconds: 2, mimeType: 'audio/mpeg',
+		segments: [{startSeconds: 0, endSeconds: 2, text: 'Fixture transcript'}],
+	});
+	assert.equal(Object.hasOwn(completed, 'notice'), true);
+	assert.equal(isAiAssistPanelState(panelState(completed)), true);
+	assert.equal(isAiAssistPanelState(panelState({...transcript, unexpected: undefined})), false);
+	assert.equal(isAiAssistPanelState(panelState({...transcript, notice: 'x'.repeat(1001)})), false);
+	assert.equal(isAiAssistPanelState(panelState({...completed, originalSegments: undefined})), false);
+	assert.equal(isAiAssistPanelState(panelState({...completed, editedSegments: [{startSeconds: 0, endSeconds: 3, text: 'Wrong times'}]})), false);
 });
 
 test('panel initial focus leaves Context review collapsed across initial states', async t => {
