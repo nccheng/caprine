@@ -77,6 +77,44 @@ export function contextReviewSubmissionDecision(locked: boolean):
 		: {allowed: true};
 }
 
+const trailingUrlPunctuation = /[),.;:!?\]}\u3001\u3002\uFF01\uFF09\uFF0C\uFF1A\uFF1B\uFF1F]+$/u;
+
+export function containsFacebookReelUrl(question: string): boolean {
+	for (const match of question.matchAll(/https?:\/\/[^\s<>"']+/giu)) {
+		let url: URL;
+		try {
+			url = new URL(match[0].replace(trailingUrlPunctuation, ''));
+		} catch {
+			continue;
+		}
+
+		const hostname = url.hostname.toLowerCase();
+		if (
+			['http:', 'https:'].includes(url.protocol)
+			&& !url.username
+			&& !url.password
+			&& (hostname === 'facebook.com' || hostname.endsWith('.facebook.com'))
+			&& /^\/reel\/\d{5,30}\/?$/iu.test(url.pathname)
+		) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+export function reelVideoEvidenceSubmissionDecision(
+	question: string,
+	hasReviewedVideoEvidence: boolean,
+): {allowed: true} | {allowed: false; notice: string} {
+	return containsFacebookReelUrl(question) && !hasReviewedVideoEvidence
+		? {
+			allowed: false,
+			notice: 'Facebook Reel detected, but no reviewed video evidence is prepared. Prepare a supported Messenger video in Context review or provide a transcript before asking. Nothing was sent to OpenAI.',
+		}
+		: {allowed: true};
+}
+
 function freezePlainValue(value: unknown): void {
 	if (!value || typeof value !== 'object' || Object.isFrozen(value)) {
 		return;

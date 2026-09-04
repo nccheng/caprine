@@ -9,15 +9,50 @@ const {
 	contextCaptureRetryNotice,
 	contextReviewSubmissionDecision,
 	contextVersion,
+	containsFacebookReelUrl,
 	createUnlockedContextReview,
 	editContextReviewItem,
 	isContextWindowComplete,
 	mergeContextPages,
 	removeContextReviewItem,
+	reelVideoEvidenceSubmissionDecision,
 	restoredConversationScrollTop,
 	selectContextWindow,
 	updateContextReview,
 } = require('../dist-js/context-review.js');
+
+test('Facebook Reel evidence gate recognizes only bounded Facebook Reel URLs', () => {
+	for (const question of [
+		'Summarize https://www.facebook.com/reel/1744555046768453',
+		'請總結 http://m.facebook.com/reel/1744555046768453/?tracking=removed。',
+		'(https://facebook.com/reel/1744555046768453)',
+	]) {
+		assert.equal(containsFacebookReelUrl(question), true, question);
+		assert.equal(reelVideoEvidenceSubmissionDecision(question, false).allowed, false, question);
+		assert.deepEqual(reelVideoEvidenceSubmissionDecision(question, true), {allowed: true});
+	}
+
+	for (const question of [
+		'Summarize facebook.com/reel/1744555046768453',
+		'https://facebook.com.example/reel/1744555046768453',
+		'https://example.com/?next=https%3A%2F%2Ffacebook.com%2Freel%2F1744555046768453',
+		'https://www.facebook.com/reels/1744555046768453',
+		'https://www.facebook.com/reel/not-an-id',
+		'https://user@example.com/reel/1744555046768453',
+		'The word reel is not a URL.',
+	]) {
+		assert.equal(containsFacebookReelUrl(question), false, question);
+		assert.deepEqual(reelVideoEvidenceSubmissionDecision(question, false), {allowed: true});
+	}
+
+	const blocked = reelVideoEvidenceSubmissionDecision(
+		'Summarize https://www.facebook.com/reel/1744555046768453',
+		false,
+	);
+	assert.equal(blocked.allowed, false);
+	assert.match(blocked.notice, /no reviewed video evidence is prepared/);
+	assert.match(blocked.notice, /Nothing was sent to OpenAI\.$/);
+});
 
 test('context capture diagnostics are bounded and contain no remote content', () => {
 	const notices = [
