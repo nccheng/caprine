@@ -364,7 +364,7 @@ test('a Reel URL in the private prompt becomes explicit reviewable video evidenc
 	assert.equal(f.controller.review.snapshot.transcripts[0].kind, 'video');
 	assert.equal(f.controller.review.snapshot.transcripts[0].status, 'available');
 	assert.equal(f.controller.review.snapshot.transcripts[0].senderLabel, 'Facebook Reel from private prompt');
-	assert.match(f.controller.notice, /Select Prepare video audio before Ask/);
+	assert.match(f.controller.notice, /Select Prepare video audio, then Transcribe and review, before Ask/);
 });
 
 test('preparing a private-prompt Reel resolves it in the trusted main process', async () => {
@@ -411,6 +411,45 @@ test('preparing a private-prompt Reel resolves it in the trusted main process', 
 	assert.equal(f.controller.pendingMediaRequests.size, 0);
 	assert.equal(f.controller.mediaResolution.status, 'ready');
 	assert.equal(f.controller.mediaResolution.handleId, 'media-handle');
+});
+
+test('premature Ask preserves a prepared Reel handle for Transcribe and review', async () => {
+	const f = fixture();
+	const reelUrl = 'https://www.facebook.com/reel/1744555046768453';
+	const transcriptId = 'transcript:context-reel';
+	f.controller.quickRun = undefined;
+	f.controller.reviewedImageCapture = undefined;
+	f.controller.promptReelUrls = new Map([['message-video', reelUrl]]);
+	f.controller.videoArtifacts = new Map();
+	f.controller.transcriptHandles = new Map([[transcriptId, {
+		handleId: 'media-handle', messageId: 'message-video', reviewSequence: 1, snapshot: f.snapshot,
+	}]]);
+	f.controller.review = {
+		browsingMode: 'auto', contextSource: 'current', editable: true, locked: false,
+		sequence: 1,
+		snapshot: restoreContextReviewSnapshot({
+			actualCount: 1, contextVersion: 'fixture', images: [], newMessagesAvailable: false,
+			question: `幫我總結這個影片 ${reelUrl}`, requestedCount: 10, snapshot: f.snapshot,
+			transcripts: [{
+				contextItemId: 'context-reel', id: transcriptId, kind: 'video', messageId: 'message-video',
+				senderLabel: 'Facebook Reel from private prompt', status: 'ready',
+			}],
+			items: [{
+				id: 'context-reel', item: {
+					attachments: [{kind: 'video'}], confidence: 'high', messageId: 'message-video',
+					linkPreview: {domain: 'facebook.com', url: reelUrl}, sender: {role: 'unknown'},
+				},
+			}],
+		}),
+	};
+
+	await f.controller.submitReviewedPrompt(`請分析 ${reelUrl}`);
+
+	assert.equal(f.controller.review.sequence, 1);
+	assert.equal(f.controller.transcriptHandles.get(transcriptId).reviewSequence, 1);
+	assert.equal(f.controller.review.snapshot.transcripts[0].status, 'ready');
+	assert.match(f.controller.notice, /no reviewed video evidence is prepared/);
+	assert.equal(f.counts.provider, 0);
 });
 
 test('Quick mode rejects a Reel before sending the question or contacting the provider', async () => {

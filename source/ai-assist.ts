@@ -1385,7 +1385,7 @@ class AiAssistController {
 		this.error = undefined;
 		const hasImages = value.items.some(item => item.attachments?.some(attachment => attachment.kind === 'image'));
 		this.notice = promptReelUrl
-			? 'Facebook Reel from the private prompt is ready for local preparation. Select Prepare video audio before Ask.'
+			? 'Facebook Reel from the private prompt is ready for local preparation. Select Prepare video audio, then Transcribe and review, before Ask.'
 			: (hasImages
 				? `${value.items.length} of ${pending.requestedCount} messages available for review. Preparing processed image previews locally…`
 				: `${value.items.length} of ${pending.requestedCount} messages available for review. Nothing has left Messenger.`);
@@ -2725,7 +2725,6 @@ class AiAssistController {
 		review = {
 			...review,
 			locked: false,
-			sequence: ++this.reviewSequence,
 			snapshot: updateContextReview(review.snapshot, {question: submittedQuestion}),
 		};
 		this.review = review;
@@ -2776,6 +2775,7 @@ class AiAssistController {
 		review = {
 			...review,
 			locked: true,
+			sequence: ++this.reviewSequence,
 			snapshot: updateContextReview(review.snapshot, {images: [...finalizedImages.items]}),
 		};
 		this.review = review;
