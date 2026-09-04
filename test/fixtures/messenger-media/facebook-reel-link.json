@@ -1,0 +1,29 @@
+{
+	"dom": {
+		"tag": "div",
+		"attributes": {"role": "main"},
+		"children": [{
+			"tag": "div",
+			"attributes": {"role": "grid"},
+			"children": [{
+				"tag": "div",
+				"attributes": {"data-message-id": "reel-message-404"},
+				"children": [{
+					"tag": "a",
+					"attributes": {"href": "https://m.facebook.com/reel/1744555046768453/?tracking=removed"}
+				}]
+			}]
+		}]
+	},
+	"expectedCandidate": {
+		"kind": "video",
+		"messageId": "reel-message-404"
+	},
+	"expectedResolution": {
+		"kind": "video",
+		"messageId": "reel-message-404",
+		"sourceType": "https",
+		"status": "available",
+		"url": "https://www.facebook.com/reel/1744555046768453"
+	}
+}

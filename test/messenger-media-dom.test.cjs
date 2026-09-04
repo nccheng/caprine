@@ -18,6 +18,7 @@ class FixtureElement {
 			messageid: this.attributes['data-messageid'],
 		};
 		this.duration = fixture.duration ?? Number.NaN;
+		this.href = fixture.href ?? this.attributes.href ?? '';
 		this.localName = fixture.tag;
 		this.parentElement = parentElement;
 		this.src = fixture.src ?? '';
@@ -57,6 +58,10 @@ class FixtureElement {
 				return this.localName === 'source' && this.attributes.type !== undefined;
 			}
 
+			if (normalized === 'a[href]') {
+				return this.localName === 'a' && this.attributes.href !== undefined;
+			}
+
 			if (normalized === '[data-message-id]') {
 				return this.attributes['data-message-id'] !== undefined;
 			}
@@ -81,9 +86,10 @@ class FixtureElement {
 
 		visit(this);
 
-		if (selector === messengerMediaSelectors.loadedMedia) {
+		if (selector === messengerMediaSelectors.loadedMedia || selector === messengerMediaSelectors.reelLinks) {
 			return descendants.filter(element => {
-				if (!['audio', 'video'].includes(element.localName)) {
+				const expectedTags = selector === messengerMediaSelectors.loadedMedia ? ['audio', 'video'] : ['a'];
+				if (!expectedTags.includes(element.localName)) {
 					return false;
 				}
 
@@ -110,6 +116,7 @@ function loadFixture(filename) {
 }
 
 for (const filename of [
+	'facebook-reel-link.json',
 	'voice-message.json',
 	'video-message.json',
 	'segmented-media-source.json',

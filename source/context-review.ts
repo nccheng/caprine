@@ -5,6 +5,9 @@ import {
 import {ConversationSnapshot} from './ai-assist-state';
 import {ReviewedImageItem} from './reviewed-images';
 import {ReviewedTranscriptItem, reviewedTranscriptExcerpt} from './reviewed-transcripts';
+import {containsFacebookReelUrl} from './facebook-reel';
+
+export {containsFacebookReelUrl} from './facebook-reel';
 
 export const contextWindowSizes = [10, 20, 50] as const;
 export type ContextWindowSize = typeof contextWindowSizes[number];
@@ -75,32 +78,6 @@ export function contextReviewSubmissionDecision(locked: boolean):
 			notice: 'This reviewed context has already been submitted. Refresh context before asking again.',
 		}
 		: {allowed: true};
-}
-
-const trailingUrlPunctuation = /[),.;:!?\]}\u3001\u3002\uFF01\uFF09\uFF0C\uFF1A\uFF1B\uFF1F]+$/u;
-
-export function containsFacebookReelUrl(question: string): boolean {
-	for (const match of question.matchAll(/https?:\/\/[^\s<>"']+/giu)) {
-		let url: URL;
-		try {
-			url = new URL(match[0].replace(trailingUrlPunctuation, ''));
-		} catch {
-			continue;
-		}
-
-		const hostname = url.hostname.toLowerCase();
-		if (
-			['http:', 'https:'].includes(url.protocol)
-			&& !url.username
-			&& !url.password
-			&& (hostname === 'facebook.com' || hostname.endsWith('.facebook.com'))
-			&& /^\/reel\/\d{5,30}\/?$/iu.test(url.pathname)
-		) {
-			return true;
-		}
-	}
-
-	return false;
 }
 
 export function reelVideoEvidenceSubmissionDecision(

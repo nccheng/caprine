@@ -514,6 +514,38 @@ test('stable leaf-text fallback never promotes recognized link-preview sibling c
 	});
 });
 
+test('Facebook Reel share cards become canonical reviewed video evidence', () => {
+	const reelUrl = 'https://m.facebook.com/reel/1744555046768453/?mibextid=fixture';
+	const root = messengerFixtureRoot([{
+		attributes: {'aria-label': 'Avery sent a message', 'data-message-id': 'reel-card', role: 'row'},
+		children: [{
+			attributes: {href: reelUrl},
+			children: [{
+				attributes: {dir: 'auto'},
+				rectangle: {
+					height: 20, width: 120, x: 0, y: 0,
+				},
+				text: 'Shared Reel',
+			}],
+			href: reelUrl,
+			tag: 'a',
+		}],
+	}]);
+	global.window = {location: {href: 'https://www.facebook.com/messages/t/fixture'}};
+
+	assert.deepEqual(extractLoadedMessengerConversationContext(root), [{
+		attachments: [{kind: 'video'}],
+		confidence: 'high',
+		linkPreview: {
+			domain: 'facebook.com',
+			title: 'Shared Reel',
+			url: 'https://www.facebook.com/reel/1744555046768453',
+		},
+		messageId: 'reel-card',
+		sender: {displayName: 'Avery', role: 'incoming'},
+	}]);
+});
+
 test('leaf-only exclusions do not change existing primary message marker extraction', () => {
 	const root = messengerFixtureRoot([{
 		attributes: {'aria-label': 'Avery sent a message', role: 'row'},

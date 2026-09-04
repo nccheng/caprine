@@ -1,9 +1,11 @@
 import {MessengerMediaCandidate} from './ai-assist-ipc';
+import {normalizeFacebookReelUrl} from './facebook-reel';
 import {MediaKind} from './media-contract';
 
 export const messengerMediaSelectors = {
 	identity: '[data-message-id], [data-messageid]',
 	loadedMedia: '[role="main"] [role="grid"] audio, [role="main"] [role="grid"] video',
+	reelLinks: '[role="main"] [role="grid"] a[href]',
 } as const;
 
 export type MessengerMediaDomResolution = {
@@ -17,7 +19,21 @@ export type MessengerMediaDomResolution = {
 
 function mediaKind(element: Element): MediaKind | undefined {
 	const tagName = element.localName.toLowerCase();
-	return tagName === 'audio' || tagName === 'video' ? tagName : undefined;
+	if (tagName === 'audio' || tagName === 'video') {
+		return tagName;
+	}
+
+	return reelUrl(element) ? 'video' : undefined;
+}
+
+function reelUrl(element: Element): string | undefined {
+	if (element.localName.toLowerCase() !== 'a') {
+		return;
+	}
+
+	const anchor = element as HTMLAnchorElement;
+	const href = anchor.href.length > 0 ? anchor.href : element.getAttribute('href');
+	return normalizeFacebookReelUrl(href ?? '');
 }
 
 function normalizedMediaDuration(element: Element): number | undefined {
@@ -75,7 +91,11 @@ function isSegmentedMediaSource(element: Element, url: string): boolean {
 export function extractLoadedMessengerMediaCandidates(root: ParentNode): MessengerMediaCandidate[] {
 	const candidates: MessengerMediaCandidate[] = [];
 	const seen = new Set<string>();
-	for (const media of root.querySelectorAll(messengerMediaSelectors.loadedMedia)) {
+	const elements = [
+		...root.querySelectorAll(messengerMediaSelectors.loadedMedia),
+		...root.querySelectorAll(messengerMediaSelectors.reelLinks),
+	];
+	for (const media of elements) {
 		const messageId = stableMessageId(media);
 		const kind = mediaKind(media);
 		if (!messageId || !kind) {
@@ -111,6 +131,10 @@ export function resolveMessengerMediaDomCandidate(
 		const candidateId = dataset.messageId ?? dataset.messageid;
 		if (candidateId === messageId) {
 			media = identity.matches(kind) ? identity : identity.querySelector(kind) ?? undefined;
+			if (!media && kind === 'video') {
+				media = [...identity.querySelectorAll('a[href]')].find(element => reelUrl(element));
+			}
+
 			break;
 		}
 	}
@@ -126,6 +150,13 @@ export function resolveMessengerMediaDomCandidate(
 	}
 
 	const url = sourceUrl(media);
+	const normalizedReelUrl = reelUrl(media);
+	if (normalizedReelUrl) {
+		return {
+			...base, sourceType: 'https', status: 'available', url: normalizedReelUrl,
+		};
+	}
+
 	if (isSegmentedMediaSource(media, url)) {
 		return {...base, sourceType: 'segmented', status: 'unsupported'};
 	}

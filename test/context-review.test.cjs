@@ -20,6 +20,11 @@ const {
 	selectContextWindow,
 	updateContextReview,
 } = require('../dist-js/context-review.js');
+const {
+	extractFacebookReelVideoUrl,
+	facebookReelId,
+	normalizeFacebookReelUrl,
+} = require('../dist-js/facebook-reel.js');
 
 test('Facebook Reel evidence gate recognizes only bounded Facebook Reel URLs', () => {
 	for (const question of [
@@ -52,6 +57,40 @@ test('Facebook Reel evidence gate recognizes only bounded Facebook Reel URLs', (
 	assert.equal(blocked.allowed, false);
 	assert.match(blocked.notice, /no reviewed video evidence is prepared/);
 	assert.match(blocked.notice, /Nothing was sent to OpenAI\.$/);
+});
+
+test('Facebook Reel normalization and page parsing are bounded to the requested video', () => {
+	const reelId = '1744555046768453';
+	assert.equal(
+		normalizeFacebookReelUrl(`http://m.facebook.com/reel/${reelId}/?tracking=removed`),
+		`https://www.facebook.com/reel/${reelId}`,
+	);
+	assert.equal(facebookReelId(`https://facebook.com/reel/${reelId}`), reelId);
+	for (const value of [
+		`https://facebook.com.example/reel/${reelId}`,
+		`https://user@facebook.com/reel/${reelId}`,
+		`https://facebook.com/reels/${reelId}`,
+		'https://facebook.com/reel/not-an-id',
+	]) {
+		assert.equal(normalizeFacebookReelUrl(value), undefined, value);
+	}
+
+	const metaUrl = 'https://video.xx.fbcdn.net/reel.mp4?token=one&part=two';
+	assert.equal(extractFacebookReelVideoUrl([
+		`<html data-video-id="${reelId}">`,
+		'<meta property="og:video:secure_url" content="https://video.xx.fbcdn.net/reel.mp4?token=one&amp;part=two">',
+		'</html>',
+	].join(''), reelId), metaUrl);
+
+	const jsonUrl = 'https://video.xx.fbcdn.net/reel-hd.mp4?token=one&part=two';
+	const jsonHtml = `{"browser_native_hd_url":"${jsonUrl}","video_id":"${reelId}"}`;
+	assert.equal(extractFacebookReelVideoUrl(jsonHtml, reelId), jsonUrl);
+	assert.equal(extractFacebookReelVideoUrl(jsonHtml, '999999'), undefined);
+	assert.equal(extractFacebookReelVideoUrl(
+		`{"video_id":"${reelId}","playable_url":"https://evil.example/reel.mp4"}`,
+		reelId,
+	), undefined);
+	assert.equal(extractFacebookReelVideoUrl('x'.repeat((5 * 1024 * 1024) + 1), reelId), undefined);
 });
 
 test('context capture diagnostics are bounded and contain no remote content', () => {

@@ -51,10 +51,12 @@ import {
 import {isExpectedAiInboundSender} from './ai-renderer-trust';
 import {openCitationExternal} from './citation-navigation';
 import {MediaKind} from './media-contract';
+import {normalizeFacebookReelUrl} from './facebook-reel';
 import {ConversationContextItem} from './messenger-context';
 import {
 	MediaDiagnostic,
 	MessengerMediaResolver,
+	ResolvedMedia,
 } from './media-resolver';
 import {
 	isMessengerMediaResolverRequest,
@@ -996,16 +998,29 @@ class AiAssistController {
 			throw new TypeError('Rejected stale AI Assist media resolver IPC');
 		}
 
-		const media = value.sourceType === 'https'
-			? await this.mediaResolver.resolveHttps(
-				value.url,
-				value.kind,
-				value.messageId,
-				pending.snapshot,
-				pending.durationSeconds,
-				pending.abortController.signal,
-			)
-			: await this.mediaResolver.resolveBlob(
+		const reelUrl = value.sourceType === 'https' && value.kind === 'video'
+			? normalizeFacebookReelUrl(value.url)
+			: undefined;
+		let media: ResolvedMedia;
+		if (value.sourceType === 'https') {
+			media = reelUrl
+				? await this.mediaResolver.resolveFacebookReel(
+					reelUrl,
+					value.messageId,
+					pending.snapshot,
+					pending.durationSeconds,
+					pending.abortController.signal,
+				)
+				: await this.mediaResolver.resolveHttps(
+					value.url,
+					value.kind,
+					value.messageId,
+					pending.snapshot,
+					pending.durationSeconds,
+					pending.abortController.signal,
+				);
+		} else {
+			media = await this.mediaResolver.resolveBlob(
 				value.bytes,
 				value.mimeType,
 				value.kind,
@@ -1013,6 +1028,8 @@ class AiAssistController {
 				pending.snapshot,
 				pending.durationSeconds,
 			);
+		}
+
 		if (
 			this.pendingMediaRequests.get(value.requestId) !== pending
 			|| pending.abortController.signal.aborted
