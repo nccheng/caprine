@@ -56,6 +56,7 @@ const authorization = (overrides = {}) => ({
 	answerGeneration: 4,
 	authorizationToken: 'draft-insertion-token:00000000-0000-4000-8000-000000000001',
 	conversationId: 'messenger-thread:alpha',
+	question: 'Original question https://www.facebook.com/reel/1744555046768453',
 	snapshot: snapshot(),
 	text: 'Private AI answer',
 	...overrides,
@@ -158,7 +159,7 @@ test('safe insertion failure gets a fresh one-shot token without replacing newer
 	});
 	assert.equal(state.consume(first, snapshot()), undefined);
 	assert.equal(state.read(snapshot()).authorizationToken, nextToken);
-	assert.equal(state.consume({...first, authorizationToken: nextToken}, snapshot()).authorizationToken, nextToken);
+	assert.deepEqual(state.consume({...first, authorizationToken: nextToken}, snapshot()), {...first, authorizationToken: nextToken});
 	assert.equal(state.consume({...first, authorizationToken: nextToken}, snapshot()), undefined);
 
 	const newer = authorization({answerGeneration: 5, authorizationToken: 'draft-insertion-token:newer'});

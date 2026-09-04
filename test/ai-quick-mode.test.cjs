@@ -321,7 +321,7 @@ test('repeated question text still resolves the exact newly sent message identit
 });
 
 test('attributed maximum-size answers fit both sending paths without allowing larger questions', () => {
-	const text = formatCaprineAiSharedAnswer('x'.repeat(20_000));
+	const text = formatCaprineAiSharedAnswer('x'.repeat(20_000), 'q'.repeat(20_000));
 	assert.equal(text.length, caprineAiSharedAnswerCharacterLimit);
 	assert.match(text, /^Caprine AI Assist\nAI response shared by Derek\n\n/);
 	assert.equal(isQuickMessengerAction({...fixture().action, text}), true);

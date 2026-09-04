@@ -88,8 +88,9 @@ function fixture(report = deferred(), response = deferred()) {
 			},
 		},
 		draftInsertionAuthorization: {
-			issue() {
+			issue(authorization) {
 				counts.authorized++;
+				counts.authorization = authorization;
 			},
 		},
 		openAiClient: {
@@ -211,6 +212,8 @@ test('provider persistence uses the submitted frozen review even if the panel re
 	assert.equal(f.counts.mode, 'off');
 	assert.equal(f.counts.savedReview, frozenReview);
 	assert.equal(f.counts.savedReview.question, 'Original question');
+	assert.equal(f.counts.authorization.question, 'Original question');
+	assert.notEqual(f.counts.authorization.question, prompt);
 });
 
 test('manual recovery restores original input and saved answer without a request or send', () => {
@@ -230,6 +233,7 @@ test('manual recovery restores original input and saved answer without a request
 	assert.equal(f.counts.persisted, 0);
 	assert.equal(f.counts.stored, 1);
 	assert.equal(f.counts.authorized, 1);
+	assert.equal(f.counts.authorization.question, savedRun.question);
 	assert.match(f.controller.notice, /Nothing was sent or requested again/);
 	f.controller.recoverQuickRun('other-chat', 'run-1');
 	assert.equal(f.counts.authorized, 1);
@@ -726,7 +730,7 @@ test('two identical slash questions wait for native IDs and complete quoted, att
 		assert.equal(sent[2].text, question);
 		assert.equal(sent[1].replyTo, sent[0].id);
 		assert.equal(sent[3].replyTo, sent[2].id);
-		assert.match(sent[1].text, /^Caprine AI Assist\nAI response shared by Derek\n\nfixture answer$/);
+		assert.equal(sent[1].text, `Caprine AI Assist\nAI response shared by Derek\n\n原始提問：\n${question}\n\nAI 回覆：\nfixture answer`);
 		assert.equal(sent[3].text, sent[1].text);
 		const runs = store.loadConversationSummaries(f.snapshot.conversationId).flatMap(chat => store.loadQuickRuns(f.snapshot.conversationId, chat.id));
 		assert.equal(runs.length, 2);
@@ -745,7 +749,9 @@ test('manual insertion also shares attribution while authorizing the exact priva
 	f.controller.answer.read = () => answer;
 	f.controller.draftInsertionAuthorization.consume = () => ({
 		answerGeneration: 1, authorizationToken: 'fixture-token', conversationId: f.snapshot.conversationId, snapshot: f.snapshot, text: answer.text,
+		question: '原始問題 https://example.com/video',
 	});
+	f.controller.review = {snapshot: {question: 'Do not share changed input', items: ['PRIVATE CONTEXT'], transcripts: ['PRIVATE TRANSCRIPT']}};
 	f.controller.restoreMessengerFocus = () => {};
 	let shared;
 	f.controller.notifyMessenger = command => {
@@ -760,5 +766,5 @@ test('manual insertion also shares attribution while authorizing the exact priva
 	};
 
 	await f.controller.insertAnswer({answerGeneration: 1, authorizationToken: 'fixture-token', conversationId: f.snapshot.conversationId});
-	assert.equal(shared, 'Caprine AI Assist\nAI response shared by Derek\n\nfixture answer');
+	assert.equal(shared, 'Caprine AI Assist\nAI response shared by Derek\n\n原始提問：\n原始問題 https://example.com/video\n\nAI 回覆：\nfixture answer');
 });

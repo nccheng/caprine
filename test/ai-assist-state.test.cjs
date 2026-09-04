@@ -261,6 +261,13 @@ test('AI IPC validators reject unknown, malformed, and over-posted messages', ()
 		answerGeneration: 3,
 		authorizationToken: insertionToken,
 		conversationId: 'messenger-thread:123',
+		question: 'Forged question or private context',
+		type: 'insert-answer',
+	}), false);
+	assert.equal(isAiAssistPanelCommand({
+		answerGeneration: 3,
+		authorizationToken: insertionToken,
+		conversationId: 'messenger-thread:123',
 		type: 'insert-answer',
 	}), true);
 	assert.equal(isAiAssistPanelCommand({
