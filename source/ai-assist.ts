@@ -2612,7 +2612,7 @@ class AiAssistController {
 			: undefined;
 		const reelSubmissionDecision = reelVideoEvidenceSubmissionDecision(
 			this.review.snapshot.question,
-			Boolean(selectedVideoTranscript),
+			selectedVideoTranscript?.status === 'completed' || Boolean(selectedVideoArtifact),
 		);
 		if (!reelSubmissionDecision.allowed) {
 			this.error = undefined;

@@ -253,7 +253,11 @@ test('manual Reel submission without prepared video evidence stays editable and 
 	const question = '總結 https://www.facebook.com/reel/1744555046768453';
 	const frozen = restoreContextReviewSnapshot({
 		actualCount: 1, contextVersion: 'fixture', images: [], newMessagesAvailable: false, question,
-		requestedCount: 10, snapshot: f.snapshot, transcripts: [],
+		requestedCount: 10, snapshot: f.snapshot,
+		transcripts: [{
+			contextItemId: 'context-reel', id: 'transcript:context-reel', kind: 'video',
+			messageId: 'message-reel', senderLabel: 'Video received from Alex', status: 'no-audio',
+		}],
 		items: [{
 			id: 'context-reel', item: {
 				confidence: 'low', omittedReason: 'no-supported-content', sender: {role: 'unknown'},
