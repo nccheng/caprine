@@ -9,6 +9,7 @@ const playableUrlKeys = new Map([
 	['playable_url', 3],
 	['progressive_url', 4],
 ]);
+const videoIdKeys = new Set(['id', 'video_id', 'videoId', 'videoID']);
 
 function isFacebookHostname(hostname: string): boolean {
 	return hostname === 'facebook.com' || hostname.endsWith('.facebook.com');
@@ -20,42 +21,69 @@ function decodeHtmlEntities(value: string): string {
 		.replaceAll(/&quot;|&#34;|&#x22;/giu, '"');
 }
 
-function decodePlayableUrl(literal: string): string | undefined {
-	let value: unknown;
-	try {
-		value = JSON.parse(literal);
-	} catch {
-		return;
-	}
-
+function normalizedPlayableUrl(value: unknown): string | undefined {
 	if (typeof value !== 'string' || value.length > 8192) {
 		return;
 	}
 
-	const decoded = decodeHtmlEntities(value)
-		.replaceAll(/\\u([\dA-F]{4})/giu, (_match, hexadecimal: string) => String.fromCodePoint(Number.parseInt(hexadecimal, 16)))
-		.replaceAll('\\/', '/');
+	const decoded = decodeHtmlEntities(value).replaceAll('\\/', '/');
 	return isAllowedFacebookMediaUrl(decoded) ? decoded : undefined;
 }
 
-function metaVideoCandidates(html: string): Array<{rank: number; url: string}> {
-	const candidates: Array<{rank: number; url: string}> = [];
-	for (const match of html.matchAll(/<meta\b[^>]{0,8192}>/giu)) {
-		const attributes = new Map<string, string>();
-		for (const attribute of match[0].matchAll(/([a-z][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/giu)) {
-			attributes.set(attribute[1].toLowerCase(), decodeHtmlEntities(attribute[2] ?? attribute[3] ?? ''));
-		}
+function jsonDocuments(html: string): unknown[] {
+	const documents: unknown[] = [];
+	const values = [html.trim()];
+	for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/giu)) {
+		values.push(match[1].trim());
+	}
 
-		const property = (attributes.get('property') ?? attributes.get('name'))?.toLowerCase();
-		const url = attributes.get('content');
-		if (!url || !['og:video', 'og:video:url', 'og:video:secure_url'].includes(property ?? '') || !isAllowedFacebookMediaUrl(url)) {
+	for (const value of values) {
+		if (!value.startsWith('{') && !value.startsWith('[')) {
 			continue;
 		}
 
-		candidates.push({rank: property === 'og:video:secure_url' ? 0 : 1, url});
+		try {
+			documents.push(JSON.parse(value));
+		} catch {}
 	}
 
-	return candidates;
+	return documents;
+}
+
+function collectBoundVideoCandidates(
+	value: unknown,
+	expectedReelId: string,
+	candidates: Array<{rank: number; url: string}>,
+	budget: {remaining: number},
+	depth = 0,
+): void {
+	if (!value || typeof value !== 'object' || depth > 64 || budget.remaining-- <= 0) {
+		return;
+	}
+
+	if (Array.isArray(value)) {
+		for (const child of value) {
+			collectBoundVideoCandidates(child, expectedReelId, candidates, budget, depth + 1);
+		}
+
+		return;
+	}
+
+	const record = value as Record<string, unknown>;
+	const ownsTargetId = Object.entries(record)
+		.some(([key, child]) => videoIdKeys.has(key) && String(child) === expectedReelId);
+	if (ownsTargetId) {
+		for (const [key, rank] of playableUrlKeys) {
+			const url = normalizedPlayableUrl(record[key]);
+			if (url) {
+				candidates.push({rank, url});
+			}
+		}
+	}
+
+	for (const child of Object.values(record)) {
+		collectBoundVideoCandidates(child, expectedReelId, candidates, budget, depth + 1);
+	}
 }
 
 export function normalizeFacebookReelUrl(value: string): string | undefined {
@@ -124,32 +152,11 @@ export function extractFacebookReelVideoUrl(html: string, expectedReelId: string
 		return;
 	}
 
-	const candidates = metaVideoCandidates(html).map(candidate => ({...candidate, distance: 0}));
-	const documents = [
-		html,
-		decodeHtmlEntities(html),
-		html.replaceAll('\\"', '"'),
-	];
-	for (const document of documents) {
-		let idIndex = document.indexOf(expectedReelId);
-		while (idIndex >= 0) {
-			const windowStart = Math.max(0, idIndex - 100_000);
-			const window = document.slice(windowStart, Math.min(document.length, idIndex + 100_000));
-			for (const match of window.matchAll(/"(browser_native_hd_url|playable_url_quality_hd|browser_native_sd_url|playable_url|progressive_url)"\s*:\s*("(?:\\.|[^"\\])*")/giu)) {
-				const url = decodePlayableUrl(match[2]);
-				if (url) {
-					candidates.push({
-						distance: Math.abs((windowStart + (match.index ?? 0)) - idIndex),
-						rank: playableUrlKeys.get(match[1].toLowerCase()) ?? 5,
-						url,
-					});
-				}
-			}
-
-			idIndex = document.indexOf(expectedReelId, idIndex + expectedReelId.length);
-		}
+	const candidates: Array<{rank: number; url: string}> = [];
+	for (const document of jsonDocuments(html)) {
+		collectBoundVideoCandidates(document, expectedReelId, candidates, {remaining: 50_000});
 	}
 
-	candidates.sort((left, right) => left.rank - right.rank || left.distance - right.distance);
+	candidates.sort((left, right) => left.rank - right.rank);
 	return candidates[0]?.url;
 }

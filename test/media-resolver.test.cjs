@@ -104,7 +104,7 @@ test('Facebook Reel pages resolve through the authenticated session into bounded
 	const requests = [];
 	const reelId = '1744555046768453';
 	const directUrl = 'https://video.xx.fbcdn.net/reel-fixture.mp4?token=private';
-	const html = `{"video_id":"${reelId}","browser_native_hd_url":"${directUrl}"}`;
+	const html = `<html><script type="application/json">{"video_id":"${reelId}","browser_native_hd_url":"${directUrl}"}</script></html>`;
 	const resolver = new MessengerMediaResolver(directory, async (url, init) => {
 		requests.push({init, url});
 		if (requests.length === 1) {

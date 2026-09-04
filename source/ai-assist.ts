@@ -100,6 +100,7 @@ import {
 	contextReviewSubmissionDecision,
 	createUnlockedContextReview,
 	editContextReviewItem,
+	facebookReelContextItemIds,
 	removeContextReviewItem,
 	reelVideoEvidenceSubmissionDecision,
 	updateContextReview,
@@ -2613,8 +2614,11 @@ class AiAssistController {
 			return;
 		}
 
+		const reelContextItemIds = facebookReelContextItemIds(this.review.snapshot.items);
 		const selectedVideoTranscript = this.review.snapshot.transcripts.find(item =>
-			item.kind === 'video' && ['completed', 'no-audio'].includes(item.status));
+			item.kind === 'video'
+			&& ['completed', 'no-audio'].includes(item.status)
+			&& (reelContextItemIds.size === 0 || reelContextItemIds.has(item.contextItemId)));
 		const storedVideoArtifact = selectedVideoTranscript
 			? this.videoArtifacts.get(selectedVideoTranscript.id)
 			: undefined;
@@ -2630,6 +2634,7 @@ class AiAssistController {
 		const reelSubmissionDecision = reelVideoEvidenceSubmissionDecision(
 			this.review.snapshot.question,
 			selectedVideoTranscript?.status === 'completed' || Boolean(selectedVideoArtifact),
+			this.review.snapshot.items,
 		);
 		if (!reelSubmissionDecision.allowed) {
 			this.error = undefined;
@@ -3642,7 +3647,11 @@ class AiAssistController {
 				throw new QuickRunFailure('input-too-large');
 			}
 
-			const reelSubmissionDecision = reelVideoEvidenceSubmissionDecision(frozenReview.question, false);
+			const reelSubmissionDecision = reelVideoEvidenceSubmissionDecision(
+				frozenReview.question,
+				false,
+				frozenReview.items,
+			);
 			if (!reelSubmissionDecision.allowed) {
 				throw new QuickRunFailure('unsupported-media', false, reelSubmissionDecision.notice);
 			}

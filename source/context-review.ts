@@ -5,7 +5,7 @@ import {
 import {ConversationSnapshot} from './ai-assist-state';
 import {ReviewedImageItem} from './reviewed-images';
 import {ReviewedTranscriptItem, reviewedTranscriptExcerpt} from './reviewed-transcripts';
-import {containsFacebookReelUrl} from './facebook-reel';
+import {containsFacebookReelUrl, normalizeFacebookReelUrl} from './facebook-reel';
 
 export {containsFacebookReelUrl} from './facebook-reel';
 
@@ -83,13 +83,23 @@ export function contextReviewSubmissionDecision(locked: boolean):
 export function reelVideoEvidenceSubmissionDecision(
 	question: string,
 	hasReviewedVideoEvidence: boolean,
+	items: readonly ReviewedContextItem[] = [],
 ): {allowed: true} | {allowed: false; notice: string} {
-	return containsFacebookReelUrl(question) && !hasReviewedVideoEvidence
+	return (containsFacebookReelUrl(question) || facebookReelContextItemIds(items).size > 0) && !hasReviewedVideoEvidence
 		? {
 			allowed: false,
 			notice: 'Facebook Reel detected, but no reviewed video evidence is prepared. Prepare a supported Messenger video in Context review or provide a transcript before asking. Nothing was sent to OpenAI.',
 		}
 		: {allowed: true};
+}
+
+export function facebookReelContextItemIds(items: readonly ReviewedContextItem[]): ReadonlySet<string> {
+	return new Set(items.flatMap(item => {
+		const linkUrl = item.item.linkPreview?.url;
+		const containsReel = Boolean(linkUrl && normalizeFacebookReelUrl(linkUrl))
+			|| containsFacebookReelUrl(item.editedExcerpt ?? item.item.text ?? '');
+		return containsReel ? [item.id] : [];
+	}));
 }
 
 function freezePlainValue(value: unknown): void {

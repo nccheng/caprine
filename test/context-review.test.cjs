@@ -8,6 +8,7 @@ const {
 	contextCaptureFailureNotice,
 	contextCaptureRetryNotice,
 	contextReviewSubmissionDecision,
+	facebookReelContextItemIds,
 	contextVersion,
 	containsFacebookReelUrl,
 	createUnlockedContextReview,
@@ -57,6 +58,21 @@ test('Facebook Reel evidence gate recognizes only bounded Facebook Reel URLs', (
 	assert.equal(blocked.allowed, false);
 	assert.match(blocked.notice, /no reviewed video evidence is prepared/);
 	assert.match(blocked.notice, /Nothing was sent to OpenAI\.$/);
+
+	const reelItems = [{
+		id: 'context-reel',
+		item: {
+			confidence: 'high',
+			linkPreview: {
+				domain: 'facebook.com',
+				url: 'https://www.facebook.com/reel/1744555046768453',
+			},
+			sender: {role: 'incoming'},
+		},
+	}];
+	assert.deepEqual([...facebookReelContextItemIds(reelItems)], ['context-reel']);
+	assert.equal(reelVideoEvidenceSubmissionDecision('Summarize this', false, reelItems).allowed, false);
+	assert.equal(reelVideoEvidenceSubmissionDecision('Summarize this', true, reelItems).allowed, true);
 });
 
 test('Facebook Reel normalization and page parsing are bounded to the requested video', () => {
@@ -80,11 +96,16 @@ test('Facebook Reel normalization and page parsing are bounded to the requested 
 		`<html data-video-id="${reelId}">`,
 		'<meta property="og:video:secure_url" content="https://video.xx.fbcdn.net/reel.mp4?token=one&amp;part=two">',
 		'</html>',
-	].join(''), reelId), metaUrl);
+	].join(''), reelId), undefined);
 
 	const jsonUrl = 'https://video.xx.fbcdn.net/reel-hd.mp4?token=one&part=two';
 	const jsonHtml = `{"browser_native_hd_url":"${jsonUrl}","video_id":"${reelId}"}`;
 	assert.equal(extractFacebookReelVideoUrl(jsonHtml, reelId), jsonUrl);
+	assert.equal(extractFacebookReelVideoUrl(`{
+		"id":"unrelated",
+		"playable_url":"${metaUrl}",
+		"recommended":{"id":"${reelId}"}
+	}`, reelId), undefined);
 	assert.equal(extractFacebookReelVideoUrl(jsonHtml, '999999'), undefined);
 	assert.equal(extractFacebookReelVideoUrl(
 		`{"video_id":"${reelId}","playable_url":"https://evil.example/reel.mp4"}`,
