@@ -138,7 +138,8 @@ test('Facebook Reel pages resolve through the authenticated session into bounded
 		`https://m.facebook.com/reel/${reelId}/?mibextid=fixture`,
 		directUrl,
 	]);
-	assert.equal(requests.every(request => request.init.credentials === 'include'), true);
+	assert.equal(requests.slice(0, 2).every(request => request.init.credentials === 'omit'), true);
+	assert.equal(requests[2].init.credentials, 'include');
 	assert.equal(requests.every(request => request.init.redirect === 'manual'), true);
 	assert.deepEqual(requests[0].init.headers, {
 		accept: 'text/html,application/xhtml+xml',
