@@ -210,7 +210,7 @@ export class MessengerMediaResolver {
 
 				// eslint-disable-next-line no-await-in-loop
 				response = await this.fetchMedia(currentUrl, {
-					credentials: 'include',
+					credentials: 'omit',
 					headers: {
 						accept: 'text/html,application/xhtml+xml',
 						'user-agent': facebookMobileUserAgent,

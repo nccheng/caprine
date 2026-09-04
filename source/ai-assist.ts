@@ -450,7 +450,9 @@ class AiAssistController {
 
 		this.mediaResolver = new MessengerMediaResolver(
 			path.join(app.getPath('temp'), 'caprine-ai-assist-media'),
-			async (url, init) => messengerWindow.webContents.session.fetch(url, init),
+			async (url, init) => init.credentials === 'omit'
+				? fetch(url, init)
+				: messengerWindow.webContents.session.fetch(url, init),
 			diagnostic => {
 				this.reportMediaDiagnostic(diagnostic);
 			},
