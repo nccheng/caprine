@@ -23,6 +23,7 @@ const {
 } = require('../dist-js/context-review.js');
 const {
 	extractFacebookReelVideoUrl,
+	extractFacebookReelPageUrl,
 	facebookReelId,
 	facebookReelUrlInText,
 	normalizeFacebookReelUrl,
@@ -125,6 +126,26 @@ test('Facebook Reel normalization and page parsing are bounded to the requested 
 		reelId,
 	), undefined);
 	assert.equal(extractFacebookReelVideoUrl('x'.repeat((5 * 1024 * 1024) + 1), reelId), undefined);
+});
+
+test('Reel canonical metadata is constrained to the same video and strips tracking', () => {
+	const id = '1744555046768453';
+	const normalized = `https://www.facebook.com/creator/videos/${id}/`;
+	assert.equal(extractFacebookReelPageUrl(`<meta content="https://www.facebook.com/creator/videos/title/${id}/?a=1&amp;b=2" property="og:url">`, id), normalized);
+	assert.equal(extractFacebookReelPageUrl(`<link href='${normalized}' rel='canonical'>`, id), normalized);
+	for (const url of [
+		'https://m.facebook.com/creator/videos/9999999/',
+		`https://facebook.com.evil.example/creator/videos/${id}/`,
+		`https://user:secret@m.facebook.com/creator/videos/${id}/`,
+		`https://m.facebook.com:444/creator/videos/${id}/`,
+		`http://m.facebook.com/creator/videos/${id}/`,
+		`https://m.facebook.com/login/?next=${id}`,
+	]) {
+		assert.equal(extractFacebookReelPageUrl(`<link rel="canonical" href="${url}">`, id), undefined);
+	}
+
+	assert.equal(extractFacebookReelPageUrl(`<a href="${normalized}">video</a>`, id), undefined);
+	assert.equal(extractFacebookReelPageUrl('x'.repeat((5 * 1024 * 1024) + 1), id), undefined);
 });
 
 test('context capture diagnostics are bounded and contain no remote content', () => {

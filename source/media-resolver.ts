@@ -8,11 +8,13 @@ import {
 import path from 'node:path';
 import {ConversationSnapshot} from './ai-assist-state';
 import {
+	extractFacebookReelPageUrl,
 	extractFacebookReelVideoUrl,
 	facebookReelId,
 	isAllowedFacebookMediaUrl,
 	maximumFacebookReelPageBytes,
 	normalizeFacebookReelUrl,
+	normalizeFacebookVideoPageUrl,
 } from './facebook-reel';
 import {
 	maximumMediaBytes,
@@ -21,15 +23,17 @@ import {
 } from './media-contract';
 
 const facebookMobileUserAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148';
+const facebookDesktopUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
 function isBoundFacebookReelPageUrl(value: string, normalizedReelUrl: string, reelId: string): boolean {
-	if (normalizeFacebookReelUrl(value) === normalizedReelUrl) {
+	if (normalizeFacebookReelUrl(value) === normalizedReelUrl || normalizeFacebookVideoPageUrl(value, reelId)) {
 		return true;
 	}
 
 	try {
 		const url = new URL(value);
 		return url.protocol === 'https:'
+			&& !url.username && !url.password && !url.port
 			&& (url.hostname === 'facebook.com' || url.hostname.endsWith('.facebook.com'))
 			&& url.pathname === '/watch/'
 			&& url.searchParams.get('v') === reelId;
@@ -202,61 +206,81 @@ export class MessengerMediaResolver {
 		let mediaFetchStarted = false;
 		try {
 			let currentUrl = `https://m.facebook.com/watch/?v=${reelId}`;
-			let response: Response | undefined;
-			for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+			let mediaUrl: string | undefined;
+			const visitedPages = new Set<string>();
+			for (let pageCount = 0; pageCount < 4; pageCount += 1) {
 				if (!isBoundFacebookReelPageUrl(currentUrl, normalizedReelUrl, reelId)) {
 					throw new MediaResolverError('unsupported-source', 'Facebook Reel redirect is unsupported.');
 				}
 
+				if (visitedPages.has(currentUrl)) {
+					throw new MediaResolverError('unsupported-source', 'Facebook Reel page did not provide playable media.');
+				}
+
+				visitedPages.add(currentUrl);
+
 				// eslint-disable-next-line no-await-in-loop
-				response = await this.fetchMedia(currentUrl, {
+				const response = await this.fetchMedia(currentUrl, {
 					credentials: 'omit',
 					headers: {
 						accept: 'text/html,application/xhtml+xml',
-						'user-agent': facebookMobileUserAgent,
+						'user-agent': normalizeFacebookVideoPageUrl(currentUrl, reelId) ? facebookDesktopUserAgent : facebookMobileUserAgent,
 					},
 					method: 'GET',
 					redirect: 'manual',
 					signal: abortController.signal,
 				});
-				if (![301, 302, 303, 307, 308].includes(response.status)) {
+				if ([301, 302, 303, 307, 308].includes(response.status)) {
+					const location = response.headers.get('location');
+					// eslint-disable-next-line no-await-in-loop
+					await response.body?.cancel();
+					if (!location || pageCount === 3) {
+						throw new MediaResolverError('network', 'Facebook Reel redirect could not be followed safely.');
+					}
+
+					currentUrl = new URL(location, currentUrl).href;
+					continue;
+				}
+
+				if (response.status !== 200 || response.headers.has('content-range')) {
+					throw new MediaResolverError('network', 'Facebook Reel page could not be fetched.');
+				}
+
+				const contentType = normalizedMimeType(response.headers.get('content-type') ?? undefined);
+				if (!['application/xhtml+xml', 'text/html'].includes(contentType ?? '')) {
+					throw new MediaResolverError('mime-mismatch', 'Expected a Facebook Reel page.');
+				}
+
+				// eslint-disable-next-line no-await-in-loop
+				const bytes = await readBoundedBody(response, maximumFacebookReelPageBytes);
+				const advertisedLength = response.headers.get('content-length');
+				if (
+					bytes.byteLength === 0
+					|| (advertisedLength !== null && Number(advertisedLength) !== bytes.byteLength)
+				) {
+					throw new MediaResolverError('network', 'Facebook Reel page response was incomplete.');
+				}
+
+				let html: string;
+				try {
+					html = new TextDecoder('utf8', {fatal: true}).decode(bytes);
+				} catch {
+					throw new MediaResolverError('network', 'Facebook Reel page encoding is unsupported.');
+				}
+
+				mediaUrl = extractFacebookReelVideoUrl(html, reelId);
+				if (mediaUrl) {
 					break;
 				}
 
-				const location = response.headers.get('location');
-				if (!location || redirectCount === 3) {
-					throw new MediaResolverError('network', 'Facebook Reel redirect could not be followed safely.');
+				const canonicalPage = extractFacebookReelPageUrl(html, reelId);
+				if (!canonicalPage) {
+					break;
 				}
 
-				currentUrl = new URL(location, currentUrl).href;
+				currentUrl = canonicalPage;
 			}
 
-			if (response?.status !== 200 || response.headers.has('content-range')) {
-				throw new MediaResolverError('network', 'Facebook Reel page could not be fetched.');
-			}
-
-			const contentType = normalizedMimeType(response.headers.get('content-type') ?? undefined);
-			if (!['application/xhtml+xml', 'text/html'].includes(contentType ?? '')) {
-				throw new MediaResolverError('mime-mismatch', 'Expected a Facebook Reel page.');
-			}
-
-			const bytes = await readBoundedBody(response, maximumFacebookReelPageBytes);
-			const advertisedLength = response.headers.get('content-length');
-			if (
-				bytes.byteLength === 0
-				|| (advertisedLength !== null && Number(advertisedLength) !== bytes.byteLength)
-			) {
-				throw new MediaResolverError('network', 'Facebook Reel page response was incomplete.');
-			}
-
-			let html: string;
-			try {
-				html = new TextDecoder('utf8', {fatal: true}).decode(bytes);
-			} catch {
-				throw new MediaResolverError('network', 'Facebook Reel page encoding is unsupported.');
-			}
-
-			const mediaUrl = extractFacebookReelVideoUrl(html, reelId);
 			if (!mediaUrl) {
 				throw new MediaResolverError('unsupported-source', 'Facebook Reel media is unavailable.');
 			}

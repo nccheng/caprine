@@ -1091,6 +1091,18 @@ function createPanelFixture() {
 	};
 }
 
+test('unsupported HTTPS media is not misreported as a segmented player', () => {
+	const {element, renderState, state} = createPanelFixture();
+	for (const sourceType of ['https', 'segmented']) {
+		renderState({...state('ready', 1), media: {candidates: [], resolution: {kind: 'video', status: 'unsupported', sourceType}}});
+		const message = element('media-status').textContent;
+		assert.equal(message.includes('segmented or MediaSource'), sourceType === 'segmented');
+		if (sourceType === 'https') {
+			assert.match(message, /complete video file could not be found/);
+		}
+	}
+});
+
 test('private-prompt Reel uses the primary button for prepare, consent, then Ask', async () => {
 	const {
 		commandState, element, renderState, state, submitCommands, transcriptCommands,
