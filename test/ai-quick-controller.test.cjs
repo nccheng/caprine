@@ -114,6 +114,56 @@ const answer = {
 };
 const options = {isConnectionTest: false, quickRunId: 'run-1', searchMode: 'off'};
 
+test('Quick-mode Reel composer command opens private review instead of starting a public run', async () => {
+	const f = fixture();
+	f.controller.quickRun = undefined;
+
+	const calls = {
+		focus: 0, refresh: [], review: [], show: 0, startQuick: 0,
+	};
+	f.controller.showPanelWindow = () => {
+		calls.show += 1;
+	};
+
+	f.controller.panelReady = Promise.resolve(true);
+	f.controller.panelWindow = {
+		focus() {
+			calls.focus += 1;
+		},
+		isDestroyed: () => false,
+		show() {
+			calls.show += 1;
+		},
+	};
+
+	f.controller.refreshConversation = async (...arguments_) => {
+		calls.refresh.push(arguments_);
+	};
+
+	f.controller.requestContextReview = async question => {
+		calls.review.push(question);
+	};
+
+	f.controller.startQuickRun = () => {
+		calls.startQuick += 1;
+	};
+
+	const prompt = '幫我總結這個影片 https://www.facebook.com/reel/1744555046768453';
+	const accepted = await f.controller.acceptComposerCommand({conversationId: f.snapshot.conversationId, prompt});
+	assert.equal(accepted, true, JSON.stringify(calls));
+	await new Promise(resolve => {
+		setImmediate(resolve);
+	});
+
+	assert.equal(calls.startQuick, 0);
+	assert.deepEqual(calls.refresh, [[]]);
+	assert.deepEqual(calls.review, [prompt]);
+	assert.equal(calls.show, 2);
+	assert.equal(calls.focus, 1);
+	assert.equal(f.controller.invocation.prompt, prompt);
+	assert.match(f.controller.notice, /moved here without being sent to Messenger/);
+});
+
 test('cancel while waiting for conversation authority prevents the provider request', async () => {
 	const f = fixture();
 	const pending = f.controller.runOpenAiRequest('fixture prompt', options);

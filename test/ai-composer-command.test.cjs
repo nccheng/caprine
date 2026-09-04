@@ -15,9 +15,16 @@ const {
 	routeArmedAiComposerEnter,
 	routeAiComposerBrowserEnter,
 	routeAiComposerBrowserSend,
+	shouldUseQuickAiComposerMode,
 	shouldInterceptAiComposerEnter,
 	shouldInterceptAiComposerSend,
 } = require('../dist-js/ai-composer-command.js');
+
+test('Facebook Reel questions use private review even when Quick mode is enabled', () => {
+	assert.equal(shouldUseQuickAiComposerMode('Summarize this', true), true);
+	assert.equal(shouldUseQuickAiComposerMode('Summarize https://www.facebook.com/reel/1744555046768453', true), false);
+	assert.equal(shouldUseQuickAiComposerMode('Summarize this', false), false);
+});
 
 const enterEvent = {
 	isComposing: false,
