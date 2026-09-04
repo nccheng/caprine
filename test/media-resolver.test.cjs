@@ -134,14 +134,17 @@ test('Facebook Reel pages resolve through the authenticated session into bounded
 		6,
 	);
 	assert.deepEqual(requests.map(request => request.url), [
-		`https://www.facebook.com/reel/${reelId}`,
+		`https://m.facebook.com/watch/?v=${reelId}`,
 		`https://m.facebook.com/reel/${reelId}/?mibextid=fixture`,
 		directUrl,
 	]);
 	assert.equal(requests.every(request => request.init.credentials === 'include'), true);
 	assert.equal(requests.every(request => request.init.redirect === 'manual'), true);
-	assert.equal(requests[0].init.headers.accept, 'text/html,application/xhtml+xml');
-	assert.equal(requests[1].init.headers.accept, 'text/html,application/xhtml+xml');
+	assert.deepEqual(requests[0].init.headers, {
+		accept: 'text/html,application/xhtml+xml',
+		'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
+	});
+	assert.deepEqual(requests[1].init.headers, requests[0].init.headers);
 	assert.equal(requests[2].init.headers, undefined);
 	assert.equal(media.kind, 'video');
 	assert.equal(media.byteLength, 4);

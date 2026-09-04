@@ -890,6 +890,7 @@ function createPanelFixture() {
 	const webSearchModeCommands = [];
 	const historyDeletionCommands = [];
 	const transcriptCommands = [];
+	const submitCommands = [];
 	const commandState = {current: undefined};
 	const element = id => {
 		if (!elements.has(id)) {
@@ -1030,7 +1031,10 @@ function createPanelFixture() {
 					webSearchModeCommands.push(mode);
 					return commandState.current;
 				},
-				async submitPrompt() {},
+				async submitPrompt(prompt) {
+					submitCommands.push(prompt);
+					return commandState.current;
+				},
 				async testApiKey() {},
 				async transcribeReviewedMedia(...arguments_) {
 					transcriptCommands.push(['transcribe', ...arguments_]);
@@ -1081,10 +1085,82 @@ function createPanelFixture() {
 		renderState,
 		reviewCommands,
 		state,
+		submitCommands,
 		transcriptCommands,
 		webSearchModeCommands,
 	};
 }
+
+test('private-prompt Reel uses the primary button for prepare, consent, then Ask', async () => {
+	const {
+		commandState, element, renderState, state, submitCommands, transcriptCommands,
+	} = createPanelFixture();
+	const prompt = '幫我總結 https://www.facebook.com/reel/1744555046768453';
+	const transcript = {
+		contextItemId: 'review:prompt-reel',
+		id: 'transcript:prompt-reel',
+		kind: 'video',
+		messageId: 'prompt-reel-1744555046768453',
+		senderLabel: 'Facebook Reel from private prompt',
+		status: 'available',
+	};
+	const review = {
+		actualCount: 1,
+		browsingMode: 'auto',
+		contextSource: 'current',
+		editable: true,
+		images: [],
+		items: [],
+		locked: false,
+		newMessagesAvailable: false,
+		question: prompt,
+		requestedCount: 10,
+		sequence: 1,
+		transcripts: [transcript],
+	};
+	const availableState = {...state('ready', 1), review};
+	const readyState = {...availableState, review: {...review, transcripts: [{...transcript, status: 'ready'}]}};
+	const completedState = {
+		...availableState,
+		review: {
+			...review,
+			transcripts: [{
+				...transcript,
+				originalSegments: [{endSeconds: 1, startSeconds: 0, text: 'Transcript'}],
+				status: 'completed',
+			}],
+		},
+	};
+	const submit = element('prompt-form').listeners.get('submit');
+	const event = {preventDefault() {}};
+
+	renderState(state('ready', 1));
+	element('prompt').value = prompt;
+	element('prompt').listeners.get('input')();
+	commandState.current = readyState;
+	renderState(availableState);
+	assert.equal(element('context-review-details').open, true);
+	assert.equal(element('ask-button').textContent, 'Prepare Reel audio');
+	element('context-review-details').open = false;
+	renderState({...availableState, request: {notice: 'Unrelated update'}});
+	assert.equal(element('context-review-details').open, false);
+	await submit(event);
+	assert.equal(element('context-review-details').open, true);
+	assert.deepEqual(transcriptCommands, [['prepare', 1, transcript.id]]);
+	assert.equal(element('ask-button').textContent, 'Transcribe and review Reel');
+
+	commandState.current = completedState;
+	await submit(event);
+	assert.deepEqual(transcriptCommands, [
+		['prepare', 1, transcript.id],
+		['transcribe', 1, transcript.id],
+	]);
+	assert.equal(element('ask-button').textContent, 'Ask with reviewed context');
+
+	commandState.current = completedState;
+	await submit(event);
+	assert.deepEqual(submitCommands, [prompt]);
+});
 
 test('panel initial focus leaves Context review collapsed across initial states', async t => {
 	const review = {

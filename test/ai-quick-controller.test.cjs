@@ -417,6 +417,48 @@ test('a Reel URL in the private prompt becomes explicit reviewable video evidenc
 	assert.match(f.controller.notice, /Select Prepare video audio, then Transcribe and review, before Ask/);
 });
 
+test('a private-prompt Reel already present in Messenger is labeled for the primary workflow', async () => {
+	const f = fixture();
+	const reelId = '1744555046768453';
+	const reelUrl = `https://www.facebook.com/reel/${reelId}`;
+	f.controller.quickRun = undefined;
+	f.controller.mediaCandidates = [];
+	f.controller.promptReelUrls = new Map();
+	f.controller.diagnosticsHealth = {
+		contextHealthy() {},
+	};
+	f.controller.pendingContextCapture = {
+		contextSource: 'current',
+		question: `幫我總結這個影片 ${reelUrl}`,
+		requestId: 'context-capture-existing-reel',
+		requestedCount: 10,
+		resolve() {},
+		snapshot: f.snapshot,
+	};
+
+	await f.controller.handleContextCapture({
+		contextVersion: 'fixture-existing-reel',
+		conversationId: f.snapshot.conversationId,
+		items: [{
+			attachments: [{kind: 'video'}],
+			confidence: 'high',
+			linkPreview: {domain: 'facebook.com', title: 'Facebook Reel', url: reelUrl},
+			messageId: 'messenger-reel-message',
+			sender: {displayName: 'You', role: 'self'},
+		}],
+		requestId: 'context-capture-existing-reel',
+		requestedCount: 10,
+		status: 'available',
+		stopReason: 'no-more-history',
+		type: 'context-capture',
+	});
+
+	assert.deepEqual([...f.controller.promptReelUrls], [['messenger-reel-message', reelUrl]]);
+	assert.equal(f.controller.review.snapshot.transcripts.length, 1);
+	assert.equal(f.controller.review.snapshot.transcripts[0].messageId, 'messenger-reel-message');
+	assert.equal(f.controller.review.snapshot.transcripts[0].senderLabel, 'Facebook Reel from private prompt');
+});
+
 test('preparing a private-prompt Reel resolves it in the trusted main process', async () => {
 	const f = fixture();
 	const messageId = 'prompt-reel-1744555046768453';

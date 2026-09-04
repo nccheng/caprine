@@ -20,6 +20,24 @@ import {
 	MediaSourceType,
 } from './media-contract';
 
+const facebookMobileUserAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148';
+
+function isBoundFacebookReelPageUrl(value: string, normalizedReelUrl: string, reelId: string): boolean {
+	if (normalizeFacebookReelUrl(value) === normalizedReelUrl) {
+		return true;
+	}
+
+	try {
+		const url = new URL(value);
+		return url.protocol === 'https:'
+			&& (url.hostname === 'facebook.com' || url.hostname.endsWith('.facebook.com'))
+			&& url.pathname === '/watch/'
+			&& url.searchParams.get('v') === reelId;
+	} catch {
+		return false;
+	}
+}
+
 export const mediaResolverTimeoutMs = 30_000;
 
 export type MediaDiagnostic = {
@@ -183,17 +201,20 @@ export class MessengerMediaResolver {
 		const timeout = setTimeout(abort, this.timeoutMs);
 		let mediaFetchStarted = false;
 		try {
-			let currentUrl = normalizedReelUrl;
+			let currentUrl = `https://m.facebook.com/watch/?v=${reelId}`;
 			let response: Response | undefined;
 			for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
-				if (normalizeFacebookReelUrl(currentUrl) !== normalizedReelUrl) {
+				if (!isBoundFacebookReelPageUrl(currentUrl, normalizedReelUrl, reelId)) {
 					throw new MediaResolverError('unsupported-source', 'Facebook Reel redirect is unsupported.');
 				}
 
 				// eslint-disable-next-line no-await-in-loop
 				response = await this.fetchMedia(currentUrl, {
 					credentials: 'include',
-					headers: {accept: 'text/html,application/xhtml+xml'},
+					headers: {
+						accept: 'text/html,application/xhtml+xml',
+						'user-agent': facebookMobileUserAgent,
+					},
 					method: 'GET',
 					redirect: 'manual',
 					signal: abortController.signal,

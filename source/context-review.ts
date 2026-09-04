@@ -88,7 +88,7 @@ export function reelVideoEvidenceSubmissionDecision(
 	return (containsFacebookReelUrl(question) || facebookReelContextItemIds(items).size > 0) && !hasReviewedVideoEvidence
 		? {
 			allowed: false,
-			notice: 'Facebook Reel detected, but no reviewed video evidence is prepared. Prepare a supported Messenger video in Context review or provide a transcript before asking. Nothing was sent to OpenAI.',
+			notice: 'Facebook Reel detected, but no reviewed video evidence is prepared. Open Context review, select Prepare video audio, then Transcribe and review before asking. Nothing was sent to OpenAI.',
 		}
 		: {allowed: true};
 }
