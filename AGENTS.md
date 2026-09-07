@@ -18,7 +18,7 @@
 - Use the smallest direct macOS-specific solution. Do not add multi-user,
   multi-provider, plugin, enterprise, or generalized orchestration layers.
 
-The current Linear `Caprine AI Assist` project and its attached product contract
+The current Plane `Caprine AI Assist` project and its attached product contract
 define MVP behavior and delivery dependencies. An active issue may narrow that
 contract but must not silently expand or remove it.
 
@@ -30,7 +30,7 @@ Use authority in this order:
 2. This `AGENTS.md`, which is the sole executable implementation, review,
    approval, decomposition, merge, and stop-condition workflow for this
    repository.
-3. The active Linear issue or pull request supplied for the task.
+3. The active Plane issue or pull request supplied for the task.
 4. The `Caprine AI Assist MVP Contract and Delivery Map`.
 5. Current code, executable checks, and user-facing documentation.
 
@@ -38,18 +38,19 @@ The Team NC convergent-review document, Caprine worker prompt, project
 description, and issue template are supporting references. They must defer to
 this file and must not create additional approval or stop gates.
 
-Supporting Linear documents:
+Supporting references:
 
-- Convergent review reference:
-  `https://linear.app/nccheng-personal/document/convergent-autonomous-implementation-and-review-standard-8a7617ca88d6`
-- Caprine worker prompt:
-  `https://linear.app/nccheng-personal/document/caprine-ai-assist-autonomous-worker-prompt-251f030a0c47`
-- Product contract:
-  `https://linear.app/nccheng-personal/document/caprine-ai-assist-mvp-contract-and-delivery-map-50fc97314820`
+- [Tracker migration map](PLANE_MIGRATION.md).
+- [Active worker prompt](AUTONOMOUS_WORKER.md).
+- [Product contract in Plane](https://app.plane.so/team-nc/projects/e939c63a-ad50-4756-80b9-8c83aec0d950/pages/97700851-d8c2-4c9c-83b9-020b9714397f/).
+- [Issue authoring template in Plane](https://app.plane.so/team-nc/projects/e939c63a-ad50-4756-80b9-8c83aec0d950/pages/722da662-5469-49f9-8d5a-cb0f4a523c1e/).
 
-A bare active Linear issue URL from the `Caprine AI Assist` project is a direct
+Historical Linear documents remain source evidence only; their old tracker
+routing and schedule prose do not override this file or actual app settings.
+
+A bare active Plane issue URL from the `Caprine AI Assist` project is a direct
 implementation request. Fetch the full issue, project, product contract,
-attachments, and `blockedBy` relations; inspect current code and checks; then
+attachments, and `blocked_by` relations; inspect current code and checks; then
 begin without requiring a label, ADR, separate approval, repo-local issue spec,
 pre-approved Review Contract wording, or pre-approved mechanical decomposition.
 
@@ -58,7 +59,7 @@ explicitly authorizes an administrative correction. An issue outside this
 project is context unless Derek authorizes implementation.
 
 A bare pull-request URL requests inspection and resumption of that PR's existing
-lineage. Fetch the PR, linked Linear issue, exact latest head, checks, reviews,
+lineage. Fetch the PR, linked Plane issue, exact latest head, checks, reviews,
 and unresolved threads. Reuse the primary branch/worktree and PR. The PR does
 not authorize work outside the linked issue and validated review findings.
 
@@ -72,11 +73,11 @@ Codex is pre-authorized, without separate approval, to:
 - derive, shorten, normalize, or repair a Review Contract or bounded review
   packet from the issue goal, scope, acceptance criteria, project contract,
   current code, and tests;
-- update the active Linear issue or PR review packet with that derived content;
+- update the active Plane issue or PR review packet with that derived content;
 - separate executable acceptance from manual-only acceptance;
 - choose the smallest reversible implementation detail, schema shape, file
   structure, dependency, and deterministic test seam;
-- mechanically decompose an issue and rewire Linear dependencies under the
+- mechanically decompose an issue and rewire Plane dependencies under the
   autonomous decomposition policy below;
 - record reasonable implementation assumptions and continue in the same run.
 
@@ -126,7 +127,7 @@ sources make these points materially clear:
 - bounded non-goals;
 - focused deterministic test seams.
 
-When these facts are inferable but missing or verbose in Linear, derive a short
+When these facts are inferable but missing or verbose in Plane, derive a short
 review packet, update the issue or PR when useful, and continue without owner
 approval. Ordinary UI, formatting, bounded refactor, and low-risk internal work
 may use Goal, Scope, Acceptance Criteria, and Non-goals without a dedicated
@@ -152,7 +153,7 @@ only when the split itself requires an unresolved product decision under the
 Issue decomposition is normally an implementation-planning operation, not an
 owner approval gate.
 
-Codex is pre-authorized to decompose an active issue and update Linear
+Codex is pre-authorized to decompose an active issue and update Plane
 relationships without Derek's approval when all of the following are true:
 
 1. Every resulting issue is a strict subset of behavior already required by the
@@ -180,19 +181,19 @@ For a mechanical decomposition, Codex must:
    real implementation work.
 3. Keep the original issue as a concrete implementation slice when practical;
    do not turn it into a status-only parent unnecessarily.
-4. Create or update the minimum Linear issues needed, preserve project,
-   milestone, priority, labels, and owner intent, and use `blockedBy` / `blocks`
+4. Create or update the minimum Plane issues needed, preserve project,
+   milestone, priority, labels, and owner intent, and use `blocked_by` / `blocking`
    as the actual work-order graph.
 5. Attach each downstream dependency to the smallest slice or set of slices
    whose completion actually satisfies that prerequisite. Remove obsolete or
    redundant direct edges when safe.
-6. Record the decomposition and assumptions in Linear.
+6. Record the decomposition and assumptions in Plane.
 7. Immediately continue with the highest-priority unblocked resulting slice in
    the same run. Mechanical decomposition is not completion of the run and is
    not a stop condition.
 
 Do not return `NEEDS_USER` merely because decomposition creates issues or
-changes the Linear dependency graph. Those updates are authorized implementation
+changes the Plane dependency graph. Those updates are authorized implementation
 planning when they follow mechanically from existing requirements.
 
 Return `NEEDS_USER` for decomposition only when at least one material product
@@ -208,7 +209,7 @@ decision remains unresolved, including:
 
 ## Dependency-aware work selection
 
-Linear `blockedBy` relations are the work-order gate. Parent/child, milestone,
+Plane `blocked_by` relations are the work-order gate. Parent/child, milestone,
 label, cycle, and issue-number order do not imply blocking.
 
 The daily worker resumes durable active lineage before starting new work:
@@ -218,14 +219,15 @@ The daily worker resumes durable active lineage before starting new work:
 3. The highest-priority unblocked unfinished project issue.
 4. The deepest unfinished in-project blocker required by a blocked issue.
 
-At the same dependency level, order by Linear priority, creation time ascending,
-then numeric issue identifier ascending. Detect true dependency cycles and stop
+At the same dependency level, order by Plane priority urgent, high, medium, low,
+then none; use original creation time and numeric BUI alias for migrated work,
+otherwise Plane creation time and numeric CAP identifier, ascending. Detect true dependency cycles and stop
 rather than guessing. Never autonomously implement an out-of-project blocker.
 
 Start at most one new implementation issue per run. A mechanical decomposition
 may create multiple issue records, but the worker implements at most one
 resulting slice. One implementation issue maps to one writer, one
-branch/worktree, and one primary PR. Refresh Linear, GitHub, branches, and
+branch/worktree, and one primary PR. Refresh Plane, GitHub, branches, and
 worktrees before selection. Preserve unknown or user-owned changes; do not
 reset, stash, delete, or force-push them.
 
@@ -324,7 +326,7 @@ signing, media, mobile-client, credential-dependent, or end-to-end checks. They
 must not claim those checks passed from source inspection, builds, lint, or
 packaging.
 
-Real-device checks are centralized in milestone-level Linear issues labeled
+Real-device checks are centralized in milestone-level Plane issues labeled
 `Manual Acceptance`. Free-agent reviewers must not speculate manual uncertainty
 into blockers without a concrete current code defect.
 
@@ -336,7 +338,8 @@ inside a manual validation issue.
 
 The single scheduled workflow is `Caprine AI Assist Autonomous Worker`:
 
-- Schedule: every day at 11:00 AM `America/Los_Angeles`.
+- Schedule: existing hourly automation at minute 0. Preserve the actual app
+  settings and original PAUSED status; this document does not enable it.
 - Default model: GPT 5.6 Sol with High reasoning.
 - Runtime: `/Users/nccheng/Documents/GitHub/caprine`.
 - Per run: resume active lineage first and start at most one new implementation
@@ -349,7 +352,7 @@ The single scheduled workflow is `Caprine AI Assist Autonomous Worker`:
 
 The scheduled prompt selects and resumes work, then follows this file. Do not
 create separate selector, writer, reviewer, adjudicator, reconciler, or merge
-automations. Do not simulate locks with Linear comments, marker schemas, prompt
+automations. Do not simulate locks with Plane comments, marker schemas, prompt
 hashes, or review digests.
 
 ## Development commands and conventions
@@ -371,3 +374,19 @@ Use TypeScript and ES module imports where practical, `const` by default,
 Keep renderer IPC bound to the owning window/main frame and trusted Messenger
 origins, validate payloads before native side effects, and never expose
 privileged APIs or secrets to the remote page.
+
+## Plane tracker scope and completion
+
+Use workspace `team-nc`, project `CAP`
+(`e939c63a-ad50-4756-80b9-8c83aec0d950`), with complete pagination and actual
+state UUIDs. Read `PLANE_MIGRATION.md` before resolving a historical BUI link.
+A legacy Linear URL is an alias only after mapping it to active in-project Plane
+work; it never authorizes implementation of historical terminal issues.
+Exclude archived and synthetic items. Unknown dependencies or lookup errors are
+not proof of completion; only verified Done historical prerequisites are complete.
+Preserve manual/source constraints from the full description as well as labels.
+
+Explicitly link each GitHub PR on Plane and the Plane item in its PR. Verify
+merge reachability on remote `main` before explicitly setting Plane Done.
+Do not assume `Closes CAP-###` changes tracker status automatically. If the PR
+is already merged, reconcile only stale completion metadata and preserve lineage.
