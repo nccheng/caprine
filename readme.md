@@ -471,3 +471,7 @@ Then edit the automatically created GitHub Releases draft and publish.
 ## Disclaimer
 
 Caprine is a third-party app and is not affiliated with Facebook.
+
+## Development tracking
+
+Active Caprine AI Assist work is tracked in [Plane CAP](https://app.plane.so/team-nc/projects/e939c63a-ad50-4756-80b9-8c83aec0d950/issues/). Read [AGENTS.md](AGENTS.md) for the sole development/review workflow, [the migration map](PLANE_MIGRATION.md) for historical BUI aliases and manual constraints, and [the existing worker guidance](AUTONOMOUS_WORKER.md).
